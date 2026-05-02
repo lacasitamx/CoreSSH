@@ -471,9 +471,14 @@ func (m *XrayManager) AddXrayClient(inboundTag, uuid, email string) error {
 					}
 				}
 			}
-			settings["clients"] = append(clients, map[string]interface{}{
+			proto, _ := ibMap["protocol"].(string)
+			client := map[string]interface{}{
 				"id": uuid, "email": email, "level": 0,
-			})
+			}
+			if strings.EqualFold(proto, "vmess") {
+				client["alterId"] = 0
+			}
+			settings["clients"] = append(clients, client)
 			return nil
 		}
 		return fmt.Errorf("inbound %q not found", inboundTag)
@@ -578,7 +583,7 @@ func handleXrayClientAdd(w http.ResponseWriter, r *http.Request) {
 		UUID           string `json:"uuid"`
 		Email          string `json:"email"`
 		Name           string `json:"name"`
-		ExpiresAt      string `json:"expires_at"`       // RFC3339 or YYYY-MM-DD or empty
+		ExpiresAt      string `json:"expires_at"` // RFC3339 or YYYY-MM-DD or empty
 		MaxConnections int    `json:"max_connections"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

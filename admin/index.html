@@ -308,6 +308,7 @@ pre.log-box{background:rgba(15,23,42,.9);color:#9ca3af;border:1px solid rgba(55,
               <label>Protocol</label>
               <select id="wzProtocol" onchange="onWzProtoChange(this.value)">
                 <option value="vless">VLESS</option>
+                <option value="vmess">VMess</option>
                 <option value="trojan">Trojan</option>
                 <option value="shadowsocks">Shadowsocks</option>
                 <option value="socks">SOCKS5 (local)</option>
@@ -316,7 +317,7 @@ pre.log-box{background:rgba(15,23,42,.9);color:#9ca3af;border:1px solid rgba(55,
             <div class="field"><label>Port</label><input type="number" id="wzPort" min="1" max="65535" placeholder="10086"/></div>
             <div class="field"><label>Listen IP</label><input type="text" id="wzListenIP" placeholder="0.0.0.0"/></div>
             <div class="field"><label>Tag</label><input type="text" id="wzTag" placeholder="vless-in"/></div>
-            <!-- VLESS fields -->
+            <!-- VLESS / VMess transport fields -->
             <div id="wzVlessFields" style="grid-column:1/-1;display:grid;grid-template-columns:1fr 1fr;gap:8px;">
               <div class="field">
                 <label>Network</label>
@@ -1972,17 +1973,33 @@ function wzToggleAddInbound() {
 }
 
 function onWzProtoChange(val) {
-  document.getElementById("wzVlessFields").style.display   = val === "vless"        ? "grid" : "none";
+  const usesClientTransport = val === "vless" || val === "vmess";
+  document.getElementById("wzVlessFields").style.display   = usesClientTransport    ? "grid" : "none";
   document.getElementById("wzTrojanFields").style.display  = val === "trojan"       ? "" : "none";
   document.getElementById("wzSSFields").style.display      = val === "shadowsocks"  ? "grid" : "none";
-  const portMap = { vless:10086, trojan:8443, shadowsocks:8388, socks:10808 };
-  const tagMap  = { vless:"vless-in", trojan:"trojan-in", shadowsocks:"ss-in", socks:"socks-local" };
+
+  const tlsSel = document.getElementById("wzTLS");
+  const realityOpt = document.querySelector("#wzTLS option[value='reality']");
+  if (realityOpt) {
+    realityOpt.disabled = val === "vmess";
+    if (val === "vmess" && tlsSel.value === "reality") {
+      tlsSel.value = "none";
+      onWzTLSChange("none");
+    }
+  }
+
+  const portMap = { vless:10086, vmess:10087, trojan:8443, shadowsocks:8388, socks:10808 };
+  const tagMap  = { vless:"vless-in", vmess:"vmess-in", trojan:"trojan-in", shadowsocks:"ss-in", socks:"socks-local" };
   const portEl = document.getElementById("wzPort");
   const tagEl  = document.getElementById("wzTag");
   const lisEl  = document.getElementById("wzListenIP");
-  if (!portEl.value) portEl.value = portMap[val] || "";
-  if (!tagEl.value)  tagEl.value  = tagMap[val]  || val+"-in";
-  if (!lisEl.value)  lisEl.value  = val === "socks" ? "127.0.0.1" : "0.0.0.0";
+  const knownPorts = Object.values(portMap).map(String);
+  const knownTags  = Object.values(tagMap);
+  if (!portEl.value || knownPorts.includes(portEl.value)) portEl.value = portMap[val] || "";
+  if (!tagEl.value || knownTags.includes(tagEl.value))     tagEl.value  = tagMap[val]  || val+"-in";
+  if (!lisEl.value || lisEl.value === "0.0.0.0" || lisEl.value === "127.0.0.1") {
+    lisEl.value = val === "socks" ? "127.0.0.1" : "0.0.0.0";
+  }
 }
 
 function onWzNetworkChange(val) {
@@ -2025,8 +2042,8 @@ function wzSaveInbound() {
   const tag    = document.getElementById("wzTag").value.trim() || proto+"-in";
   if (!port) { alert("Port required."); return; }
   const ib = { tag, port, listen, protocol: proto, settings: {} };
-  if (proto === "vless") {
-    ib.settings = { clients: [], decryption: "none" };
+  if (proto === "vless" || proto === "vmess") {
+    ib.settings = proto === "vless" ? { clients: [], decryption: "none" } : { clients: [] };
     const net    = document.getElementById("wzNetwork").value;
     const tlsVal = document.getElementById("wzTLS").value;
     ib.streamSettings = { network: net };
@@ -2069,7 +2086,7 @@ function wzSaveInbound() {
       ib.streamSettings.tlsSettings = {
         certificates: [{ certificateFile: document.getElementById("wzTLSCert").value.trim(), keyFile: document.getElementById("wzTLSKey").value.trim() }],
       };
-    } else if (tlsVal === "reality") {
+    } else if (tlsVal === "reality" && proto === "vless") {
       ib.streamSettings.security = "reality";
       ib.streamSettings.realitySettings = {
         dest:        document.getElementById("wzRealityDest").value.trim(),
