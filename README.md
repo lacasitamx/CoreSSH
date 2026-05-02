@@ -2,7 +2,44 @@
 
 ## PT-BR
 
-DragonCoreSSH V40 é um painel/servidor em Go para SSH com HTTP Injection, painel web, PostgreSQL, integração com Xray-core e API pública para consultar status de usuário.
+DragonCoreSSH V40 é um painel/servidor em Go para SSH com HTTP Injection, painel web, PostgreSQL, integração com Xray-core/V2Ray e API pública para consultar status de usuários SSH e clientes Xray.
+
+### Recursos principais
+
+- SSH com HTTP Injection
+- Painel web administrativo
+- Banco de dados PostgreSQL
+- Integração com Xray-core/V2Ray
+- Configurador visual para VLESS e VMess
+- API pública `/check` para consultar usuário ou UUID
+- Serviço `systemd` para iniciar automaticamente com o sistema
+
+### Protocolos suportados no configurador Xray/V2Ray
+
+O painel possui suporte para criação e gerenciamento de configurações Xray/V2Ray com:
+
+```text
+VLESS
+VMess
+Trojan
+Shadowsocks
+SOCKS
+```
+
+Para VMess, o painel gera clientes com `alterId: 0`.
+
+Transportes disponíveis para VLESS/VMess no configurador visual:
+
+```text
+TCP
+WebSocket
+XHTTP
+HTTPUpgrade
+HTTP/2
+gRPC
+```
+
+Observação: Reality deve ser usado apenas em protocolos compatíveis. No configurador visual, VMess não usa Reality.
 
 ### Requisitos
 
@@ -44,9 +81,9 @@ Server IP
 SSH ports
 VLESS port
 VLESS UUID
+VMess port
 Admin panel URL
-Admin login
-Admin password
+Admin login/password, quando aplicável
 Admin token
 ```
 
@@ -69,7 +106,18 @@ Admin token
 8080    SSH extra com HTTP Injection
 9090    Painel web + API pública /check
 10086   Xray VLESS
+10087   Xray VMess
 10088   SOCKS local em 127.0.0.1
+```
+
+Libere no firewall apenas as portas que você realmente usa. Exemplo com `ufw`:
+
+```bash
+sudo ufw allow 80/tcp
+sudo ufw allow 8080/tcp
+sudo ufw allow 9090/tcp
+sudo ufw allow 10086/tcp
+sudo ufw allow 10087/tcp
 ```
 
 ### Comandos úteis
@@ -100,7 +148,7 @@ systemctl restart sshpanel
 
 ### Atualização
 
-Entre na nova pasta do código e execute:
+Entre na pasta do projeto atualizado e execute:
 
 ```bash
 sudo bash update.sh
@@ -128,7 +176,7 @@ Consultar usuário SSH:
 curl "http://SERVER_IP:9090/check?user=testuser"
 ```
 
-Consultar UUID Xray:
+Consultar UUID Xray/V2Ray:
 
 ```bash
 curl "http://SERVER_IP:9090/check?uuid=a499cb67-6c73-43cc-a84d-92cbb68d22d1"
@@ -164,7 +212,7 @@ Campos da resposta:
 
 | Campo | Tipo | Descrição |
 | --- | --- | --- |
-| `username` | string | Usuário SSH, nome do cliente Xray ou UUID. |
+| `username` | string | Usuário SSH, nome do cliente Xray/V2Ray ou UUID. |
 | `count_connections` | number | Conexões SSH ativas no momento. |
 | `expiration_date` | string | Data de expiração em `DD/MM/YYYY` ou `Unlimited`. |
 | `expiration_days` | number | Dias restantes. `-1` significa ilimitado. |
@@ -192,7 +240,44 @@ Erros comuns:
 
 ## EN-US
 
-DragonCoreSSH V40 is a Go-based SSH HTTP Injection server with a web panel, PostgreSQL, Xray-core integration, and a public API for checking user status.
+DragonCoreSSH V40 is a Go-based SSH HTTP Injection server with a web panel, PostgreSQL, Xray-core/V2Ray integration, and a public API for checking SSH users and Xray clients.
+
+### Main features
+
+- SSH with HTTP Injection
+- Administrative web panel
+- PostgreSQL database
+- Xray-core/V2Ray integration
+- Visual configurator for VLESS and VMess
+- Public `/check` API for checking username or UUID
+- `systemd` service for automatic startup
+
+### Supported protocols in the Xray/V2Ray configurator
+
+The panel supports creating and managing Xray/V2Ray configurations with:
+
+```text
+VLESS
+VMess
+Trojan
+Shadowsocks
+SOCKS
+```
+
+For VMess, the panel generates clients with `alterId: 0`.
+
+Available transports for VLESS/VMess in the visual configurator:
+
+```text
+TCP
+WebSocket
+XHTTP
+HTTPUpgrade
+HTTP/2
+gRPC
+```
+
+Note: Reality should only be used with compatible protocols. In the visual configurator, VMess does not use Reality.
 
 ### Requirements
 
@@ -234,9 +319,9 @@ Server IP
 SSH ports
 VLESS port
 VLESS UUID
+VMess port
 Admin panel URL
-Admin login
-Admin password
+Admin login/password, when applicable
 Admin token
 ```
 
@@ -259,7 +344,18 @@ Admin token
 8080    Extra SSH with HTTP Injection
 9090    Web panel + public /check API
 10086   Xray VLESS
+10087   Xray VMess
 10088   Local SOCKS on 127.0.0.1
+```
+
+Open only the ports that you actually use. Example with `ufw`:
+
+```bash
+sudo ufw allow 80/tcp
+sudo ufw allow 8080/tcp
+sudo ufw allow 9090/tcp
+sudo ufw allow 10086/tcp
+sudo ufw allow 10087/tcp
 ```
 
 ### Useful commands
@@ -290,7 +386,7 @@ systemctl restart sshpanel
 
 ### Update
 
-Enter the new source-code folder and run:
+Enter the updated source-code folder and run:
 
 ```bash
 sudo bash update.sh
@@ -318,7 +414,7 @@ Check SSH username:
 curl "http://SERVER_IP:9090/check?user=testuser"
 ```
 
-Check Xray UUID:
+Check Xray/V2Ray UUID:
 
 ```bash
 curl "http://SERVER_IP:9090/check?uuid=a499cb67-6c73-43cc-a84d-92cbb68d22d1"
@@ -354,7 +450,7 @@ Response fields:
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `username` | string | SSH username, Xray client name, or UUID. |
+| `username` | string | SSH username, Xray/V2Ray client name, or UUID. |
 | `count_connections` | number | Current active SSH connections. |
 | `expiration_date` | string | Expiration date in `DD/MM/YYYY` or `Unlimited`. |
 | `expiration_days` | number | Remaining days. `-1` means unlimited. |
