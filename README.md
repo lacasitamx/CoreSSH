@@ -22,8 +22,8 @@ Distribuições alvo:
 Clone o projeto e execute o instalador:
 
 ```bash
-git clone <REPOSITORY_URL>
-cd <PROJECT_FOLDER>
+git clone https://git.dr2.site/penguinehis/DragonCoreSSH-NewWEB
+cd DragonCoreSSH-NewWEB
 sudo bash install.sh
 ```
 
@@ -212,8 +212,8 @@ Target distributions:
 Clone the project and run the installer:
 
 ```bash
-git clone <REPOSITORY_URL>
-cd <PROJECT_FOLDER>
+git clone https://git.dr2.site/penguinehis/DragonCoreSSH-NewWEB
+cd DragonCoreSSH-NewWEB
 sudo bash install.sh
 ```
 
