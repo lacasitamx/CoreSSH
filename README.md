@@ -98,6 +98,8 @@ Admin token
 /opt/sshpanel/xray_config.json
 /opt/sshpanel/admin/
 /opt/sshpanel/logs/panel.log
+/opt/sshpanel/update.sh
+/opt/sshpanel/change_admin_password.sh
 /etc/systemd/system/sshpanel.service
 ```
 
@@ -195,15 +197,46 @@ sudo bash /opt/sshpanel/change_admin_password.sh --user admin --generate
 
 O script atualiza o usuário `admin` no PostgreSQL, ativa ele como `superadmin`, salva `ADMIN_PASSWORD` em `/opt/sshpanel/.env` e reinicia o serviço `sshpanel` para recarregar o cache interno de admins.
 
-### Atualização
+### Atualização automática pelo Git
 
-Entre na pasta do projeto atualizado e execute:
+Depois da instalação, o `update.sh` fica salvo em `/opt/sshpanel/update.sh`. Para atualizar o servidor, o dono só precisa executar:
 
 ```bash
-sudo bash update.sh
+sudo bash /opt/sshpanel/update.sh
 ```
 
-O update recompila o binário e atualiza os arquivos do painel web, mantendo as configurações e dados existentes.
+O script baixa automaticamente os arquivos mais recentes do Git:
+
+```text
+https://git.dr2.site/penguinehis/DragonCoreSSH-NewWEB.git
+```
+
+Depois ele recompila o binário e atualiza o painel web e os scripts auxiliares, mantendo as configurações e dados existentes.
+
+O update preserva:
+
+```text
+/opt/sshpanel/.env
+/opt/sshpanel/config.json
+/opt/sshpanel/xray_config.json
+Banco de dados PostgreSQL
+Usuários SSH/Xray
+Chaves SSH
+Certificados
+Logs
+```
+
+Se quiser forçar uma branch/ref específica:
+
+```bash
+sudo UPDATE_REF=main bash /opt/sshpanel/update.sh
+```
+
+Se quiser usar outro repositório:
+
+```bash
+sudo REPO_URL=https://git.dr2.site/penguinehis/DragonCoreSSH-NewWEB.git bash /opt/sshpanel/update.sh
+```
 
 ### API pública CheckUser
 
@@ -385,6 +418,8 @@ Admin token
 /opt/sshpanel/xray_config.json
 /opt/sshpanel/admin/
 /opt/sshpanel/logs/panel.log
+/opt/sshpanel/update.sh
+/opt/sshpanel/change_admin_password.sh
 /etc/systemd/system/sshpanel.service
 ```
 
@@ -482,15 +517,46 @@ sudo bash /opt/sshpanel/change_admin_password.sh --user admin --generate
 
 The script updates the `admin` user in PostgreSQL, enables it as `superadmin`, saves `ADMIN_PASSWORD` in `/opt/sshpanel/.env`, and restarts `sshpanel` so the in-memory admin cache is reloaded.
 
-### Update
+### Automatic Git update
 
-Enter the updated source-code folder and run:
+After installation, `update.sh` is saved at `/opt/sshpanel/update.sh`. To update the server, the owner only needs to run:
 
 ```bash
-sudo bash update.sh
+sudo bash /opt/sshpanel/update.sh
 ```
 
-The update script rebuilds the binary and updates the web panel files while keeping existing configuration and user data.
+The script automatically downloads the latest files from Git:
+
+```text
+https://git.dr2.site/penguinehis/DragonCoreSSH-NewWEB.git
+```
+
+Then it rebuilds the binary and updates the web panel and helper scripts while keeping existing configuration and user data.
+
+The update preserves:
+
+```text
+/opt/sshpanel/.env
+/opt/sshpanel/config.json
+/opt/sshpanel/xray_config.json
+PostgreSQL database
+SSH/Xray users
+SSH keys
+Certificates
+Logs
+```
+
+To force a specific branch/ref:
+
+```bash
+sudo UPDATE_REF=main bash /opt/sshpanel/update.sh
+```
+
+To use another repository:
+
+```bash
+sudo REPO_URL=https://git.dr2.site/penguinehis/DragonCoreSSH-NewWEB.git bash /opt/sshpanel/update.sh
+```
 
 ### Public CheckUser API
 

@@ -35,23 +35,23 @@ case "$OS_ID" in
   ubuntu|debian|linuxmint)
     PKG_UPDATE="apt-get update -qq"
     PKG_INSTALL="DEBIAN_FRONTEND=noninteractive apt-get install -y"
-    PKG_DEPS="curl wget git build-essential postgresql postgresql-contrib ca-certificates unzip openssh-client openssl iptables nftables"
+    PKG_DEPS="curl wget git rsync build-essential postgresql postgresql-contrib ca-certificates unzip openssh-client openssl iptables nftables"
     ;;
   centos|rhel|rocky|almalinux)
     PKG_UPDATE="yum makecache -q"
     PKG_INSTALL="yum install -y"
-    PKG_DEPS="curl wget git gcc make postgresql-server postgresql-contrib ca-certificates unzip openssh-clients openssl iptables nftables"
+    PKG_DEPS="curl wget git rsync gcc make postgresql-server postgresql-contrib ca-certificates unzip openssh-clients openssl iptables nftables"
     ;;
   fedora)
     PKG_UPDATE="dnf makecache -q"
     PKG_INSTALL="dnf install -y"
-    PKG_DEPS="curl wget git gcc make postgresql-server postgresql-contrib ca-certificates unzip openssh-clients openssl iptables nftables"
+    PKG_DEPS="curl wget git rsync gcc make postgresql-server postgresql-contrib ca-certificates unzip openssh-clients openssl iptables nftables"
     ;;
   *)
     warn "Unknown OS '$OS_ID' — attempting apt-get…"
     PKG_UPDATE="apt-get update -qq"
     PKG_INSTALL="DEBIAN_FRONTEND=noninteractive apt-get install -y"
-    PKG_DEPS="curl wget git build-essential postgresql postgresql-contrib ca-certificates unzip openssh-client openssl iptables nftables"
+    PKG_DEPS="curl wget git rsync build-essential postgresql postgresql-contrib ca-certificates unzip openssh-client openssl iptables nftables"
     ;;
 esac
 info "  OS: $OS_ID"
@@ -107,6 +107,11 @@ go build -ldflags="-s -w" -o "$INSTALL_DIR/sshpanel" .
 info "  Binary: $INSTALL_DIR/sshpanel"
 cp -r "$SCRIPT_DIR/admin/"* "$INSTALL_DIR/admin/"
 info "  Admin panel copied"
+if [[ -f "$SCRIPT_DIR/update.sh" ]]; then
+  cp "$SCRIPT_DIR/update.sh" "$INSTALL_DIR/update.sh"
+  chmod 700 "$INSTALL_DIR/update.sh"
+  info "  Git updater copied"
+fi
 if [[ -f "$SCRIPT_DIR/change_admin_password.sh" ]]; then
   cp "$SCRIPT_DIR/change_admin_password.sh" "$INSTALL_DIR/change_admin_password.sh"
   chmod 700 "$INSTALL_DIR/change_admin_password.sh"
