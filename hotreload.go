@@ -292,8 +292,10 @@ func applyFullConfigReload(newCfg *Config) ConfigReloadReport {
 	}
 	setBannerText(bt)
 
-	// Default per-connection bandwidth limits (picked up by new connections)
+	// Default per-connection bandwidth limits and SSH inactivity cleanup
+	// (picked up by new connections).
 	setDefaultLimits(newCfg.DefaultLimitMbpsUp, newCfg.DefaultLimitMbpsDown)
+	setSSHIdleTimeoutFromConfig(newCfg.SSHIdleTimeout)
 
 	// Quiet logging / user count display
 	if newCfg.Quiet {
