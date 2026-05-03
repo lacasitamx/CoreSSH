@@ -11,11 +11,44 @@ error() { echo -e "${RED}[x]${NC} $*"; exit 1; }
 # ── config ──────────────────────────────────────────────────────────────────
 INSTALL_DIR="/opt/sshpanel"
 SERVICE_NAME="sshpanel"
+LOG_TMPFS_SIZE="${LOG_TMPFS_SIZE:-15m}"
+PANEL_LOG_MAX_BYTES="${PANEL_LOG_MAX_BYTES:-1048576}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GO_VERSION="${GO_VERSION:-$(awk '$1 == "go" {print $2; exit}' "$SCRIPT_DIR/go.mod" 2>/dev/null || echo "1.22.5")}"
 # ────────────────────────────────────────────────────────────────────────────
 
 [[ $EUID -ne 0 ]] && error "Run as root: sudo bash $0"
+
+ensure_log_tmpfs_mount() {
+  local log_dir="${INSTALL_DIR}/logs"
+  local opts="rw,nosuid,nodev,noexec,noatime,nofail,size=${LOG_TMPFS_SIZE},mode=0755"
+  local tmp_fstab
+
+  mkdir -p "$log_dir"
+
+  if [[ -f /etc/fstab ]]; then
+    cp /etc/fstab "/etc/fstab.sshpanel.bak.$(date +%s)" 2>/dev/null || true
+    tmp_fstab="$(mktemp)"
+    awk -v mp="$log_dir" '!(($1 == "tmpfs") && ($2 == mp) && ($3 == "tmpfs")) {print}' /etc/fstab > "$tmp_fstab"
+    printf 'tmpfs %s tmpfs %s 0 0\n' "$log_dir" "$opts" >> "$tmp_fstab"
+    cat "$tmp_fstab" > /etc/fstab
+    rm -f "$tmp_fstab"
+    info "  Log RAM disk automount saved in /etc/fstab: $log_dir (${LOG_TMPFS_SIZE})"
+  else
+    warn "  /etc/fstab not found; service startup fallback will mount $log_dir as tmpfs"
+  fi
+
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  if mountpoint -q "$log_dir"; then
+    mount -o "remount,size=${LOG_TMPFS_SIZE},mode=0755" "$log_dir" >/dev/null 2>&1 || true
+  else
+    mount "$log_dir" >/dev/null 2>&1 || mount -t tmpfs -o "size=${LOG_TMPFS_SIZE},mode=0755" tmpfs "$log_dir" >/dev/null 2>&1 || \
+      warn "  Could not mount $log_dir as tmpfs now; systemd service will try again on start"
+  fi
+
+  touch "$log_dir/panel.log" >/dev/null 2>&1 || true
+  chmod 0644 "$log_dir/panel.log" >/dev/null 2>&1 || true
+}
 
 echo -e "\n${GREEN}══════════════════════════════════════════${NC}"
 echo -e "${GREEN}   SSH Panel + Xray-core  ·  Installer     ${NC}"
@@ -96,6 +129,7 @@ go version
 # ── 4. Directory layout ──────────────────────────────────────────────────────
 info "[4/9] Setting up ${INSTALL_DIR}…"
 mkdir -p "$INSTALL_DIR/admin" "$INSTALL_DIR/keys" "$INSTALL_DIR/logs"
+ensure_log_tmpfs_mount
 
 # ── 5. Build SSH panel binary ────────────────────────────────────────────────
 info "[5/9] Building SSH Panel binary…"
@@ -414,7 +448,7 @@ info "[10/10] Creating systemd service '${SERVICE_NAME}'…"
 cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<EOF
 [Unit]
 Description=SSH Panel + Xray-core Server
-After=network.target postgresql.service sshpanel-dnstt-redirect.service
+After=local-fs.target network.target postgresql.service sshpanel-dnstt-redirect.service
 Wants=postgresql.service sshpanel-dnstt-redirect.service
 
 [Service]
@@ -422,6 +456,10 @@ Type=simple
 WorkingDirectory=${INSTALL_DIR}
 EnvironmentFile=${INSTALL_DIR}/.env
 Environment=PANEL_LOG_FILE=${INSTALL_DIR}/logs/panel.log
+Environment=PANEL_LOG_MAX_BYTES=${PANEL_LOG_MAX_BYTES}
+ExecStartPre=/usr/bin/mkdir -p ${INSTALL_DIR}/logs
+ExecStartPre=/bin/sh -c '/usr/bin/mountpoint -q ${INSTALL_DIR}/logs || /usr/bin/mount -t tmpfs -o size=${LOG_TMPFS_SIZE},mode=0755 tmpfs ${INSTALL_DIR}/logs || true'
+ExecStartPre=/bin/sh -c '/usr/bin/touch ${INSTALL_DIR}/logs/panel.log && /usr/bin/chmod 0644 ${INSTALL_DIR}/logs/panel.log || true'
 ExecStart=${INSTALL_DIR}/sshpanel -config ${INSTALL_DIR}/config.json
 Restart=always
 RestartSec=5

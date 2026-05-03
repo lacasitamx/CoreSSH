@@ -103,6 +103,8 @@ Admin token
 /etc/systemd/system/sshpanel.service
 ```
 
+O instalador monta `/opt/sshpanel/logs` como tmpfs de 15 MiB quando possível, para reduzir gravações no SD card. O `panel.log` é limpo automaticamente quando passa de 1 MiB, e também pode ser limpo manualmente pela aba Logs do painel.
+
 ### Portas padrão
 
 ```text
@@ -488,6 +490,8 @@ Follow panel log file:
 ```bash
 tail -f /opt/sshpanel/logs/panel.log
 ```
+
+When possible, `/opt/sshpanel/logs` is mounted as a 15 MiB tmpfs RAM disk by the service. `panel.log` is automatically cleaned after it exceeds 1 MiB, and the Logs tab also has a manual clean button.
 
 Restart service:
 

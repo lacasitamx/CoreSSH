@@ -26,6 +26,8 @@ error() { echo -e "${RED}[x]${NC} $*"; exit 1; }
 # Config
 INSTALL_DIR="${INSTALL_DIR:-/opt/sshpanel}"
 SERVICE_NAME="${SERVICE_NAME:-sshpanel}"
+LOG_TMPFS_SIZE="${LOG_TMPFS_SIZE:-15m}"
+PANEL_LOG_MAX_BYTES="${PANEL_LOG_MAX_BYTES:-1048576}"
 REPO_URL="${REPO_URL:-https://git.dr2.site/penguinehis/DragonCoreSSH-NewWEB.git}"
 UPDATE_REF="${UPDATE_REF:-}"
 SOURCE_CACHE_DIR="${SOURCE_CACHE_DIR:-${INSTALL_DIR}/source}"
@@ -42,6 +44,37 @@ echo -e "${GREEN}==========================================${NC}\n"
 # Helpers
 need_cmd() {
   command -v "$1" >/dev/null 2>&1 || error "Required command not found: $1"
+}
+
+ensure_log_tmpfs_mount() {
+  local log_dir="${INSTALL_DIR}/logs"
+  local opts="rw,nosuid,nodev,noexec,noatime,nofail,size=${LOG_TMPFS_SIZE},mode=0755"
+  local tmp_fstab
+
+  mkdir -p "$log_dir"
+
+  if [[ -f /etc/fstab ]]; then
+    cp /etc/fstab "/etc/fstab.sshpanel.bak.$(date +%s)" 2>/dev/null || true
+    tmp_fstab="$(mktemp)"
+    awk -v mp="$log_dir" '!(($1 == "tmpfs") && ($2 == mp) && ($3 == "tmpfs")) {print}' /etc/fstab > "$tmp_fstab"
+    printf 'tmpfs %s tmpfs %s 0 0\n' "$log_dir" "$opts" >> "$tmp_fstab"
+    cat "$tmp_fstab" > /etc/fstab
+    rm -f "$tmp_fstab"
+    info "  Log RAM disk automount saved in /etc/fstab: $log_dir (${LOG_TMPFS_SIZE})"
+  else
+    warn "  /etc/fstab not found; service startup fallback will mount $log_dir as tmpfs"
+  fi
+
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  if mountpoint -q "$log_dir"; then
+    mount -o "remount,size=${LOG_TMPFS_SIZE},mode=0755" "$log_dir" >/dev/null 2>&1 || true
+  else
+    mount "$log_dir" >/dev/null 2>&1 || mount -t tmpfs -o "size=${LOG_TMPFS_SIZE},mode=0755" tmpfs "$log_dir" >/dev/null 2>&1 || \
+      warn "  Could not mount $log_dir as tmpfs now; systemd service will try again on start"
+  fi
+
+  touch "$log_dir/panel.log" >/dev/null 2>&1 || true
+  chmod 0644 "$log_dir/panel.log" >/dev/null 2>&1 || true
 }
 
 install_git_if_missing() {
@@ -196,6 +229,7 @@ apply_update() {
   info "[5/7] Applying update..."
 
   mkdir -p "$INSTALL_DIR/admin" "$INSTALL_DIR/logs" "$INSTALL_DIR/certs"
+  ensure_log_tmpfs_mount
 
   if [[ -f "$INSTALL_DIR/sshpanel" ]]; then
     cp "$INSTALL_DIR/sshpanel" "$INSTALL_DIR/sshpanel.bak"
@@ -344,10 +378,17 @@ EOF2
   cat > /etc/systemd/system/sshpanel.service.d/override.conf <<EOF2
 [Unit]
 Wants=sshpanel-dnstt-redirect.service
-After=sshpanel-dnstt-redirect.service
+After=local-fs.target sshpanel-dnstt-redirect.service
 
 [Service]
 Environment=PANEL_LOG_FILE=${INSTALL_DIR}/logs/panel.log
+Environment=PANEL_LOG_MAX_BYTES=${PANEL_LOG_MAX_BYTES}
+ExecStartPre=
+ExecStartPre=/usr/bin/mkdir -p ${INSTALL_DIR}/logs
+ExecStartPre=/bin/sh -c '/usr/bin/mountpoint -q ${INSTALL_DIR}/logs || /usr/bin/mount -t tmpfs -o size=${LOG_TMPFS_SIZE},mode=0755 tmpfs ${INSTALL_DIR}/logs || true'
+ExecStartPre=/bin/sh -c '/usr/bin/touch ${INSTALL_DIR}/logs/panel.log && /usr/bin/chmod 0644 ${INSTALL_DIR}/logs/panel.log || true'
+StandardOutput=append:${INSTALL_DIR}/logs/panel.log
+StandardError=append:${INSTALL_DIR}/logs/panel.log
 EOF2
 
   systemctl daemon-reload

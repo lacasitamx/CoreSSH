@@ -102,6 +102,44 @@ tbody tr:hover{background:rgba(15,23,42,.85);}
 /* ── Xray log / config editor ── */
 .code-area{width:100%;background:rgba(15,23,42,.9);color:#e5e7eb;border:1px solid rgba(55,65,81,.9);border-radius:8px;padding:10px;font-family:monospace;font-size:.7rem;resize:vertical;outline:none;}
 pre.log-box{background:rgba(15,23,42,.9);color:#9ca3af;border:1px solid rgba(55,65,81,.9);border-radius:8px;padding:10px;font-size:.68rem;overflow-y:auto;max-height:180px;white-space:pre-wrap;word-break:break-all;}
+
+/* ── Mobile hardening ──
+   Keep the shell/cards inside the phone viewport and let wide tables scroll
+   inside their own card instead of pushing the whole panel sideways. */
+html,body{width:100%;max-width:100%;overflow-x:hidden;}
+.app,.shell,.tab-pane,.grid2,.grid2>*,.card,.tbl-wrap,.form-grid,.field,.metric{min-width:0;max-width:100%;}
+.card-title{flex-wrap:wrap;min-width:0;}
+.card-hdr>*{min-width:0;}
+.field input,.field select,.field textarea,.ov-field,.code-area{max-width:100%;min-width:0;}
+
+@media(max-width:640px){
+  .app{padding:8px;}
+  .shell{width:100%;padding:12px;border-radius:16px;overflow:hidden;}
+  header{align-items:flex-start;}
+  header nav{order:2;width:100%;flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;padding-bottom:4px;-webkit-overflow-scrolling:touch;scrollbar-width:thin;}
+  .tab-btn{flex:0 0 auto;padding:5px 10px;}
+  .hright{order:3;width:100%;flex-wrap:wrap;}
+  .grid2{display:block;}
+  .grid2>.card+.card,.grid2>div+.card,.grid2>.card+div,.grid2>div+div{margin-top:12px;}
+  .card{width:100%;padding:12px;overflow:hidden;}
+  .card-hdr{align-items:flex-start;}
+  .card-hdr>div[style*="display:flex"],.card-hdr .form-actions{flex-wrap:wrap;}
+  .metrics{display:grid;grid-template-columns:1fr;gap:8px;}
+  .metric{width:100%;}
+  .tbl-wrap{width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:4px;}
+  .tbl-wrap table{width:max-content;min-width:100%;}
+  table{font-size:.7rem;}
+  th,td{padding:6px 8px;}
+  .statusbar{display:block;}
+  .statusbar>span{display:block;margin-top:3px;}
+  .field-row{flex-wrap:wrap;}
+  .field-row input{flex:1 1 160px;min-width:0;}
+  .field-row .btn{flex:0 0 auto;}
+  /* Override inline 2-column grids in Xray/TLS forms on phones. */
+  .form-grid[style*="grid-template-columns"],
+  #wzVlessFields,#wzSSFields,#wzCertSrcFile,#wzCertSrcPaste>div,
+  #tlsLEFields,#tlsCustomFields,#tlsPasteFields .form-grid{grid-template-columns:1fr!important;}
+}
 </style>
 </head>
 <body>
@@ -131,6 +169,7 @@ pre.log-box{background:rgba(15,23,42,.9);color:#9ca3af;border:1px solid rgba(55,
       <button class="tab-btn superadmin-only hidden" data-tab="xray">Xray</button>
       <button class="tab-btn superadmin-only hidden" data-tab="resellers">Resellers</button>
       <button class="tab-btn superadmin-only hidden" data-tab="stats">Stats</button>
+      <button class="tab-btn superadmin-only hidden" data-tab="vnstat">VnStat</button>
       <button class="tab-btn superadmin-only hidden" data-tab="logs">Logs</button>
       <button class="tab-btn superadmin-only hidden" data-tab="server">Server Config</button>
     </nav>
@@ -522,17 +561,60 @@ pre.log-box{background:rgba(15,23,42,.9);color:#9ca3af;border:1px solid rgba(55,
         </div>
       </div>
       <div class="card">
-        <div class="card-hdr"><div class="card-title">Interfaces <span class="chip">rx/tx Mbps</span></div></div>
+        <div class="card-hdr">
+          <div class="card-title">Interfaces <span class="chip">rx/tx Mbps</span><span class="chip warn">30-day rolling</span></div>
+          <button class="btn btn-danger btn-sm" id="resetIfaceStatsBtn" type="button">Clean usage</button>
+        </div>
         <div class="tbl-wrap">
           <table>
             <thead><tr><th>Interface</th><th>Rx Mbps</th><th>Tx Mbps</th><th>Rx Total</th><th>Tx Total</th></tr></thead>
             <tbody id="ifaceBody"></tbody>
           </table>
         </div>
-        <div class="statusbar"><span id="ifaceSummary"></span></div>
+        <div class="statusbar"><span id="ifaceSummary"></span><span class="hint">Totals can be cleaned here and auto-clean every 30 days. VnStat history is separate.</span></div>
       </div>
     </div>
   </div><!-- /tab-stats -->
+
+  <!-- ═══════════ VnStat Tab (superadmin only) ═══════════ -->
+  <div class="tab-pane" id="tab-vnstat">
+    <div class="card">
+      <div class="card-hdr">
+        <div class="card-title">VnStat Usage <span class="chip">daily / monthly</span></div>
+        <div class="form-actions" style="margin-top:0">
+          <button class="btn btn-ghost btn-sm" id="reloadVnstatBtn" type="button">Refresh</button>
+          <button class="btn btn-danger btn-sm" id="resetVnstatBtn" type="button">Clean VnStat history</button>
+        </div>
+      </div>
+      <div class="metrics">
+        <div class="metric"><div class="m-label">Today total</div><div class="m-val" id="vnTodayTotal">--</div></div>
+        <div class="metric"><div class="m-label">This month total</div><div class="m-val" id="vnMonthTotal">--</div></div>
+        <div class="metric"><div class="m-label">Interfaces tracked</div><div class="m-val" id="vnIfaceCount">--</div></div>
+      </div>
+      <div class="statusbar"><span id="vnstatStatus">VnStat history does not auto-clean. Use the button when you want to reset it.</span></div>
+    </div>
+
+    <div class="grid2" style="margin-top:12px;">
+      <div class="card">
+        <div class="card-hdr"><div class="card-title">Daily usage <span class="chip">last 31 days</span></div></div>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Day</th><th>Interface</th><th>Rx</th><th>Tx</th><th>Total</th></tr></thead>
+            <tbody id="vnstatDailyBody"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-hdr"><div class="card-title">Monthly usage <span class="chip">last 12 months</span></div></div>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Month</th><th>Interface</th><th>Rx</th><th>Tx</th><th>Total</th></tr></thead>
+            <tbody id="vnstatMonthlyBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div><!-- /tab-vnstat -->
 
   <!-- ═══════════ Logs Tab (superadmin only) ═══════════ -->
   <div class="tab-pane" id="tab-logs">
@@ -546,6 +628,7 @@ pre.log-box{background:rgba(15,23,42,.9);color:#9ca3af;border:1px solid rgba(55,
             <option value="xray">Xray</option>
           </select>
           <button class="btn btn-sm" type="button" onclick="loadSystemLogs()">Refresh</button>
+          <button class="btn btn-danger btn-sm" type="button" id="clearPanelLogBtn">Clean panel log</button>
         </div>
       </div>
       <pre class="log-box" id="systemLogBox" style="max-height:430px;min-height:260px;">Select a log source and click Refresh.</pre>
@@ -858,6 +941,17 @@ const memDetail  = document.getElementById("memDetail");
 const ifaceBody  = document.getElementById("ifaceBody");
 const ifaceSummary = document.getElementById("ifaceSummary");
 const statsUpdated = document.getElementById("statsUpdated");
+const resetIfaceStatsBtn = document.getElementById("resetIfaceStatsBtn");
+
+// VnStat
+const vnstatDailyBody = document.getElementById("vnstatDailyBody");
+const vnstatMonthlyBody = document.getElementById("vnstatMonthlyBody");
+const vnstatStatus = document.getElementById("vnstatStatus");
+const vnTodayTotal = document.getElementById("vnTodayTotal");
+const vnMonthTotal = document.getElementById("vnMonthTotal");
+const vnIfaceCount = document.getElementById("vnIfaceCount");
+const reloadVnstatBtn = document.getElementById("reloadVnstatBtn");
+const resetVnstatBtn = document.getElementById("resetVnstatBtn");
 
 // ─── API helper ───────────────────────────────────────────────────────────────
 async function api(path, opts = {}) {
@@ -1551,14 +1645,99 @@ async function loadStats() {
   } catch (e) { if (e.message==="auth") doAuthError(); }
 }
 
+resetIfaceStatsBtn?.addEventListener("click", resetInterfaceStats);
+
+async function resetInterfaceStats() {
+  if (!confirm("Clean the live Interface totals now? This does not delete VnStat daily/monthly history.")) return;
+  resetIfaceStatsBtn.disabled = true;
+  ifaceSummary.textContent = "Cleaning interface totals…";
+  try {
+    const res = await api("/api/stats/interfaces/reset", { method:"POST" });
+    if (!res.ok) throw new Error(await res.text());
+    ifaceSummary.textContent = "Interface totals cleaned. Auto-clean remains every 30 days.";
+    loadStats();
+  } catch (e) {
+    if (e.message === "auth") doAuthError();
+    else ifaceSummary.textContent = "Error cleaning totals: " + e.message;
+  } finally {
+    resetIfaceStatsBtn.disabled = false;
+  }
+}
+
+// ─── VnStat ───────────────────────────────────────────────────────────────────
+document.querySelector("[data-tab='vnstat']")?.addEventListener("click", loadVnstat);
+reloadVnstatBtn?.addEventListener("click", loadVnstat);
+resetVnstatBtn?.addEventListener("click", resetVnstatHistory);
+
+function renderVnstatRows(body, rows, emptyLabel) {
+  body.innerHTML = "";
+  if (!rows.length) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td colspan="5" class="hint">${emptyLabel}</td>`;
+    body.appendChild(tr);
+    return;
+  }
+  rows.forEach(r => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${r.period || "--"}</td><td>${r.iface || "--"}</td><td>${fmtBytes(r.rx_bytes||0)}</td><td>${fmtBytes(r.tx_bytes||0)}</td><td>${fmtBytes(r.total_bytes||((r.rx_bytes||0)+(r.tx_bytes||0)))}</td>`;
+    body.appendChild(tr);
+  });
+}
+
+async function loadVnstat() {
+  vnstatStatus.textContent = "Loading VnStat usage…";
+  try {
+    const res = await api("/api/vnstat?days=31&months=12");
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    const daily = Array.isArray(data.daily) ? data.daily : [];
+    const monthly = Array.isArray(data.monthly) ? data.monthly : [];
+    renderVnstatRows(vnstatDailyBody, daily, "No daily usage recorded yet.");
+    renderVnstatRows(vnstatMonthlyBody, monthly, "No monthly usage recorded yet.");
+
+    const today = new Date().toISOString().slice(0,10);
+    const month = today.slice(0,7);
+    const todayTotal = daily.filter(r => r.period === today).reduce((sum, r) => sum + (r.total_bytes||0), 0);
+    const monthTotal = monthly.filter(r => r.period === month).reduce((sum, r) => sum + (r.total_bytes||0), 0);
+    const ifaces = new Set([...daily, ...monthly].map(r => r.iface).filter(Boolean));
+    vnTodayTotal.textContent = fmtBytes(todayTotal);
+    vnMonthTotal.textContent = fmtBytes(monthTotal);
+    vnIfaceCount.textContent = String(ifaces.size || 0);
+    vnstatStatus.textContent = "Updated: " + new Date().toLocaleTimeString() + " · history is kept until manually cleaned.";
+  } catch (e) {
+    if (e.message === "auth") doAuthError();
+    else vnstatStatus.textContent = "Error loading VnStat usage: " + e.message;
+  }
+}
+
+async function resetVnstatHistory() {
+  if (!confirm("Clean all VnStat daily/monthly usage history? This does not reset the live Interface totals.")) return;
+  resetVnstatBtn.disabled = true;
+  vnstatStatus.textContent = "Cleaning VnStat history…";
+  try {
+    const res = await api("/api/vnstat/reset", { method:"POST" });
+    if (!res.ok) throw new Error(await res.text());
+    vnstatStatus.textContent = "VnStat history cleaned.";
+    loadVnstat();
+  } catch (e) {
+    if (e.message === "auth") doAuthError();
+    else vnstatStatus.textContent = "Error cleaning VnStat history: " + e.message;
+  } finally {
+    resetVnstatBtn.disabled = false;
+  }
+}
+
 // ─── Logs ─────────────────────────────────────────────────────────────────────
 document.querySelector("[data-tab='logs']")?.addEventListener("click", loadSystemLogs);
 document.getElementById("logSource")?.addEventListener("change", loadSystemLogs);
+document.getElementById("clearPanelLogBtn")?.addEventListener("click", clearPanelLog);
 
 async function loadSystemLogs() {
   const box = document.getElementById("systemLogBox");
   const st = document.getElementById("systemLogStatus");
   const source = document.getElementById("logSource")?.value || "panel";
+  const clearBtn = document.getElementById("clearPanelLogBtn");
+  if (clearBtn) clearBtn.disabled = source !== "panel";
   st.textContent = "Loading…";
   try {
     const res = await api(`/api/system/logs?source=${encodeURIComponent(source)}&lines=500`);
@@ -1571,6 +1750,22 @@ async function loadSystemLogs() {
   } catch (e) {
     if (e.message === "auth") doAuthError();
     else st.textContent = "Error: " + e.message;
+  }
+}
+
+async function clearPanelLog() {
+  const st = document.getElementById("systemLogStatus");
+  if (!confirm("Clean the panel log now? Logs are already auto-cleaned after 1 MiB.")) return;
+  st.textContent = "Cleaning panel log…";
+  try {
+    const res = await api("/api/system/logs/reset", { method:"POST" });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    st.textContent = `Panel log cleaned · ${data.path || "panel.log"} · max ${fmtBytes(data.max_bytes || 1048576)}`;
+    await loadSystemLogs();
+  } catch (e) {
+    if (e.message === "auth") doAuthError();
+    else st.textContent = "Error cleaning panel log: " + e.message;
   }
 }
 

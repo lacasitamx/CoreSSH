@@ -45,10 +45,7 @@ func handleSystemLogs(w http.ResponseWriter, r *http.Request) {
 		resp.Lines = limitLines(xrayLogBuf.snapshot(), limit)
 	default:
 		resp.Source = "panel"
-		path := strings.TrimSpace(os.Getenv("PANEL_LOG_FILE"))
-		if path == "" {
-			path = defaultPanelLogFile
-		}
+		path := panelLogFilePath()
 		resp.Path = path
 		lines, err := tailTextFile(path, limit)
 		if err != nil {

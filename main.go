@@ -564,6 +564,7 @@ type IfaceTotals struct {
 	LastKernelRxBytes uint64
 	LastKernelTxBytes uint64
 	UpdatedAt         time.Time
+	ResetAt           time.Time
 }
 
 type IfaceTotalsManager struct {
@@ -582,10 +583,26 @@ func (tm *IfaceTotalsManager) ApplyKernel(iface string, kRx, kTx uint64) (totalR
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
+	now := time.Now()
 	st, ok := tm.m[iface]
 	if !ok {
-		st = &IfaceTotals{Iface: iface}
+		st = &IfaceTotals{Iface: iface, ResetAt: now}
 		tm.m[iface] = st
+	}
+	if st.ResetAt.IsZero() {
+		st.ResetAt = now
+	}
+
+	// The live interface counters in the Stats tab are a rolling 30-day total.
+	// This reset does not touch the vnstat-style daily/monthly history tables.
+	if now.Sub(st.ResetAt) >= 30*24*time.Hour {
+		st.TotalRxBytes = 0
+		st.TotalTxBytes = 0
+		st.LastKernelRxBytes = kRx
+		st.LastKernelTxBytes = kTx
+		st.ResetAt = now
+		st.UpdatedAt = now
+		return 0, 0
 	}
 
 	// RX
@@ -609,8 +626,31 @@ func (tm *IfaceTotalsManager) ApplyKernel(iface string, kRx, kTx uint64) (totalR
 	}
 	st.LastKernelTxBytes = kTx
 
-	st.UpdatedAt = time.Now()
+	st.UpdatedAt = now
 	return st.TotalRxBytes, st.TotalTxBytes
+}
+
+func (tm *IfaceTotalsManager) ResetAllToKernel(netMap map[string]ifaceCounters) []IfaceTotals {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	now := time.Now()
+	tm.m = make(map[string]*IfaceTotals, len(netMap))
+	out := make([]IfaceTotals, 0, len(netMap))
+	for iface, ctrs := range netMap {
+		st := &IfaceTotals{
+			Iface:             iface,
+			TotalRxBytes:      0,
+			TotalTxBytes:      0,
+			LastKernelRxBytes: ctrs.RxBytes,
+			LastKernelTxBytes: ctrs.TxBytes,
+			UpdatedAt:         now,
+			ResetAt:           now,
+		}
+		tm.m[iface] = st
+		out = append(out, *st)
+	}
+	return out
 }
 
 func (tm *IfaceTotalsManager) Load(rows []IfaceTotals) {
@@ -706,13 +746,26 @@ func startStatsCollector() {
 					}
 					if prevNet != nil && dt > 0 {
 						if prev, ok := prevNet[name]; ok {
+							var rxDelta, txDelta uint64
 							if ctrs.RxBytes >= prev.RxBytes {
-								rxDelta := ctrs.RxBytes - prev.RxBytes
-								st.RxMbps = float64(rxDelta*8) / dt / 1_000_000
+								rxDelta = ctrs.RxBytes - prev.RxBytes
+							} else {
+								// kernel counter reset or wrap
+								rxDelta = ctrs.RxBytes
 							}
 							if ctrs.TxBytes >= prev.TxBytes {
-								txDelta := ctrs.TxBytes - prev.TxBytes
+								txDelta = ctrs.TxBytes - prev.TxBytes
+							} else {
+								txDelta = ctrs.TxBytes
+							}
+							if rxDelta > 0 {
+								st.RxMbps = float64(rxDelta*8) / dt / 1_000_000
+							}
+							if txDelta > 0 {
 								st.TxMbps = float64(txDelta*8) / dt / 1_000_000
+							}
+							if statsStore != nil && (rxDelta > 0 || txDelta > 0) {
+								addPendingIfaceUsage(name, rxDelta, txDelta)
 							}
 						}
 					}
@@ -746,12 +799,18 @@ func startStatsCollector() {
 				Interfaces: interfaces,
 			})
 
-			// Persist interface totals periodically (optional).
+			// Persist interface totals and vnstat-style usage periodically (optional).
 			if flushTicker != nil && statsStore != nil && ifaceTotalsMgr != nil {
 				select {
 				case <-flushTicker.C:
 					ctx := context.Background()
 					_ = statsStore.UpsertIfaceTotals(ctx, ifaceTotalsMgr.Snapshot())
+					if deltas := flushPendingIfaceUsage(now); len(deltas) > 0 {
+						if err := statsStore.UpsertIfaceUsageDeltas(ctx, deltas); err != nil {
+							log.Printf("vnstat usage flush failed: %v", err)
+							restorePendingIfaceUsage(deltas)
+						}
+					}
 				default:
 				}
 			}
@@ -1123,21 +1182,29 @@ func (s *Store) DeleteUser(ctx context.Context, username string) error {
 // ---------- Optional persistence for interface totals ----------
 
 func (s *Store) EnsureIfaceTotalsTable(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, `
-		CREATE TABLE IF NOT EXISTS ssh_iface_totals (
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS ssh_iface_totals (
 			iface TEXT PRIMARY KEY,
 			total_rx_bytes BIGINT NOT NULL DEFAULT 0,
 			total_tx_bytes BIGINT NOT NULL DEFAULT 0,
 			last_kernel_rx_bytes BIGINT NOT NULL DEFAULT 0,
 			last_kernel_tx_bytes BIGINT NOT NULL DEFAULT 0,
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)`)
-	return err
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			reset_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`ALTER TABLE ssh_iface_totals ADD COLUMN IF NOT EXISTS reset_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`,
+	}
+	for _, stmt := range stmts {
+		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) LoadIfaceTotals(ctx context.Context) ([]IfaceTotals, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT iface, total_rx_bytes, total_tx_bytes, last_kernel_rx_bytes, last_kernel_tx_bytes, updated_at
+		SELECT iface, total_rx_bytes, total_tx_bytes, last_kernel_rx_bytes, last_kernel_tx_bytes, updated_at, reset_at
 		FROM ssh_iface_totals`)
 	if err != nil {
 		return nil, err
@@ -1147,11 +1214,12 @@ func (s *Store) LoadIfaceTotals(ctx context.Context) ([]IfaceTotals, error) {
 	out := []IfaceTotals{}
 	for rows.Next() {
 		var r IfaceTotals
-		var updated time.Time
-		if err := rows.Scan(&r.Iface, &r.TotalRxBytes, &r.TotalTxBytes, &r.LastKernelRxBytes, &r.LastKernelTxBytes, &updated); err != nil {
+		var updated, resetAt time.Time
+		if err := rows.Scan(&r.Iface, &r.TotalRxBytes, &r.TotalTxBytes, &r.LastKernelRxBytes, &r.LastKernelTxBytes, &updated, &resetAt); err != nil {
 			return nil, err
 		}
 		r.UpdatedAt = updated
+		r.ResetAt = resetAt
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {
@@ -1166,16 +1234,21 @@ func (s *Store) UpsertIfaceTotals(ctx context.Context, rows []IfaceTotals) error
 	}
 	// Simple loop (small N: number of interfaces). Keeps CPU/DB overhead minimal.
 	for _, r := range rows {
+		resetAt := r.ResetAt
+		if resetAt.IsZero() {
+			resetAt = time.Now()
+		}
 		_, err := s.db.ExecContext(ctx, `
-			INSERT INTO ssh_iface_totals (iface, total_rx_bytes, total_tx_bytes, last_kernel_rx_bytes, last_kernel_tx_bytes, updated_at)
-			VALUES ($1, $2, $3, $4, $5, NOW())
+			INSERT INTO ssh_iface_totals (iface, total_rx_bytes, total_tx_bytes, last_kernel_rx_bytes, last_kernel_tx_bytes, updated_at, reset_at)
+			VALUES ($1, $2, $3, $4, $5, NOW(), $6)
 			ON CONFLICT (iface) DO UPDATE
 			SET total_rx_bytes = EXCLUDED.total_rx_bytes,
 				total_tx_bytes = EXCLUDED.total_tx_bytes,
 				last_kernel_rx_bytes = EXCLUDED.last_kernel_rx_bytes,
 				last_kernel_tx_bytes = EXCLUDED.last_kernel_tx_bytes,
-				updated_at = NOW()`,
-			r.Iface, r.TotalRxBytes, r.TotalTxBytes, r.LastKernelRxBytes, r.LastKernelTxBytes)
+				updated_at = NOW(),
+				reset_at = EXCLUDED.reset_at`,
+			r.Iface, r.TotalRxBytes, r.TotalTxBytes, r.LastKernelRxBytes, r.LastKernelTxBytes, resetAt)
 		if err != nil {
 			return err
 		}
@@ -1213,7 +1286,11 @@ func startAdminAPI(store *Store, addr string, adminDir string) {
 
 	// Superadmin-only: server stats + DNSTT
 	mux.Handle("/api/stats", saSession(http.HandlerFunc(handleStats)))
+	mux.Handle("/api/stats/interfaces/reset", saSession(http.HandlerFunc(handleResetInterfaceStats(store))))
+	mux.Handle("/api/vnstat", saSession(http.HandlerFunc(handleVnstat(store))))
+	mux.Handle("/api/vnstat/reset", saSession(http.HandlerFunc(handleVnstatReset(store))))
 	mux.Handle("/api/system/logs", saSession(http.HandlerFunc(handleSystemLogs)))
+	mux.Handle("/api/system/logs/reset", saSession(http.HandlerFunc(handleSystemLogsReset)))
 	mux.Handle("/api/dnstt", saSession(http.HandlerFunc(handleDnsttStats)))
 	mux.Handle("/api/dnstt/logs", saSession(http.HandlerFunc(handleDnsttLogs)))
 
@@ -2457,6 +2534,9 @@ func main() {
 		} else {
 			startXrayClientExpiryChecker(store)
 		}
+		if err := store.EnsureIfaceUsageTables(ctx); err != nil {
+			log.Printf("vnstat usage tables disabled: %v", err)
+		}
 		if err := store.EnsureIfaceTotalsTable(ctx); err == nil {
 			rows, err2 := store.LoadIfaceTotals(ctx)
 			if err2 == nil {
@@ -2632,6 +2712,7 @@ func main() {
 	if quietLogs {
 		log.SetOutput(io.Discard)
 	}
+	startPanelLogLimiter()
 
 	// Initialise default per-connection bandwidth limits and SSH inactivity cleanup.
 	setDefaultLimits(cfg.DefaultLimitMbpsUp, cfg.DefaultLimitMbpsDown)
