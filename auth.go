@@ -536,10 +536,10 @@ func handleMe(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.Role == RoleReseller {
 		if u, ok := adminUsers.get(s.Username); ok {
-			resp["max_users"]  = u.MaxUsers
+			resp["max_users"] = u.MaxUsers
 			resp["used_users"] = countOwnedUsers(s.Username)
 			resp["expires_at"] = u.ExpiresAt
-			resp["is_active"]  = u.IsActive
+			resp["is_active"] = u.IsActive
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -633,8 +633,8 @@ func handleCreateReseller(store *Store) http.HandlerFunc {
 		if p.Password != "" {
 			u.PasswordHash = hashAdminPassword(p.Password)
 		}
-		u.MaxUsers  = p.MaxUsers
-		u.IsActive  = p.IsActive
+		u.MaxUsers = p.MaxUsers
+		u.IsActive = p.IsActive
 		u.ExpiresAt = nil
 		if p.ExpiresAt != "" {
 			t, err := time.Parse(time.RFC3339, p.ExpiresAt)

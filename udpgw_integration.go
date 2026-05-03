@@ -40,23 +40,30 @@ func stopUDPGW() {
 	}
 }
 
+func udpgwRunning() bool {
+	udpgwMu.Lock()
+	defer udpgwMu.Unlock()
+	return udpgwLn != nil
+}
+
 // startUDPGW starts the integrated UDP gateway if cfg is non‑nil and
 // cfg.Listen is non‑empty.  It applies default values to any zero
 // configuration fields and converts duration strings to time.Duration.
 // The server runs in a goroutine; any fatal errors are logged and
 // prevent the gateway from starting, but do not terminate the main
 // process.
-func startUDPGW(cfg *UDPGWConfig) {
+func startUDPGW(cfg *UDPGWConfig) error {
 	if cfg == nil {
-		return
+		return nil
 	}
 	// Default the listen address to the standalone default (0.0.0.0:7400) if
 	// unspecified.  This matches the behaviour of the original
 	// badvpn-udpgw program, which listens on all interfaces by default.
 	listenAddr := cfg.Listen
 	if listenAddr == "" {
-		listenAddr = "0.0.0.0:7400"
+		listenAddr = defaultUDPGWListen
 	}
+	cfg.Listen = listenAddr
 	// Apply defaults for numeric fields if zero.
 	c := &internalUDPGWConfig{}
 	c.listen = listenAddr
@@ -135,7 +142,7 @@ func startUDPGW(cfg *UDPGWConfig) {
 	ln, err := net.Listen("tcp", c.listen)
 	if err != nil {
 		log.Printf("udpgw: listen failed on %s: %v", c.listen, err)
-		return
+		return fmt.Errorf("udpgw: listen failed on %s: %w", c.listen, err)
 	}
 
 	// Register as the active listener so stopUDPGW can close it.
@@ -162,6 +169,7 @@ func startUDPGW(cfg *UDPGWConfig) {
 			go handleUDPGWClient(conn, c)
 		}
 	}()
+	return nil
 }
 
 // internalUDPGWConfig mirrors the exported UDPGWConfig but with

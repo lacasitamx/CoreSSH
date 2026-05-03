@@ -23,7 +23,7 @@ echo -e "${GREEN}   SSH Panel  ·  Updater                   ${NC}"
 echo -e "${GREEN}══════════════════════════════════════════${NC}\n"
 
 # ── 1. Pre-flight checks ──────────────────────────────────────────────────────
-info "[1/5] Pre-flight checks…"
+info "[1/6] Pre-flight checks…"
 
 [[ -d "$INSTALL_DIR" ]]          || error "Install dir $INSTALL_DIR not found — run install.sh first."
 [[ -f "$INSTALL_DIR/.env" ]]     || error "$INSTALL_DIR/.env not found — run install.sh first."
@@ -34,7 +34,7 @@ info "  Source dir  : $SCRIPT_DIR"
 info "  Go version  : $GO_VERSION"
 
 # ── 2. Go toolchain ───────────────────────────────────────────────────────────
-info "[2/5] Checking Go toolchain…"
+info "[2/6] Checking Go toolchain…"
 
 NEED_GO=true
 if command -v go &>/dev/null; then
@@ -67,7 +67,7 @@ export PATH=$PATH:/usr/local/go/bin
 go version
 
 # ── 3. Build new binary ───────────────────────────────────────────────────────
-info "[3/5] Building new sshpanel binary…"
+info "[3/6] Building new sshpanel binary…"
 
 cd "$SCRIPT_DIR"
 export GOPATH=/tmp/gopath_sshpanel
@@ -77,7 +77,7 @@ go build -ldflags="-s -w" -o /tmp/sshpanel_new .
 info "  Build complete."
 
 # ── 4. Apply update ───────────────────────────────────────────────────────────
-info "[4/5] Applying update…"
+info "[4/6] Applying update…"
 
 # Stop the service
 if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
@@ -103,6 +103,11 @@ info "  Binary updated."
 mkdir -p "$INSTALL_DIR/admin"
 cp -r "$SCRIPT_DIR/admin/"* "$INSTALL_DIR/admin/"
 info "  Admin panel updated."
+if [[ -f "$SCRIPT_DIR/change_admin_password.sh" ]]; then
+  cp "$SCRIPT_DIR/change_admin_password.sh" "$INSTALL_DIR/change_admin_password.sh"
+  chmod 700 "$INSTALL_DIR/change_admin_password.sh"
+  info "  Admin password recovery script updated."
+fi
 
 # Ensure banner file exists (new in this version)
 if [[ ! -f "$INSTALL_DIR/banner.txt" ]]; then
@@ -132,6 +137,18 @@ PYEOF
     info "  Added banner_file to config.json"
   fi
 
+  # Remove legacy local_ssh_listen. DragonCore now handles DNSTT in-process.
+  python3 - "$CFG" << 'PYEOF'
+import json, sys
+path = sys.argv[1]
+with open(path) as f:
+    d = json.load(f)
+changed = d.pop('local_ssh_listen', None) is not None
+if changed:
+    with open(path, 'w') as f:
+        json.dump(d, f, indent=2)
+PYEOF
+
   # Fix routing: remove geoip:private rules that require geoip.dat from xray_config.json
   XCFG="$INSTALL_DIR/xray_config.json"
   if [[ -f "$XCFG" ]]; then
@@ -158,8 +175,72 @@ PYEOF
   fi
 fi
 
-# ── 5. Restart service ────────────────────────────────────────────────────────
-info "[5/5] Restarting service…"
+# ── 5. DNSTT DNS/53 redirect ─────────────────────────────────────────────────
+info "[5/6] Ensuring DNSTT DNS redirect (UDP 53 -> 5300)…"
+cat > /usr/local/sbin/sshpanel-dnstt-redirect.sh <<'EOS'
+#!/bin/bash
+set -euo pipefail
+DNS_UPSTREAM="${DNS_UPSTREAM:-1.1.1.1}"
+DNSTT_PORT="${DNSTT_PORT:-5300}"
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl disable --now systemd-resolved.service >/dev/null 2>&1 || true
+fi
+rm -f /etc/resolv.conf
+printf 'nameserver %s\n' "$DNS_UPSTREAM" > /etc/resolv.conf
+if command -v ufw >/dev/null 2>&1; then
+  ufw allow 53/udp >/dev/null 2>&1 || true
+fi
+if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+  firewall-cmd --permanent --add-port=53/udp >/dev/null 2>&1 || true
+  firewall-cmd --reload >/dev/null 2>&1 || true
+fi
+add_iptables_rule() {
+  local bin="$1" chain="$2"
+  "$bin" -t nat -C "$chain" -p udp --dport 53 -j REDIRECT --to-ports "$DNSTT_PORT" 2>/dev/null \
+    || "$bin" -t nat -A "$chain" -p udp --dport 53 -j REDIRECT --to-ports "$DNSTT_PORT"
+}
+if command -v iptables >/dev/null 2>&1; then
+  add_iptables_rule iptables PREROUTING
+fi
+if command -v ip6tables >/dev/null 2>&1; then
+  add_iptables_rule ip6tables PREROUTING || true
+fi
+if ! command -v iptables >/dev/null 2>&1 && command -v nft >/dev/null 2>&1; then
+  nft add table inet sshpanel_nat 2>/dev/null || true
+  nft 'add chain inet sshpanel_nat prerouting { type nat hook prerouting priority dstnat; policy accept; }' 2>/dev/null || true
+  nft list chain inet sshpanel_nat prerouting 2>/dev/null | grep -q "udp dport 53 redirect to :$DNSTT_PORT" \
+    || nft add rule inet sshpanel_nat prerouting udp dport 53 redirect to :"$DNSTT_PORT"
+fi
+EOS
+chmod +x /usr/local/sbin/sshpanel-dnstt-redirect.sh
+cat > /etc/systemd/system/sshpanel-dnstt-redirect.service <<'EOF'
+[Unit]
+Description=SSH Panel DNSTT DNS redirect (UDP 53 to 5300)
+After=network.target
+Before=sshpanel.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/sshpanel-dnstt-redirect.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+mkdir -p /etc/systemd/system/sshpanel.service.d
+cat > /etc/systemd/system/sshpanel.service.d/override.conf <<EOF
+[Unit]
+Wants=sshpanel-dnstt-redirect.service
+After=sshpanel-dnstt-redirect.service
+
+[Service]
+Environment=PANEL_LOG_FILE=${INSTALL_DIR}/logs/panel.log
+EOF
+systemctl daemon-reload
+systemctl enable --now sshpanel-dnstt-redirect.service || warn "DNSTT DNS redirect service failed; check: journalctl -u sshpanel-dnstt-redirect -e"
+
+# ── 6. Restart service ────────────────────────────────────────────────────────
+info "[6/6] Restarting service…"
 
 if $RESTART_NEEDED; then
   systemctl start "$SERVICE_NAME"

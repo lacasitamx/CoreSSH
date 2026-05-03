@@ -12,6 +12,8 @@ DragonCoreSSH V40 é um painel/servidor em Go para SSH com HTTP Injection, paine
 - Integração com Xray-core/V2Ray
 - Configurador visual para VLESS e VMess
 - API pública `/check` para consultar usuário ou UUID
+- Aba de logs no painel para ver logs do sistema, DNSTT e Xray
+- Salvamento live das configurações principais, com checagem se o serviço realmente subiu
 - Serviço `systemd` para iniciar automaticamente com o sistema
 
 ### Protocolos suportados no configurador Xray/V2Ray
@@ -104,6 +106,8 @@ Admin token
 ```text
 80      SSH com HTTP Injection
 8080    SSH extra com HTTP Injection
+53/udp  DNS público para DNSTT, redirecionado para 5300/udp
+5300/udp DNSTT interno
 9090    Painel web + API pública /check
 10086   Xray VLESS
 10087   Xray VMess
@@ -115,9 +119,32 @@ Libere no firewall apenas as portas que você realmente usa. Exemplo com `ufw`:
 ```bash
 sudo ufw allow 80/tcp
 sudo ufw allow 8080/tcp
+sudo ufw allow 53/udp
 sudo ufw allow 9090/tcp
 sudo ufw allow 10086/tcp
 sudo ufw allow 10087/tcp
+```
+
+
+### DNSTT na porta DNS 53
+
+O instalador cria o serviço `sshpanel-dnstt-redirect.service`, que libera a porta 53 removendo o `systemd-resolved` quando ele existe, fixa `/etc/resolv.conf` com `1.1.1.1` e adiciona uma regra NAT para redirecionar DNS UDP público da porta `53` para o DNSTT em `5300`.
+
+Comandos manuais equivalentes em sistemas com `iptables`:
+
+```bash
+sudo systemctl disable --now systemd-resolved.service || true
+sudo rm -f /etc/resolv.conf
+echo "nameserver 1.1.1.1" | sudo tee /etc/resolv.conf
+sudo iptables -t nat -C PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 5300 2>/dev/null \
+  || sudo iptables -t nat -A PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 5300
+```
+
+Verificar o redirect:
+
+```bash
+systemctl status sshpanel-dnstt-redirect --no-pager -l
+sudo iptables -t nat -S PREROUTING | grep 5300
 ```
 
 ### Comandos úteis
@@ -145,6 +172,28 @@ Reiniciar serviço:
 ```bash
 systemctl restart sshpanel
 ```
+
+### Trocar senha perdida do admin
+
+Se o dono perdeu a senha do painel, acesse o servidor como `root` e execute:
+
+```bash
+sudo bash /opt/sshpanel/change_admin_password.sh
+```
+
+Também é possível passar a senha direto no comando:
+
+```bash
+sudo bash /opt/sshpanel/change_admin_password.sh admin 'NovaSenhaForteAqui'
+```
+
+Ou gerar uma senha nova automaticamente:
+
+```bash
+sudo bash /opt/sshpanel/change_admin_password.sh --user admin --generate
+```
+
+O script atualiza o usuário `admin` no PostgreSQL, ativa ele como `superadmin`, salva `ADMIN_PASSWORD` em `/opt/sshpanel/.env` e reinicia o serviço `sshpanel` para recarregar o cache interno de admins.
 
 ### Atualização
 
@@ -250,6 +299,8 @@ DragonCoreSSH V40 is a Go-based SSH HTTP Injection server with a web panel, Post
 - Xray-core/V2Ray integration
 - Visual configurator for VLESS and VMess
 - Public `/check` API for checking username or UUID
+- Logs tab in the panel for system, DNSTT, and Xray logs
+- Live-save for main service settings, with checks that enabled services actually started
 - `systemd` service for automatic startup
 
 ### Supported protocols in the Xray/V2Ray configurator
@@ -342,6 +393,8 @@ Admin token
 ```text
 80      SSH with HTTP Injection
 8080    Extra SSH with HTTP Injection
+53/udp  Public DNS for DNSTT, redirected to 5300/udp
+5300/udp Internal DNSTT listener
 9090    Web panel + public /check API
 10086   Xray VLESS
 10087   Xray VMess
@@ -353,9 +406,32 @@ Open only the ports that you actually use. Example with `ufw`:
 ```bash
 sudo ufw allow 80/tcp
 sudo ufw allow 8080/tcp
+sudo ufw allow 53/udp
 sudo ufw allow 9090/tcp
 sudo ufw allow 10086/tcp
 sudo ufw allow 10087/tcp
+```
+
+
+### DNSTT on DNS port 53
+
+The installer creates `sshpanel-dnstt-redirect.service`. It frees port 53 by stopping `systemd-resolved` when present, writes `/etc/resolv.conf` with `1.1.1.1`, and adds a NAT rule that redirects public UDP DNS traffic from port `53` to DNSTT on `5300`.
+
+Equivalent manual commands on systems with `iptables`:
+
+```bash
+sudo systemctl disable --now systemd-resolved.service || true
+sudo rm -f /etc/resolv.conf
+echo "nameserver 1.1.1.1" | sudo tee /etc/resolv.conf
+sudo iptables -t nat -C PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 5300 2>/dev/null \
+  || sudo iptables -t nat -A PREROUTING -p udp --dport 53 -j REDIRECT --to-ports 5300
+```
+
+Check the redirect:
+
+```bash
+systemctl status sshpanel-dnstt-redirect --no-pager -l
+sudo iptables -t nat -S PREROUTING | grep 5300
 ```
 
 ### Useful commands
@@ -383,6 +459,28 @@ Restart service:
 ```bash
 systemctl restart sshpanel
 ```
+
+### Reset lost admin password
+
+If the owner loses the web panel password, access the server as `root` and run:
+
+```bash
+sudo bash /opt/sshpanel/change_admin_password.sh
+```
+
+You can also pass the password directly:
+
+```bash
+sudo bash /opt/sshpanel/change_admin_password.sh admin 'NewStrongPasswordHere'
+```
+
+Or generate a new password automatically:
+
+```bash
+sudo bash /opt/sshpanel/change_admin_password.sh --user admin --generate
+```
+
+The script updates the `admin` user in PostgreSQL, enables it as `superadmin`, saves `ADMIN_PASSWORD` in `/opt/sshpanel/.env`, and restarts `sshpanel` so the in-memory admin cache is reloaded.
 
 ### Update
 

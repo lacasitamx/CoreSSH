@@ -9,7 +9,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -86,6 +88,31 @@ func (p *listenerPool) Sync(addrs []string) []error {
 	return errs
 }
 
+func (p *listenerPool) Has(addr string) bool {
+	if p == nil || addr == "" {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	_, ok := p.entries[addr]
+	return ok
+}
+
+func (p *listenerPool) HasAll(addrs []string) bool {
+	if p == nil {
+		return false
+	}
+	for _, addr := range addrs {
+		if addr == "" {
+			continue
+		}
+		if !p.Has(addr) {
+			return false
+		}
+	}
+	return true
+}
+
 // ---------- Dynamic TLS listener pool ----------
 
 type tlsListenerPool struct {
@@ -142,11 +169,35 @@ func (p *tlsListenerPool) Sync(forwarders []TLSForwarderConfig) []error {
 	return errs
 }
 
+func (p *tlsListenerPool) Has(addr string) bool {
+	if p == nil || addr == "" {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	_, ok := p.entries[addr]
+	return ok
+}
+
+func (p *tlsListenerPool) HasAll(forwarders []TLSForwarderConfig) bool {
+	if p == nil {
+		return false
+	}
+	for _, f := range forwarders {
+		if f.Listen == "" {
+			continue
+		}
+		if !p.Has(f.Listen) {
+			return false
+		}
+	}
+	return true
+}
+
 // ---------- Global pool instances (initialised in main) ----------
 
 var (
 	publicPool *listenerPool    // HTTP+SSH: listen + extra_listen
-	localPool  *listenerPool    // raw SSH: local_ssh_listen
 	tlsPool    *tlsListenerPool // TLS forwarders
 )
 
@@ -196,8 +247,42 @@ func getAdminHandler() http.Handler {
 // applyFullConfigReload applies every field in newCfg to the running server
 // without a process restart. Port changes, DNSTT/UDPGW changes, Xray changes,
 // and bandwidth defaults all take effect immediately.
-// The only field that still requires a restart is host_key_file.
-func applyFullConfigReload(newCfg *Config) {
+// It returns a status report so the panel can show crashed or blocked services.
+type ServiceReloadStatus struct {
+	Enabled bool   `json:"enabled"`
+	Running bool   `json:"running"`
+	Listen  string `json:"listen,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
+type ConfigReloadReport struct {
+	Applied  bool                           `json:"applied"`
+	Warnings []string                       `json:"warnings,omitempty"`
+	Services map[string]ServiceReloadStatus `json:"services"`
+}
+
+func newReloadReport() ConfigReloadReport {
+	return ConfigReloadReport{Applied: true, Services: map[string]ServiceReloadStatus{}}
+}
+
+func (r *ConfigReloadReport) warnf(format string, args ...interface{}) {
+	msg := fmt.Sprintf(format, args...)
+	r.Warnings = append(r.Warnings, msg)
+	log.Printf("config reload: %s", msg)
+}
+
+func joinAddrs(addrs []string) string {
+	clean := make([]string, 0, len(addrs))
+	for _, a := range addrs {
+		if a = strings.TrimSpace(a); a != "" {
+			clean = append(clean, a)
+		}
+	}
+	return strings.Join(clean, ", ")
+}
+
+func applyFullConfigReload(newCfg *Config) ConfigReloadReport {
+	report := newReloadReport()
 	// Banner
 	bt := newCfg.Banner
 	if bt == "" && newCfg.BannerFile != "" {
@@ -226,44 +311,97 @@ func applyFullConfigReload(newCfg *Config) {
 	// Public SSH listeners (main listen + extra_listen)
 	publicAddrs := append([]string{newCfg.Listen}, newCfg.ExtraListen...)
 	for _, e := range publicPool.Sync(publicAddrs) {
-		log.Printf("hotreload: %v", e)
+		report.warnf("SSH listener error: %v", e)
+	}
+	report.Services["ssh"] = ServiceReloadStatus{
+		Enabled: true,
+		Running: publicPool.HasAll(publicAddrs),
+		Listen:  joinAddrs(publicAddrs),
+	}
+	if !report.Services["ssh"].Running {
+		report.Services["ssh"] = ServiceReloadStatus{Enabled: true, Running: false, Listen: joinAddrs(publicAddrs), Error: "one or more SSH listeners could not be opened"}
 	}
 
-	// Local raw SSH listener
-	var localAddrs []string
-	if newCfg.LocalSSHListen != "" {
-		localAddrs = []string{newCfg.LocalSSHListen}
-	}
-	for _, e := range localPool.Sync(localAddrs) {
-		log.Printf("hotreload: %v", e)
-	}
+	// Legacy local_ssh_listen is intentionally ignored. DragonCore handles DNSTT in-process.
+	newCfg.LocalSSHListen = ""
 
 	// TLS forwarders
 	for _, e := range tlsPool.Sync(newCfg.TLSForwarders) {
-		log.Printf("hotreload: %v", e)
+		report.warnf("TLS listener error: %v", e)
+	}
+	if len(newCfg.TLSForwarders) > 0 {
+		report.Services["tls"] = ServiceReloadStatus{
+			Enabled: true,
+			Running: tlsPool.HasAll(newCfg.TLSForwarders),
+			Listen:  tlsForwarderList(newCfg.TLSForwarders),
+		}
+		if !report.Services["tls"].Running {
+			report.Services["tls"] = ServiceReloadStatus{Enabled: true, Running: false, Listen: tlsForwarderList(newCfg.TLSForwarders), Error: "one or more TLS forwarders could not be opened"}
+		}
+	} else {
+		report.Services["tls"] = ServiceReloadStatus{Enabled: false, Running: false}
 	}
 
-	// DNSTT — stop current instance (no-op if not running) then start new one
+	// DNSTT — stop current instance (no-op if not running) then start new one.
 	stopDNSTT()
-	startDNSTT(newCfg.DNSTT, getSSHConfig())
+	if newCfg.DNSTT != nil {
+		if err := startDNSTT(newCfg.DNSTT, getSSHConfig()); err != nil {
+			report.warnf("DNSTT failed to start: %v", err)
+			report.Services["dnstt"] = ServiceReloadStatus{Enabled: true, Running: false, Listen: newCfg.DNSTT.UDPListen, Error: err.Error()}
+		} else {
+			report.Services["dnstt"] = ServiceReloadStatus{Enabled: true, Running: true, Listen: newCfg.DNSTT.UDPListen}
+		}
+	} else {
+		report.Services["dnstt"] = ServiceReloadStatus{Enabled: false, Running: false}
+	}
 
-	// UDPGW — same pattern
+	// UDPGW — same pattern.
 	stopUDPGW()
-	startUDPGW(newCfg.UDPGW)
+	if newCfg.UDPGW != nil {
+		if err := startUDPGW(newCfg.UDPGW); err != nil {
+			report.warnf("UDPGW failed to start: %v", err)
+			report.Services["udpgw"] = ServiceReloadStatus{Enabled: true, Running: false, Listen: newCfg.UDPGW.Listen, Error: err.Error()}
+		} else {
+			report.Services["udpgw"] = ServiceReloadStatus{Enabled: true, Running: udpgwRunning(), Listen: newCfg.UDPGW.Listen}
+		}
+	} else {
+		report.Services["udpgw"] = ServiceReloadStatus{Enabled: false, Running: false}
+	}
 
-	// Xray — update stored config then restart/stop as needed
+	// Xray — update stored config then restart/stop as needed.
 	if newCfg.Xray != nil {
 		xrayMgr.mu.Lock()
 		xrayMgr.cfg = newCfg.Xray
 		xrayMgr.mu.Unlock()
 		if newCfg.Xray.Enabled {
-			_ = xrayMgr.Restart()
+			if err := xrayMgr.Restart(); err != nil {
+				report.warnf("Xray failed to restart: %v", err)
+			}
+			time.Sleep(500 * time.Millisecond)
+			st := xrayMgr.Status()
+			report.Services["xray"] = ServiceReloadStatus{Enabled: true, Running: st.Running, Error: st.Error}
+			if !st.Running && st.Error == "" {
+				report.Services["xray"] = ServiceReloadStatus{Enabled: true, Running: false, Error: "xray exited immediately; check logs"}
+			}
 		} else {
 			_ = xrayMgr.Stop()
+			report.Services["xray"] = ServiceReloadStatus{Enabled: false, Running: false}
 		}
 	} else {
 		_ = xrayMgr.Stop()
+		report.Services["xray"] = ServiceReloadStatus{Enabled: false, Running: false}
 	}
 
 	setGlobalCfg(newCfg)
+	return report
+}
+
+func tlsForwarderList(forwarders []TLSForwarderConfig) string {
+	addrs := make([]string, 0, len(forwarders))
+	for _, f := range forwarders {
+		if strings.TrimSpace(f.Listen) != "" {
+			addrs = append(addrs, strings.TrimSpace(f.Listen))
+		}
+	}
+	return strings.Join(addrs, ", ")
 }

@@ -100,6 +100,8 @@ func serverConfigPost(w http.ResponseWriter, r *http.Request) {
 	}
 	globalCfgMu.RUnlock()
 
+	portWarnings := normalizeRuntimePorts(&newCfg)
+
 	out, err := json.MarshalIndent(newCfg, "", "  ")
 	if err != nil {
 		http.Error(w, "marshal error", http.StatusInternalServerError)
@@ -110,8 +112,13 @@ func serverConfigPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Apply all changes live — no restart needed.
-	applyFullConfigReload(&newCfg)
+	// Apply all changes live and return health checks to the panel.
+	report := applyFullConfigReload(&newCfg)
+	if len(portWarnings) > 0 {
+		report.Warnings = append(portWarnings, report.Warnings...)
+	}
 
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(report)
 }

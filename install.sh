@@ -35,23 +35,23 @@ case "$OS_ID" in
   ubuntu|debian|linuxmint)
     PKG_UPDATE="apt-get update -qq"
     PKG_INSTALL="DEBIAN_FRONTEND=noninteractive apt-get install -y"
-    PKG_DEPS="curl wget git build-essential postgresql postgresql-contrib ca-certificates unzip openssh-client openssl"
+    PKG_DEPS="curl wget git build-essential postgresql postgresql-contrib ca-certificates unzip openssh-client openssl iptables nftables"
     ;;
   centos|rhel|rocky|almalinux)
     PKG_UPDATE="yum makecache -q"
     PKG_INSTALL="yum install -y"
-    PKG_DEPS="curl wget git gcc make postgresql-server postgresql-contrib ca-certificates unzip openssh-clients openssl"
+    PKG_DEPS="curl wget git gcc make postgresql-server postgresql-contrib ca-certificates unzip openssh-clients openssl iptables nftables"
     ;;
   fedora)
     PKG_UPDATE="dnf makecache -q"
     PKG_INSTALL="dnf install -y"
-    PKG_DEPS="curl wget git gcc make postgresql-server postgresql-contrib ca-certificates unzip openssh-clients openssl"
+    PKG_DEPS="curl wget git gcc make postgresql-server postgresql-contrib ca-certificates unzip openssh-clients openssl iptables nftables"
     ;;
   *)
     warn "Unknown OS '$OS_ID' — attempting apt-get…"
     PKG_UPDATE="apt-get update -qq"
     PKG_INSTALL="DEBIAN_FRONTEND=noninteractive apt-get install -y"
-    PKG_DEPS="curl wget git build-essential postgresql postgresql-contrib ca-certificates unzip openssh-client openssl"
+    PKG_DEPS="curl wget git build-essential postgresql postgresql-contrib ca-certificates unzip openssh-client openssl iptables nftables"
     ;;
 esac
 info "  OS: $OS_ID"
@@ -107,6 +107,11 @@ go build -ldflags="-s -w" -o "$INSTALL_DIR/sshpanel" .
 info "  Binary: $INSTALL_DIR/sshpanel"
 cp -r "$SCRIPT_DIR/admin/"* "$INSTALL_DIR/admin/"
 info "  Admin panel copied"
+if [[ -f "$SCRIPT_DIR/change_admin_password.sh" ]]; then
+  cp "$SCRIPT_DIR/change_admin_password.sh" "$INSTALL_DIR/change_admin_password.sh"
+  chmod 700 "$INSTALL_DIR/change_admin_password.sh"
+  info "  Admin password recovery script copied"
+fi
 
 # ── 6. Xray binary ──────────────────────────────────────────────────────────
 info "[6/9] Downloading Xray-core…"
@@ -230,7 +235,7 @@ GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO ${DB_USER};
 info "  PostgreSQL database '${DB_NAME}' ready"
 
 # ── 8. Config files ──────────────────────────────────────────────────────────
-info "[8/9] Generating config files…"
+info "[8/10] Generating config files…"
 
 # Admin token
 ADMIN_TOKEN=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 48 || true)
@@ -281,7 +286,6 @@ cat > "$INSTALL_DIR/config.json" <<EOF
 {
   "listen": "0.0.0.0:80",
   "extra_listen": ["0.0.0.0:8080"],
-  "local_ssh_listen": "127.0.0.1:2222",
   "host_key_file": "${INSTALL_DIR}/ssh_host_rsa_key",
   "quiet": false,
   "admin_dir": "${INSTALL_DIR}/admin",
@@ -333,18 +337,86 @@ EOF
 chmod 600 "$INSTALL_DIR/xray_config.json"
 info "  VLESS UUID: ${UUID}"
 
-# ── 9. Systemd service ───────────────────────────────────────────────────────
-info "[9/9] Creating systemd service '${SERVICE_NAME}'…"
+# ── 9. DNSTT DNS/53 redirect ─────────────────────────────────────────────────
+info "[9/10] Configuring DNSTT DNS redirect (UDP 53 -> 5300)…"
+cat > /usr/local/sbin/sshpanel-dnstt-redirect.sh <<'EOS'
+#!/bin/bash
+set -euo pipefail
+DNS_UPSTREAM="${DNS_UPSTREAM:-1.1.1.1}"
+DNSTT_PORT="${DNSTT_PORT:-5300}"
+
+# Free port 53 on systemd-resolved based systems and keep outbound DNS working.
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl disable --now systemd-resolved.service >/dev/null 2>&1 || true
+fi
+rm -f /etc/resolv.conf
+printf 'nameserver %s\n' "$DNS_UPSTREAM" > /etc/resolv.conf
+
+# Open DNS/UDP in common Linux firewalls when they are active.
+if command -v ufw >/dev/null 2>&1; then
+  ufw allow 53/udp >/dev/null 2>&1 || true
+fi
+if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+  firewall-cmd --permanent --add-port=53/udp >/dev/null 2>&1 || true
+  firewall-cmd --reload >/dev/null 2>&1 || true
+fi
+
+add_iptables_rule() {
+  local bin="$1" chain="$2"
+  "$bin" -t nat -C "$chain" -p udp --dport 53 -j REDIRECT --to-ports "$DNSTT_PORT" 2>/dev/null \
+    || "$bin" -t nat -A "$chain" -p udp --dport 53 -j REDIRECT --to-ports "$DNSTT_PORT"
+}
+
+if command -v iptables >/dev/null 2>&1; then
+  add_iptables_rule iptables PREROUTING
+fi
+
+if command -v ip6tables >/dev/null 2>&1; then
+  add_iptables_rule ip6tables PREROUTING || true
+fi
+
+# Fallback for minimal systems where only nft is present.
+if ! command -v iptables >/dev/null 2>&1 && command -v nft >/dev/null 2>&1; then
+  nft add table inet sshpanel_nat 2>/dev/null || true
+  nft 'add chain inet sshpanel_nat prerouting { type nat hook prerouting priority dstnat; policy accept; }' 2>/dev/null || true
+  nft list chain inet sshpanel_nat prerouting 2>/dev/null | grep -q "udp dport 53 redirect to :$DNSTT_PORT" \
+    || nft add rule inet sshpanel_nat prerouting udp dport 53 redirect to :"$DNSTT_PORT"
+fi
+EOS
+chmod +x /usr/local/sbin/sshpanel-dnstt-redirect.sh
+
+cat > /etc/systemd/system/sshpanel-dnstt-redirect.service <<'EOF'
+[Unit]
+Description=SSH Panel DNSTT DNS redirect (UDP 53 to 5300)
+After=network.target
+Before=sshpanel.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/sshpanel-dnstt-redirect.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now sshpanel-dnstt-redirect.service || warn "DNSTT DNS redirect service failed; check: journalctl -u sshpanel-dnstt-redirect -e"
+info "  DNSTT DNS redirect installed: UDP 53 -> 5300"
+
+# ── 10. Systemd service ──────────────────────────────────────────────────────
+info "[10/10] Creating systemd service '${SERVICE_NAME}'…"
 cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<EOF
 [Unit]
 Description=SSH Panel + Xray-core Server
-After=network.target postgresql.service
-Wants=postgresql.service
+After=network.target postgresql.service sshpanel-dnstt-redirect.service
+Wants=postgresql.service sshpanel-dnstt-redirect.service
 
 [Service]
 Type=simple
 WorkingDirectory=${INSTALL_DIR}
 EnvironmentFile=${INSTALL_DIR}/.env
+Environment=PANEL_LOG_FILE=${INSTALL_DIR}/logs/panel.log
 ExecStart=${INSTALL_DIR}/sshpanel -config ${INSTALL_DIR}/config.json
 Restart=always
 RestartSec=5
@@ -371,6 +443,7 @@ echo -e "  Server IP    : ${YELLOW}${SERVER_IP}${NC}"
 echo -e "  SSH ports    : 80, 8080  (HTTP-injected SSH)"
 echo -e "  VLESS port   : 10086"
 echo -e "  VLESS UUID   : ${YELLOW}${UUID}${NC}"
+echo -e "  DNSTT DNS    : UDP 53 redirects to local UDP 5300"
 echo ""
 echo -e "  Admin panel  : ${YELLOW}http://${SERVER_IP}:9090${NC}"
 echo -e "  Admin login  : ${YELLOW}admin${NC}"

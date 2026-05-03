@@ -131,6 +131,7 @@ pre.log-box{background:rgba(15,23,42,.9);color:#9ca3af;border:1px solid rgba(55,
       <button class="tab-btn superadmin-only hidden" data-tab="xray">Xray</button>
       <button class="tab-btn superadmin-only hidden" data-tab="resellers">Resellers</button>
       <button class="tab-btn superadmin-only hidden" data-tab="stats">Stats</button>
+      <button class="tab-btn superadmin-only hidden" data-tab="logs">Logs</button>
       <button class="tab-btn superadmin-only hidden" data-tab="server">Server Config</button>
     </nav>
     <div class="hright">
@@ -533,6 +534,25 @@ pre.log-box{background:rgba(15,23,42,.9);color:#9ca3af;border:1px solid rgba(55,
     </div>
   </div><!-- /tab-stats -->
 
+  <!-- ═══════════ Logs Tab (superadmin only) ═══════════ -->
+  <div class="tab-pane" id="tab-logs">
+    <div class="card">
+      <div class="card-hdr">
+        <div class="card-title">System Logs</div>
+        <div class="form-actions" style="margin-top:0">
+          <select id="logSource" class="btn-ghost" style="border-radius:999px;padding:4px 8px;background:rgba(15,23,42,.9);color:var(--text);border:1px solid rgba(55,65,81,.9);font-size:.7rem;">
+            <option value="panel">Panel / system</option>
+            <option value="dnstt">DNSTT</option>
+            <option value="xray">Xray</option>
+          </select>
+          <button class="btn btn-sm" type="button" onclick="loadSystemLogs()">Refresh</button>
+        </div>
+      </div>
+      <pre class="log-box" id="systemLogBox" style="max-height:430px;min-height:260px;">Select a log source and click Refresh.</pre>
+      <div class="statusbar"><span id="systemLogStatus">Ready.</span></div>
+    </div>
+  </div><!-- /tab-logs -->
+
   <!-- ═══════════ Server Config Tab (superadmin only) ═══════════ -->
   <div class="tab-pane" id="tab-server">
 
@@ -547,13 +567,9 @@ pre.log-box{background:rgba(15,23,42,.9);color:#9ca3af;border:1px solid rgba(55,
             <span class="chip green">live</span>
           </div>
           <div class="form-grid">
-            <div class="field">
+            <div class="field" style="grid-column:1/-1">
               <label>Main Listen (SSH / HTTP)</label>
               <input type="text" id="cfgListen" placeholder="0.0.0.0:80"/>
-            </div>
-            <div class="field">
-              <label>Local SSH Listen</label>
-              <input type="text" id="cfgLocalSSH" placeholder="127.0.0.1:2222 (blank = off)"/>
             </div>
           </div>
           <div class="field" style="margin-top:6px">
@@ -749,7 +765,7 @@ pre.log-box{background:rgba(15,23,42,.9);color:#9ca3af;border:1px solid rgba(55,
     <div class="form-actions" style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);">
       <button class="btn" onclick="saveServerConfig()">Save Config</button>
       <button class="btn btn-ghost" onclick="loadServerConfig()">Reload</button>
-      <span id="srvCfgStatus" class="hint">All changes apply live. Only <strong>host_key_file</strong> requires a restart.</span>
+      <span id="srvCfgStatus" class="hint">All service changes apply live.</span>
     </div>
 
   </div><!-- /tab-server -->
@@ -1535,6 +1551,29 @@ async function loadStats() {
   } catch (e) { if (e.message==="auth") doAuthError(); }
 }
 
+// ─── Logs ─────────────────────────────────────────────────────────────────────
+document.querySelector("[data-tab='logs']")?.addEventListener("click", loadSystemLogs);
+document.getElementById("logSource")?.addEventListener("change", loadSystemLogs);
+
+async function loadSystemLogs() {
+  const box = document.getElementById("systemLogBox");
+  const st = document.getElementById("systemLogStatus");
+  const source = document.getElementById("logSource")?.value || "panel";
+  st.textContent = "Loading…";
+  try {
+    const res = await api(`/api/system/logs?source=${encodeURIComponent(source)}&lines=500`);
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    const lines = Array.isArray(data.lines) ? data.lines : [];
+    box.textContent = lines.length ? lines.join("\n") : "No log lines yet.";
+    box.scrollTop = box.scrollHeight;
+    st.textContent = `${data.source || source} logs${data.path ? " · " + data.path : ""} · ${lines.length} lines · ` + new Date().toLocaleTimeString();
+  } catch (e) {
+    if (e.message === "auth") doAuthError();
+    else st.textContent = "Error: " + e.message;
+  }
+}
+
 // ─── Server Config ────────────────────────────────────────────────────────────
 document.querySelector("[data-tab='server']")?.addEventListener("click", loadServerConfig);
 
@@ -1559,7 +1598,6 @@ async function loadServerConfig() {
 
     // Network
     document.getElementById("cfgListen").value       = c.listen || "";
-    document.getElementById("cfgLocalSSH").value     = c.local_ssh_listen || "";
     document.getElementById("cfgExtraListen").value  = (c.extra_listen || []).join("\n");
 
     // SSH / general
@@ -1620,7 +1658,6 @@ async function saveServerConfig() {
   const cfg = {
     listen:               document.getElementById("cfgListen").value.trim(),
     extra_listen:         extraLines,
-    local_ssh_listen:     document.getElementById("cfgLocalSSH").value.trim(),
     host_key_file:        "/opt/sshpanel/ssh_host_rsa_key",
     admin_dir:            "/opt/sshpanel/admin",
     default_limit_mbps_up:   parseInt(document.getElementById("cfgLimitUp").value  || "0", 10),
@@ -1654,7 +1691,15 @@ async function saveServerConfig() {
   try {
     const res = await api("/api/server/config", { method: "POST", body: JSON.stringify(cfg) });
     if (!res.ok) throw new Error(await res.text());
-    st.textContent = "Saved. Banner applied live — other changes need a server restart.";
+    const report = await res.json().catch(() => null);
+    const warnings = report?.warnings || [];
+    const bad = Object.entries(report?.services || {}).filter(([_, v]) => v?.enabled && !v?.running);
+    if (warnings.length || bad.length) {
+      const badText = bad.map(([name, v]) => `${name}: ${v.error || "not running"}`).join(" | ");
+      st.textContent = "Saved live with warnings: " + [...warnings, badText].filter(Boolean).join(" | ");
+    } else {
+      st.textContent = "Saved and applied live.";
+    }
   } catch (e) {
     if (e.message === "auth") doAuthError();
     else st.textContent = "Error: " + e.message;

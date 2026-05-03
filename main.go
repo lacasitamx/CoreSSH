@@ -65,9 +65,8 @@ type Config struct {
 	// "[::]:80", "[2001:db8::20]:8080".  Empty slice means no
 	// additional listeners.
 	ExtraListen []string `json:"extra_listen"`
-	// Optional: local-only raw SSH listener for other daemons (e.g. DNSTT upstream)
-	// Set to "127.0.0.1:2222" or similar. Leave empty to disable.
-	LocalSSHListen string `json:"local_ssh_listen"`
+	// Legacy compatibility only. DragonCore no longer starts a local raw SSH listener.
+	LocalSSHListen string `json:"local_ssh_listen,omitempty"`
 	HostKeyFile    string `json:"host_key_file"`
 	Quiet          bool   `json:"quiet"`
 
@@ -1088,6 +1087,7 @@ func startAdminAPI(store *Store, addr string, adminDir string) {
 
 	// Superadmin-only: server stats + DNSTT
 	mux.Handle("/api/stats", saSession(http.HandlerFunc(handleStats)))
+	mux.Handle("/api/system/logs", saSession(http.HandlerFunc(handleSystemLogs)))
 	mux.Handle("/api/dnstt", saSession(http.HandlerFunc(handleDnsttStats)))
 	mux.Handle("/api/dnstt/logs", saSession(http.HandlerFunc(handleDnsttLogs)))
 
@@ -2497,31 +2497,32 @@ func main() {
 	// Initialise default per-connection bandwidth limits.
 	setDefaultLimits(cfg.DefaultLimitMbpsUp, cfg.DefaultLimitMbpsDown)
 
-	// Start the integrated DNSTT and UDPGW if configured.
-	startDNSTT(cfg.DNSTT, sshConfig)
-	startUDPGW(cfg.UDPGW)
-
 	// Initialise listener pools (used for initial startup and hot-reload alike).
 	publicPool = newListenerPool(serveHTTP80)
-	localPool = newListenerPool(serveRawSSH)
 	tlsPool = newTLSListenerPool()
+
+	for _, msg := range normalizeRuntimePorts(cfg) {
+		log.Printf("startup config fallback: %s", msg)
+	}
+
+	// Start the integrated DNSTT and UDPGW if configured. Startup errors are logged
+	// but do not crash the panel; the admin UI exposes the logs and service status.
+	if err := startDNSTT(cfg.DNSTT, sshConfig); err != nil {
+		log.Printf("dnstt auto-start failed: %v", err)
+	}
+	if err := startUDPGW(cfg.UDPGW); err != nil {
+		log.Printf("udpgw auto-start failed: %v", err)
+	}
 
 	// Start public SSH listeners (listen + extra_listen).
 	publicAddrs := append([]string{cfg.Listen}, cfg.ExtraListen...)
 	for _, e := range publicPool.Sync(publicAddrs) {
-		log.Fatalf("failed to start listener: %v", e)
-	}
-
-	// Start local raw SSH listener if configured.
-	if cfg.LocalSSHListen != "" {
-		for _, e := range localPool.Sync([]string{cfg.LocalSSHListen}) {
-			log.Fatalf("failed to start local SSH listener: %v", e)
-		}
+		log.Printf("failed to start listener: %v", e)
 	}
 
 	// Start TLS forwarder listeners if configured.
 	for _, e := range tlsPool.Sync(cfg.TLSForwarders) {
-		log.Fatalf("failed to start TLS listener: %v", e)
+		log.Printf("failed to start TLS listener: %v", e)
 	}
 
 	// Print user counts once at startup.
