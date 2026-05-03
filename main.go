@@ -545,6 +545,10 @@ type ifaceCounters struct {
 	TxBytes uint64
 }
 
+func isIgnoredInterface(iface string) bool {
+	return iface == "" || iface == "lo"
+}
+
 func getCurrentStats() StatsDTO {
 	statsMu.RLock()
 	defer statsMu.RUnlock()
@@ -580,6 +584,9 @@ func NewIfaceTotalsManager() *IfaceTotalsManager {
 // It is resilient to kernel counter resets (e.g. host reboot): if the kernel counter
 // goes backwards, it treats the new value as "delta since reset".
 func (tm *IfaceTotalsManager) ApplyKernel(iface string, kRx, kTx uint64) (totalRx, totalTx uint64) {
+	if isIgnoredInterface(iface) {
+		return 0, 0
+	}
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
@@ -638,6 +645,9 @@ func (tm *IfaceTotalsManager) ResetAllToKernel(netMap map[string]ifaceCounters) 
 	tm.m = make(map[string]*IfaceTotals, len(netMap))
 	out := make([]IfaceTotals, 0, len(netMap))
 	for iface, ctrs := range netMap {
+		if isIgnoredInterface(iface) {
+			continue
+		}
 		st := &IfaceTotals{
 			Iface:             iface,
 			TotalRxBytes:      0,
@@ -657,6 +667,9 @@ func (tm *IfaceTotalsManager) Load(rows []IfaceTotals) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 	for _, r := range rows {
+		if isIgnoredInterface(r.Iface) {
+			continue
+		}
 		cp := r // copy
 		tm.m[r.Iface] = &cp
 	}
@@ -667,6 +680,9 @@ func (tm *IfaceTotalsManager) Snapshot() []IfaceTotals {
 	defer tm.mu.Unlock()
 	out := make([]IfaceTotals, 0, len(tm.m))
 	for _, v := range tm.m {
+		if v == nil || isIgnoredInterface(v.Iface) {
+			continue
+		}
 		out = append(out, *v)
 	}
 	return out
@@ -732,6 +748,9 @@ func startStatsCollector() {
 			dt := now.Sub(prevTime).Seconds()
 			if netMap != nil {
 				for name, ctrs := range netMap {
+					if isIgnoredInterface(name) {
+						continue
+					}
 					st := InterfaceStats{
 						Name: name,
 					}
@@ -937,6 +956,9 @@ func readNetDev() (map[string]ifaceCounters, error) {
 			continue
 		}
 		iface := strings.TrimSpace(parts[0])
+		if isIgnoredInterface(iface) {
+			continue
+		}
 		fields := strings.Fields(parts[1])
 		if len(fields) < 9 {
 			continue
@@ -1205,7 +1227,8 @@ func (s *Store) EnsureIfaceTotalsTable(ctx context.Context) error {
 func (s *Store) LoadIfaceTotals(ctx context.Context) ([]IfaceTotals, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT iface, total_rx_bytes, total_tx_bytes, last_kernel_rx_bytes, last_kernel_tx_bytes, updated_at, reset_at
-		FROM ssh_iface_totals`)
+		FROM ssh_iface_totals
+		WHERE iface <> 'lo'`)
 	if err != nil {
 		return nil, err
 	}
@@ -1234,6 +1257,9 @@ func (s *Store) UpsertIfaceTotals(ctx context.Context, rows []IfaceTotals) error
 	}
 	// Simple loop (small N: number of interfaces). Keeps CPU/DB overhead minimal.
 	for _, r := range rows {
+		if isIgnoredInterface(r.Iface) {
+			continue
+		}
 		resetAt := r.ResetAt
 		if resetAt.IsZero() {
 			resetAt = time.Now()

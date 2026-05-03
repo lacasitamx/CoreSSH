@@ -23,7 +23,7 @@ var ifaceUsagePending = struct {
 }{m: make(map[string]ifaceCounters)}
 
 func addPendingIfaceUsage(iface string, rxBytes, txBytes uint64) {
-	if iface == "" || (rxBytes == 0 && txBytes == 0) {
+	if isIgnoredInterface(iface) || (rxBytes == 0 && txBytes == 0) {
 		return
 	}
 	ifaceUsagePending.mu.Lock()
@@ -42,6 +42,9 @@ func flushPendingIfaceUsage(at time.Time) []IfaceUsageDelta {
 	}
 	deltas := make([]IfaceUsageDelta, 0, len(ifaceUsagePending.m))
 	for iface, ctrs := range ifaceUsagePending.m {
+		if isIgnoredInterface(iface) {
+			continue
+		}
 		deltas = append(deltas, IfaceUsageDelta{Iface: iface, RxBytes: ctrs.RxBytes, TxBytes: ctrs.TxBytes, At: at})
 	}
 	ifaceUsagePending.m = make(map[string]ifaceCounters)
@@ -52,6 +55,9 @@ func restorePendingIfaceUsage(deltas []IfaceUsageDelta) {
 	ifaceUsagePending.mu.Lock()
 	defer ifaceUsagePending.mu.Unlock()
 	for _, d := range deltas {
+		if isIgnoredInterface(d.Iface) {
+			continue
+		}
 		p := ifaceUsagePending.m[d.Iface]
 		p.RxBytes += d.RxBytes
 		p.TxBytes += d.TxBytes
@@ -117,7 +123,7 @@ func (s *Store) UpsertIfaceUsageDeltas(ctx context.Context, deltas []IfaceUsageD
 	defer tx.Rollback()
 
 	for _, d := range deltas {
-		if d.Iface == "" || (d.RxBytes == 0 && d.TxBytes == 0) {
+		if isIgnoredInterface(d.Iface) || (d.RxBytes == 0 && d.TxBytes == 0) {
 			continue
 		}
 		at := d.At
@@ -167,6 +173,7 @@ func (s *Store) LoadIfaceUsage(ctx context.Context, days, months int) (VnstatDTO
 		SELECT iface, usage_date::text, rx_bytes, tx_bytes
 		FROM ssh_iface_daily_usage
 		WHERE usage_date >= CURRENT_DATE - $1::int
+		  AND iface <> 'lo'
 		ORDER BY usage_date DESC, iface ASC`, days-1)
 	if err != nil {
 		return out, err
@@ -188,6 +195,7 @@ func (s *Store) LoadIfaceUsage(ctx context.Context, days, months int) (VnstatDTO
 		SELECT iface, to_char(month_start, 'YYYY-MM') AS period, rx_bytes, tx_bytes
 		FROM ssh_iface_monthly_usage
 		WHERE month_start >= (date_trunc('month', CURRENT_DATE)::date - ($1::int * INTERVAL '1 month'))
+		  AND iface <> 'lo'
 		ORDER BY month_start DESC, iface ASC`, months-1)
 	if err != nil {
 		return out, err
@@ -230,6 +238,9 @@ func (s *Store) ReplaceIfaceTotals(ctx context.Context, rows []IfaceTotals) erro
 		return err
 	}
 	for _, r := range rows {
+		if isIgnoredInterface(r.Iface) {
+			continue
+		}
 		resetAt := r.ResetAt
 		if resetAt.IsZero() {
 			resetAt = time.Now()

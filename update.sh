@@ -316,7 +316,51 @@ PYEOF
   fi
 }
 
+dnstt_redirect_is_enabled() {
+  # Updates must not resurrect this service when an admin intentionally
+  # disabled/removed it because it can break ip6tables on some machines.
+  local unit="sshpanel-dnstt-redirect.service"
+
+  if systemctl is-enabled --quiet "$unit" 2>/dev/null; then
+    return 0
+  fi
+
+  return 1
+}
+
+write_sshpanel_systemd_override() {
+  local include_dnstt_redirect="${1:-false}"
+
+  mkdir -p /etc/systemd/system/sshpanel.service.d
+  {
+    echo "[Unit]"
+    if [[ "$include_dnstt_redirect" == "true" ]]; then
+      echo "Wants=sshpanel-dnstt-redirect.service"
+      echo "After=local-fs.target sshpanel-dnstt-redirect.service"
+    else
+      echo "After=local-fs.target"
+    fi
+    echo
+    echo "[Service]"
+    echo "Environment=PANEL_LOG_FILE=${INSTALL_DIR}/logs/panel.log"
+    echo "Environment=PANEL_LOG_MAX_BYTES=${PANEL_LOG_MAX_BYTES}"
+    echo "ExecStartPre="
+    echo "ExecStartPre=/usr/bin/mkdir -p ${INSTALL_DIR}/logs"
+    echo "ExecStartPre=/bin/sh -c '/usr/bin/mountpoint -q ${INSTALL_DIR}/logs || /usr/bin/mount -t tmpfs -o size=${LOG_TMPFS_SIZE},mode=0755 tmpfs ${INSTALL_DIR}/logs || true'"
+    echo "ExecStartPre=/bin/sh -c '/usr/bin/touch ${INSTALL_DIR}/logs/panel.log && /usr/bin/chmod 0644 ${INSTALL_DIR}/logs/panel.log || true'"
+    echo "StandardOutput=append:${INSTALL_DIR}/logs/panel.log"
+    echo "StandardError=append:${INSTALL_DIR}/logs/panel.log"
+  } > /etc/systemd/system/sshpanel.service.d/override.conf
+}
+
 ensure_dnstt_redirect() {
+  if ! dnstt_redirect_is_enabled; then
+    warn "  sshpanel-dnstt-redirect is disabled or removed; update will not recreate or enable it."
+    write_sshpanel_systemd_override false
+    systemctl daemon-reload
+    return 0
+  fi
+
   info "  Ensuring DNSTT DNS redirect service exists..."
   cat > /usr/local/sbin/sshpanel-dnstt-redirect.sh <<'EOS'
 #!/bin/bash
@@ -374,22 +418,7 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 EOF2
 
-  mkdir -p /etc/systemd/system/sshpanel.service.d
-  cat > /etc/systemd/system/sshpanel.service.d/override.conf <<EOF2
-[Unit]
-Wants=sshpanel-dnstt-redirect.service
-After=local-fs.target sshpanel-dnstt-redirect.service
-
-[Service]
-Environment=PANEL_LOG_FILE=${INSTALL_DIR}/logs/panel.log
-Environment=PANEL_LOG_MAX_BYTES=${PANEL_LOG_MAX_BYTES}
-ExecStartPre=
-ExecStartPre=/usr/bin/mkdir -p ${INSTALL_DIR}/logs
-ExecStartPre=/bin/sh -c '/usr/bin/mountpoint -q ${INSTALL_DIR}/logs || /usr/bin/mount -t tmpfs -o size=${LOG_TMPFS_SIZE},mode=0755 tmpfs ${INSTALL_DIR}/logs || true'
-ExecStartPre=/bin/sh -c '/usr/bin/touch ${INSTALL_DIR}/logs/panel.log && /usr/bin/chmod 0644 ${INSTALL_DIR}/logs/panel.log || true'
-StandardOutput=append:${INSTALL_DIR}/logs/panel.log
-StandardError=append:${INSTALL_DIR}/logs/panel.log
-EOF2
+  write_sshpanel_systemd_override true
 
   systemctl daemon-reload
   systemctl enable --now sshpanel-dnstt-redirect.service || warn "DNSTT redirect service failed. Check: journalctl -u sshpanel-dnstt-redirect -e"
@@ -400,21 +429,23 @@ restart_service() {
   ensure_dnstt_redirect
 
   if $RESTART_NEEDED; then
-    systemctl start "$SERVICE_NAME"
-    sleep 2
-    if systemctl is-active --quiet "$SERVICE_NAME"; then
-      info "  $SERVICE_NAME is running."
-    else
-      warn "  $SERVICE_NAME failed to start. Check logs:"
-      warn "    journalctl -u $SERVICE_NAME -n 50 --no-pager"
-      if [[ -f "$INSTALL_DIR/sshpanel.bak" ]]; then
-        warn "  Restore command:"
-        warn "    cp $INSTALL_DIR/sshpanel.bak $INSTALL_DIR/sshpanel && systemctl start $SERVICE_NAME"
-      fi
-      exit 1
-    fi
+    info "  Starting $SERVICE_NAME after update..."
   else
-    warn "  Service was not running. Start it with: systemctl start $SERVICE_NAME"
+    warn "  $SERVICE_NAME was not running before update; starting it now."
+  fi
+
+  systemctl start "$SERVICE_NAME"
+  sleep 2
+  if systemctl is-active --quiet "$SERVICE_NAME"; then
+    info "  $SERVICE_NAME is running."
+  else
+    warn "  $SERVICE_NAME failed to start. Check logs:"
+    warn "    journalctl -u $SERVICE_NAME -n 50 --no-pager"
+    if [[ -f "$INSTALL_DIR/sshpanel.bak" ]]; then
+      warn "  Restore command:"
+      warn "    cp $INSTALL_DIR/sshpanel.bak $INSTALL_DIR/sshpanel && systemctl start $SERVICE_NAME"
+    fi
+    exit 1
   fi
 }
 
