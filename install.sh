@@ -15,6 +15,8 @@ LOG_TMPFS_SIZE="${LOG_TMPFS_SIZE:-15m}"
 PANEL_LOG_MAX_BYTES="${PANEL_LOG_MAX_BYTES:-1048576}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GO_VERSION="${GO_VERSION:-$(awk '$1 == "go" {print $2; exit}' "$SCRIPT_DIR/go.mod" 2>/dev/null || echo "1.22.5")}"
+MKDIR_BIN="$(command -v mkdir 2>/dev/null || true)"
+[[ -n "$MKDIR_BIN" ]] || MKDIR_BIN="/bin/mkdir"
 # ────────────────────────────────────────────────────────────────────────────
 
 [[ $EUID -ne 0 ]] && error "Run as root: sudo bash $0"
@@ -457,7 +459,7 @@ WorkingDirectory=${INSTALL_DIR}
 EnvironmentFile=${INSTALL_DIR}/.env
 Environment=PANEL_LOG_FILE=${INSTALL_DIR}/logs/panel.log
 Environment=PANEL_LOG_MAX_BYTES=${PANEL_LOG_MAX_BYTES}
-ExecStartPre=/usr/bin/mkdir -p ${INSTALL_DIR}/logs
+ExecStartPre=${MKDIR_BIN} -p ${INSTALL_DIR}/logs
 ExecStartPre=/bin/sh -c '/usr/bin/mountpoint -q ${INSTALL_DIR}/logs || /usr/bin/mount -t tmpfs -o size=${LOG_TMPFS_SIZE},mode=0755 tmpfs ${INSTALL_DIR}/logs || true'
 ExecStartPre=/bin/sh -c '/usr/bin/touch ${INSTALL_DIR}/logs/panel.log && /usr/bin/chmod 0644 ${INSTALL_DIR}/logs/panel.log || true'
 ExecStart=${INSTALL_DIR}/sshpanel -config ${INSTALL_DIR}/config.json
