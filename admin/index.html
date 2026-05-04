@@ -975,6 +975,12 @@ function fmtBytes(n) {
   const m=k/1024; if(m<1024) return m.toFixed(1)+" MiB";
   return (m/1024).toFixed(1)+" GiB";
 }
+function localDateKey(d = new Date()) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
 function fmtDate(iso) {
   if (!iso) return "—";
   const d = new Date(iso);
@@ -1695,14 +1701,17 @@ async function loadVnstat() {
     renderVnstatRows(vnstatDailyBody, daily, "No daily usage recorded yet.");
     renderVnstatRows(vnstatMonthlyBody, monthly, "No monthly usage recorded yet.");
 
-    const today = new Date().toISOString().slice(0,10);
-    const month = today.slice(0,7);
-    const todayTotal = daily.filter(r => r.period === today).reduce((sum, r) => sum + (r.total_bytes||0), 0);
-    const monthTotal = monthly.filter(r => r.period === month).reduce((sum, r) => sum + (r.total_bytes||0), 0);
+    // Use the server/database periods when available. Falling back to the
+    // newest row avoids browser UTC/local-time mismatches that can make
+    // "Today total" show 0 while the daily table has data.
+    const today = data.today_period || daily[0]?.period || localDateKey();
+    const month = data.month_period || today.slice(0,7);
+    const todayTotal = data.today_total_bytes ?? daily.filter(r => r.period === today).reduce((sum, r) => sum + (r.total_bytes||0), 0);
+    const monthTotal = data.month_total_bytes ?? monthly.filter(r => r.period === month).reduce((sum, r) => sum + (r.total_bytes||0), 0);
     const ifaces = new Set([...daily, ...monthly].map(r => r.iface).filter(Boolean));
     vnTodayTotal.textContent = fmtBytes(todayTotal);
     vnMonthTotal.textContent = fmtBytes(monthTotal);
-    vnIfaceCount.textContent = String(ifaces.size || 0);
+    vnIfaceCount.textContent = String(data.interface_count ?? ifaces.size ?? 0);
     vnstatStatus.textContent = "Updated: " + new Date().toLocaleTimeString() + " · history is kept until manually cleaned.";
   } catch (e) {
     if (e.message === "auth") doAuthError();

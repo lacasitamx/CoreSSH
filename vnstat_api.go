@@ -80,9 +80,14 @@ type VnstatUsageRow struct {
 }
 
 type VnstatDTO struct {
-	Daily     []VnstatUsageRow `json:"daily"`
-	Monthly   []VnstatUsageRow `json:"monthly"`
-	UpdatedAt time.Time        `json:"updated_at"`
+	Daily           []VnstatUsageRow `json:"daily"`
+	Monthly         []VnstatUsageRow `json:"monthly"`
+	UpdatedAt       time.Time        `json:"updated_at"`
+	TodayPeriod     string           `json:"today_period"`
+	MonthPeriod     string           `json:"month_period"`
+	TodayTotalBytes uint64           `json:"today_total_bytes"`
+	MonthTotalBytes uint64           `json:"month_total_bytes"`
+	InterfaceCount  int              `json:"interface_count"`
 }
 
 func (s *Store) EnsureIfaceUsageTables(ctx context.Context) error {
@@ -167,7 +172,11 @@ func (s *Store) LoadIfaceUsage(ctx context.Context, days, months int) (VnstatDTO
 		months = 12
 	}
 
-	out := VnstatDTO{UpdatedAt: time.Now()}
+	now := time.Now()
+	todayPeriod := now.Format("2006-01-02")
+	monthPeriod := now.Format("2006-01")
+	out := VnstatDTO{UpdatedAt: now, TodayPeriod: todayPeriod, MonthPeriod: monthPeriod}
+	ifaceSet := make(map[string]struct{})
 
 	dailyRows, err := s.db.QueryContext(ctx, `
 		SELECT iface, usage_date::text, rx_bytes, tx_bytes
@@ -186,6 +195,10 @@ func (s *Store) LoadIfaceUsage(ctx context.Context, days, months int) (VnstatDTO
 		}
 		r.TotalBytes = r.RxBytes + r.TxBytes
 		out.Daily = append(out.Daily, r)
+		ifaceSet[r.Iface] = struct{}{}
+		if r.Period == todayPeriod {
+			out.TodayTotalBytes += r.TotalBytes
+		}
 	}
 	if err := dailyRows.Err(); err != nil {
 		return out, err
@@ -208,10 +221,16 @@ func (s *Store) LoadIfaceUsage(ctx context.Context, days, months int) (VnstatDTO
 		}
 		r.TotalBytes = r.RxBytes + r.TxBytes
 		out.Monthly = append(out.Monthly, r)
+		ifaceSet[r.Iface] = struct{}{}
+		if r.Period == monthPeriod {
+			out.MonthTotalBytes += r.TotalBytes
+		}
 	}
 	if err := monthlyRows.Err(); err != nil {
 		return out, err
 	}
+
+	out.InterfaceCount = len(ifaceSet)
 
 	return out, nil
 }
