@@ -13,6 +13,170 @@ let currentTab = "dashboard";
 let inboundsRefreshInFlight = false;
 let lastInboundsStructure = "";
 
+
+// ─── Language / i18n ─────────────────────────────────────────────────────────
+const SUPPORTED_LANGS = ["pt-BR", "en-US"];
+const LANG_STORAGE_KEY = "PANEL_LANG";
+const I18N_TEXT = {
+  "en-US": {
+    "Dashboard":"Dashboard","Overview":"Overview","Accounts":"Accounts","Administration":"Administration","Server":"Server","System":"System","Settings":"Settings","Traffic":"Traffic","Monitoring":"Monitoring",
+    "SSH / SlowDNS":"SSH / SlowDNS","Xray Users":"Xray Users","Resellers":"Resellers","Logs":"Logs","VnStat":"VnStat","VPN Control":"VPN Control","DragonCore":"DragonCore",
+    "SSH Panel":"SSH Panel","Sign in with your admin or reseller credentials.":"Sign in with your admin or reseller credentials.","Username":"Username","Password":"Password","Sign in":"Sign in","Logout":"Logout","Open menu":"Open menu","Toggle theme":"Toggle theme","Language":"Language",
+    "Total accounts":"Total accounts","active":"active","expired":"expired","available limit":"Available limit","Loading quota…":"Loading quota…","Active connections":"Active connections","SSH + Xray online now":"SSH + Xray online now","Ready for resellers":"Ready for resellers","Server monitoring in real time":"real-time monitoring","CPU":"CPU","RAM":"RAM","Network":"Network","Processor load":"Processor load","Memory used":"Memory used","Total":"Total","Total --":"Total --","RX -- · TX -- Mb/s":"RX -- · TX -- Mb/s",
+    "Quick actions":"Quick actions","simple":"simple","Create SSH":"Create SSH","Create Xray":"Create Xray","New reseller":"New reseller","Configure services":"Configure services","User, password, expiry and limit.":"User, password, expiry and limit.","UUID, label, expiry and connections.":"UUID, label, expiry and connections.","Plan, expiry and account limit.":"Plan, expiry and account limit.","Ports, DNSTT, UDPGW and TLS.":"Ports, DNSTT, UDPGW and TLS.","My quota":"My quota","Loading…":"Loading…","Loading...":"Loading...",
+    "My Account":"My Account","Users (used / max)":"Users (used / max)","Users (used/max)":"Users (used/max)","Expires":"Expires","Status":"Status","Users":"Users","User":"User","Auth":"Auth","Conn":"Conn","Max":"Max","Up":"Up","Dn":"Dn","Owner":"Owner","Actions":"Actions","Create / update user":"Create / update user","Create / edit user form":"Create / edit user form","Show form":"Show form","Hide form":"Hide form","TOTP Secret":"TOTP Secret","TOTP Period (s)":"TOTP Period (s)","TOTP Window":"TOTP Window","TOTP Digits":"TOTP Digits","Allow static password too":"Allow static password too","Max connections":"Max connections","Expires at":"Expires at","Max Upload (Mb/s)":"Max Upload (Mb/s)","Max Download (Mb/s)":"Max Download (Mb/s)","Save user":"Save user","Cancel":"Cancel","Gen":"Gen","Copy":"Copy","Edit":"Edit","Del":"Del","Reload":"Reload","Refresh":"Refresh","+ New":"+ New","+ Add":"+ Add","Add":"Add","Remove":"Remove",
+    "Running":"Running","Stopped":"Stopped","running":"running","stopped":"stopped","disabled":"disabled","Counters API":"Counters API","Repair counters":"Repair counters","Start":"Start","Stop":"Stop","Restart":"Restart","Inbounds & Clients":"Inbounds & Clients","Inbounds & clients":"Inbounds & clients","Xray Config":"Xray Config","Visual":"Visual","JSON":"JSON","Config editor":"Config editor","Load JSON":"Load JSON","Save & Restart":"Save & Restart","System Logs":"System Logs","last 200 lines":"last 200 lines","Xray clients":"Xray clients","Xray Core":"Xray Core","Enabled":"Enabled","Online":"Online","PID":"PID","Uptime":"Uptime","Counters API ready.":"Counters API ready.","Counters API ready at {server}.":"Counters API ready at {server}.","Online counters need Stats API repair.":"Online counters need Stats API repair.","Online counters: {error}":"Online counters: {error}","Needs repair":"Needs repair","OK":"OK",
+    "UUID":"UUID","Email":"Email","Email / label":"Email / label","Display Name":"Display Name","Expiry Date":"Expiry Date","Max Connections":"Max Connections","(0 = unlimited)":"(0 = unlimited)","auto-generate":"auto-generate","Name":"Name","Expiry":"Expiry","Online":"Online","Traffic":"Traffic","No clients.":"No clients.","No VLESS/VMess/Trojan inbounds found.":"No VLESS/VMess/Trojan inbounds found.","Add Client":"Add Client","+ Add Client":"+ Add Client","Copied client ID.":"Copied client ID.","UUID required.":"UUID required.","Client {id}… added. Restarting Xray…":"Client {id}… added. Restarting Xray…","Client removed. Restarting Xray…":"Client removed. Restarting Xray…","Remove client {id}… from {tag}?":"Remove client {id}… from {tag}?","New client data is available; editing was preserved.":"New client data is available; editing was preserved.","Config loaded.":"Config loaded.","Invalid JSON: {error}":"Invalid JSON: {error}","Saved. Restarting Xray…":"Saved. Restarting Xray…","Saved.":"Saved.","Saving…":"Saving…","Error: {error}":"Error: {error}","Error loading inbounds.":"Error loading inbounds.",
+    "Active":"Active","Suspended":"Suspended","Expired":"Expired","Unlimited":"Unlimited","No expiration":"No expiration","Idle":"idle","online":"online","offline":"offline","idle":"idle","ago":"ago","Active ({days}d)":"Active ({days}d)","No limit set by admin":"No limit set by admin","{remaining} accounts available · {pct}% used":"{remaining} accounts available · {pct}% used","{used} used · unlimited":"{used} used · unlimited","{used}/{max} used · {pct}% of plan":"{used}/{max} used · {pct}% of plan","SSH {ssh} · Xray {xray}":"SSH {ssh} · Xray {xray}","{ssh} SSH · {xray} Xray online":"{ssh} SSH · {xray} Xray online","{online} online · {active} active · {expired} expired · Core: {core}":"{online} online · {active} active · {expired} expired · Core: {core}","{count} online":"{count} online","{count} total · {active} active · {online} online":"{count} total · {active} active · {online} online",
+    "New user.":"New user.","TOTP secret generated.":"TOTP secret generated.","Loaded.":"Loaded.","Last reload: {time}":"Last reload: {time}","Error loading users.":"Error loading users.","Editing {name}":"Editing {name}","Deleting {name}…":"Deleting {name}…","Deleted.":"Deleted.","Error deleting.":"Error deleting.","Delete user \"{name}\"?":"Delete user \"{name}\"?","Invalid credentials.":"Invalid credentials.","Account suspended or expired.":"Account suspended or expired.","Login failed.":"Login failed.","Network error.":"Network error.","Session expired — please sign in again.":"Session expired — please sign in again.",
+    "Create Reseller":"Create Reseller","Create / edit reseller form":"Create / edit reseller form","Save reseller":"Save reseller","New reseller.":"New reseller.","Edit: {name}":"Edit: {name}","Editing {name}.":"Editing {name}.","Deleting {name}…":"Deleting {name}…","Error loading.":"Error loading.","Resellers list":"Resellers list","Max SSH users (0 = unlimited)":"Max SSH users (0 = unlimited)",
+    "Server Load":"Server Load","Interfaces":"Interfaces","Interface":"Interface","Rx Mbps":"Rx Mbps","Tx Mbps":"Tx Mbps","Rx Total":"Rx Total","Tx Total":"Tx Total","Updated: {time}":"Updated: {time}","Error loading stats.":"Error loading stats.","Normal load":"Normal load","Moderate load":"Moderate load","High load":"High load","Cleaning interface totals…":"Cleaning interface totals…","Interface totals cleaned. Auto-clean remains every 30 days.":"Interface totals cleaned. Auto-clean remains every 30 days.","Error cleaning totals: {error}":"Error cleaning totals: {error}",
+    "VnStat Usage":"VnStat Usage","Today total":"Today total","This month total":"This month total","Interfaces tracked":"Interfaces tracked","daily / monthly":"daily / monthly","Daily usage":"Daily usage","Monthly usage":"Monthly usage","Day":"Day","Month":"Month","Clean usage":"Clean usage","Clean VnStat history":"Clean VnStat history","VnStat history does not auto-clean. Use the button when you want to reset it.":"VnStat history does not auto-clean. Use the button when you want to reset it.","Totals can be cleaned here and auto-clean every 30 days. VnStat history is separate.":"Totals can be cleaned here and auto-clean every 30 days. VnStat history is separate.","Loading VnStat usage…":"Loading VnStat usage…","VnStat history cleaned.":"VnStat history cleaned.","Error loading VnStat usage: {error}":"Error loading VnStat usage: {error}","Error cleaning VnStat history: {error}":"Error cleaning VnStat history: {error}",
+    "Panel / system":"Panel / system","Select a log source and click Refresh.":"Select a log source and click Refresh.","Clean panel log":"Clean panel log","No log lines yet.":"No log lines yet.","Panel log cleaned · {path} · max {max}":"Panel log cleaned · {path} · max {max}","Cleaning panel log…":"Cleaning panel log…",
+    "Network":"Network","Main Listen (SSH / HTTP)":"Main Listen (SSH / HTTP)","Extra Listen Addresses":"Extra Listen Addresses","(one per line, e.g. 0.0.0.0:8080)":"(one per line, e.g. 0.0.0.0:8080)","SSH & General":"SSH & General","Default Upload Limit (Mbps)":"Default Upload Limit (Mbps)","Default Download Limit (Mbps)":"Default Download Limit (Mbps)","Quiet Logs":"Quiet Logs","User Count Display":"User Count Display","SSH Banner":"SSH Banner","Banner Text":"Banner Text","(shown to connecting SSH clients)":"(shown to connecting SSH clients)","DNSTT Tunnel":"DNSTT Tunnel","Domain":"Domain","UDP Listen":"UDP Listen","Private Key":"Private Key","Public Key":"Public Key","Disable Stats Log":"Disable Stats Log","Disable Console Log":"Disable Console Log","UDP Gateway":"UDP Gateway","Listen":"Listen","Idle Timeout":"Idle Timeout","Map TTL":"Map TTL","Debug Logging":"Debug Logging","TLS Forwarders":"TLS Forwarders","Listen Address":"Listen Address","Certificate":"Certificate","Generate Self-Signed":"Generate Self-Signed","Let's Encrypt (certbot)":"Let's Encrypt (certbot)","Paste PEM text":"Paste PEM text","Custom file paths":"Custom file paths","Cert File":"Cert File","Key File":"Key File","Certificate PEM":"Certificate PEM","Private Key PEM":"Private Key PEM","Add Forwarder":"Add Forwarder","Save Config":"Save Config","All service changes apply live.":"All service changes apply live.","Saved and applied live.":"Saved and applied live.","Saved live with warnings: {warnings}":"Saved live with warnings: {warnings}","Processing…":"Processing…","Listen address required.":"Listen address required.","Domain required.":"Domain required.","Domain and email required.":"Domain and email required.","Cert and key paths required.":"Cert and key paths required.","Added. Save config to apply.":"Added. Save config to apply.","Generating…":"Generating…","Generated ✓ paths set.":"Generated ✓ paths set.","Generating key…":"Generating key…","Key generated. Save config to apply.":"Key generated. Save config to apply.","Loading public key…":"Loading public key…","Self-signed cert generated.":"Self-signed cert generated.","Let's Encrypt cert issued.":"Let's Encrypt cert issued.","PEM saved.":"PEM saved.","Saved ✓ paths set.":"Saved ✓ paths set.","Name, cert PEM, and key PEM required.":"Name, cert PEM, and key PEM required.","Name, cert, and key required.":"Name, cert, and key required.","Name, cert PEM, and key PEM required.":"Name, cert PEM, and key PEM required.","Save Changes":"Save Changes"
+  },
+  "pt-BR": {
+    "Dashboard":"Painel","Overview":"Visão geral","Accounts":"Contas","Administration":"Administração","Server":"Servidor","System":"Sistema","Settings":"Configurações","Traffic":"Tráfego","Monitoring":"Monitoramento",
+    "SSH / SlowDNS":"SSH / SlowDNS","Xray Users":"Usuários Xray","Resellers":"Revendedores","Logs":"Logs","VnStat":"VnStat","VPN Control":"Controle VPN","DragonCore":"DragonCore",
+    "SSH Panel":"Painel SSH","Sign in with your admin or reseller credentials.":"Entre com suas credenciais de admin ou revendedor.","Username":"Usuário","Password":"Senha","Sign in":"Entrar","Logout":"Sair","Open menu":"Abrir menu","Toggle theme":"Alternar tema","Language":"Idioma",
+    "Total accounts":"Total de contas","active":"ativas","expired":"expiradas","available limit":"Limite disponível","Loading quota…":"Carregando cota…","Active connections":"Conexões ativas","SSH + Xray online now":"SSH + Xray online agora","Ready for resellers":"Pronto para revendedores","Server monitoring in real time":"monitoramento em tempo real","CPU":"CPU","RAM":"RAM","Network":"Rede","Processor load":"Carga do processador","Memory used":"Memória usada","Total":"Total","Total --":"Total --","RX -- · TX -- Mb/s":"RX -- · TX -- Mb/s",
+    "Quick actions":"Ações rápidas","simple":"simples","Create SSH":"Criar SSH","Create Xray":"Criar Xray","New reseller":"Novo revendedor","Configure services":"Configurar serviços","User, password, expiry and limit.":"Usuário, senha, validade e limite.","UUID, label, expiry and connections.":"UUID, label, validade e conexões.","Plan, expiry and account limit.":"Plano, validade e limite de contas.","Ports, DNSTT, UDPGW and TLS.":"Portas, DNSTT, UDPGW e TLS.","My quota":"Minha cota","Loading…":"Carregando…","Loading...":"Carregando...",
+    "My Account":"Minha conta","Users (used / max)":"Usuários (usado / máximo)","Users (used/max)":"Usuários (usado/máximo)","Expires":"Vence em","Status":"Status","Users":"Usuários","User":"Usuário","Auth":"Autenticação","Conn":"Conexões","Max":"Máximo","Up":"Upload","Dn":"Download","Owner":"Dono","Actions":"Ações","Create / update user":"Criar / atualizar usuário","Create / edit user form":"Formulário de criar / editar usuário","Show form":"Mostrar formulário","Hide form":"Ocultar formulário","TOTP Secret":"Segredo TOTP","TOTP Period (s)":"Período TOTP (s)","TOTP Window":"Janela TOTP","TOTP Digits":"Dígitos TOTP","Allow static password too":"Permitir senha estática também","Max connections":"Máx. conexões","Expires at":"Vence em","Max Upload (Mb/s)":"Upload máx. (Mb/s)","Max Download (Mb/s)":"Download máx. (Mb/s)","Save user":"Salvar usuário","Cancel":"Cancelar","Gen":"Gerar","Copy":"Copiar","Edit":"Editar","Del":"Excluir","Reload":"Recarregar","Refresh":"Atualizar","+ New":"+ Novo","+ Add":"+ Adicionar","Add":"Adicionar","Remove":"Remover",
+    "Running":"Rodando","Stopped":"Parado","running":"rodando","stopped":"parado","disabled":"desativado","Counters API":"API de contadores","Repair counters":"Reparar contadores","Start":"Iniciar","Stop":"Parar","Restart":"Reiniciar","Inbounds & Clients":"Inbounds e clientes","Inbounds & clients":"Inbounds e clientes","Xray Config":"Configuração Xray","Visual":"Visual","JSON":"JSON","Config editor":"Editor de configuração","Load JSON":"Carregar JSON","Save & Restart":"Salvar e reiniciar","System Logs":"Logs do sistema","last 200 lines":"últimas 200 linhas","Xray clients":"Clientes Xray","Xray Core":"Núcleo Xray","Enabled":"Ativado","Online":"Online","PID":"PID","Uptime":"Tempo ativo","Counters API ready.":"API de contadores pronta.","Counters API ready at {server}.":"API de contadores pronta em {server}.","Online counters need Stats API repair.":"Contadores online precisam de reparo da Stats API.","Online counters: {error}":"Contadores online: {error}","Needs repair":"Precisa de reparo","OK":"OK",
+    "UUID":"UUID","Email":"Email","Email / label":"Email / label","Display Name":"Nome de exibição","Expiry Date":"Data de vencimento","Max Connections":"Máx. conexões","(0 = unlimited)":"(0 = ilimitado)","auto-generate":"gerar automaticamente","Name":"Nome","Expiry":"Vencimento","Online":"Online","Traffic":"Tráfego","No clients.":"Nenhum cliente.","No VLESS/VMess/Trojan inbounds found.":"Nenhum inbound VLESS/VMess/Trojan encontrado.","Add Client":"Adicionar cliente","+ Add Client":"+ Adicionar cliente","Copied client ID.":"ID do cliente copiado.","UUID required.":"UUID obrigatório.","Client {id}… added. Restarting Xray…":"Cliente {id}… adicionado. Reiniciando Xray…","Client removed. Restarting Xray…":"Cliente removido. Reiniciando Xray…","Remove client {id}… from {tag}?":"Remover cliente {id}… de {tag}?","New client data is available; editing was preserved.":"Novos dados de cliente disponíveis; sua edição foi preservada.","Config loaded.":"Configuração carregada.","Invalid JSON: {error}":"JSON inválido: {error}","Saved. Restarting Xray…":"Salvo. Reiniciando Xray…","Saved.":"Salvo.","Saving…":"Salvando…","Error: {error}":"Erro: {error}","Error loading inbounds.":"Erro ao carregar inbounds.",
+    "Active":"Ativo","Suspended":"Suspenso","Expired":"Expirado","Unlimited":"Ilimitado","No expiration":"Sem vencimento","Idle":"ocioso","online":"online","offline":"offline","idle":"ocioso","ago":"atrás","Active ({days}d)":"Ativo ({days}d)","No limit set by admin":"Sem limite definido pelo admin","{remaining} accounts available · {pct}% used":"{remaining} contas disponíveis · {pct}% usado","{used} used · unlimited":"{used} usadas · sem limite","{used}/{max} used · {pct}% of plan":"{used}/{max} usadas · {pct}% do plano","SSH {ssh} · Xray {xray}":"SSH {ssh} · Xray {xray}","{ssh} SSH · {xray} Xray online":"{ssh} SSH · {xray} Xray online","{online} online · {active} active · {expired} expired · Core: {core}":"{online} online · {active} ativos · {expired} expirados · Core: {core}","{count} online":"{count} online","{count} total · {active} active · {online} online":"{count} total · {active} ativas · {online} online",
+    "New user.":"Novo usuário.","TOTP secret generated.":"Segredo TOTP gerado.","Loaded.":"Carregado.","Last reload: {time}":"Último reload: {time}","Error loading users.":"Erro ao carregar usuários.","Editing {name}":"Editando {name}","Deleting {name}…":"Excluindo {name}…","Deleted.":"Excluído.","Error deleting.":"Erro ao excluir.","Delete user \"{name}\"?":"Excluir usuário \"{name}\"?","Invalid credentials.":"Credenciais inválidas.","Account suspended or expired.":"Conta suspensa ou expirada.","Login failed.":"Falha no login.","Network error.":"Erro de rede.","Session expired — please sign in again.":"Sessão expirada — faça login novamente.",
+    "Create Reseller":"Criar revendedor","Create / edit reseller form":"Formulário de criar / editar revendedor","Save reseller":"Salvar revendedor","New reseller.":"Novo revendedor.","Edit: {name}":"Editar: {name}","Editing {name}.":"Editando {name}.","Deleting {name}…":"Excluindo {name}…","Error loading.":"Erro ao carregar.","Resellers list":"Lista de revendedores","Max SSH users (0 = unlimited)":"Máximo de usuários SSH (0 = ilimitado)",
+    "Server Load":"Carga do servidor","Interfaces":"Interfaces","Interface":"Interface","Rx Mbps":"Rx Mbps","Tx Mbps":"Tx Mbps","Rx Total":"Rx Total","Tx Total":"Tx Total","Updated: {time}":"Atualizado: {time}","Error loading stats.":"Erro ao carregar stats.","Normal load":"Carga normal","Moderate load":"Carga moderada","High load":"Carga alta","Cleaning interface totals…":"Limpando totais das interfaces…","Interface totals cleaned. Auto-clean remains every 30 days.":"Totais das interfaces limpos. A limpeza automática continua a cada 30 dias.","Error cleaning totals: {error}":"Erro ao limpar totais: {error}",
+    "VnStat Usage":"Uso do VnStat","Today total":"Total hoje","This month total":"Total este mês","Interfaces tracked":"Interfaces monitoradas","daily / monthly":"diário / mensal","Daily usage":"Uso diário","Monthly usage":"Uso mensal","Day":"Dia","Month":"Mês","Clean usage":"Limpar uso","Clean VnStat history":"Limpar histórico VnStat","VnStat history does not auto-clean. Use the button when you want to reset it.":"O histórico VnStat não é limpo automaticamente. Use o botão quando quiser resetar.","Totals can be cleaned here and auto-clean every 30 days. VnStat history is separate.":"Os totais podem ser limpos aqui e têm limpeza automática a cada 30 dias. O histórico VnStat é separado.","Loading VnStat usage…":"Carregando uso do VnStat…","VnStat history cleaned.":"Histórico VnStat limpo.","Error loading VnStat usage: {error}":"Erro ao carregar uso do VnStat: {error}","Error cleaning VnStat history: {error}":"Erro ao limpar histórico VnStat: {error}",
+    "Panel / system":"Painel / sistema","Select a log source and click Refresh.":"Selecione uma fonte de log e clique em Atualizar.","Clean panel log":"Limpar log do painel","No log lines yet.":"Ainda não há linhas de log.","Panel log cleaned · {path} · max {max}":"Log do painel limpo · {path} · máx {max}","Cleaning panel log…":"Limpando log do painel…",
+    "Network":"Rede","Main Listen (SSH / HTTP)":"Listen principal (SSH / HTTP)","Extra Listen Addresses":"Endereços extras de listen","(one per line, e.g. 0.0.0.0:8080)":"(um por linha, ex. 0.0.0.0:8080)","SSH & General":"SSH e geral","Default Upload Limit (Mbps)":"Limite padrão de upload (Mbps)","Default Download Limit (Mbps)":"Limite padrão de download (Mbps)","Quiet Logs":"Logs silenciosos","User Count Display":"Exibir contagem de usuários","SSH Banner":"Banner SSH","Banner Text":"Texto do banner","(shown to connecting SSH clients)":"(mostrado aos clientes SSH ao conectar)","DNSTT Tunnel":"Túnel DNSTT","Domain":"Domínio","UDP Listen":"Listen UDP","Private Key":"Chave privada","Public Key":"Chave pública","Disable Stats Log":"Desativar log de stats","Disable Console Log":"Desativar log do console","UDP Gateway":"Gateway UDP","Listen":"Listen","Idle Timeout":"Timeout ocioso","Map TTL":"TTL do mapa","Debug Logging":"Log de debug","TLS Forwarders":"Encaminhadores TLS","Listen Address":"Endereço de listen","Certificate":"Certificado","Generate Self-Signed":"Gerar autoassinado","Let's Encrypt (certbot)":"Let's Encrypt (certbot)","Paste PEM text":"Colar texto PEM","Custom file paths":"Caminhos personalizados","Cert File":"Arquivo cert","Key File":"Arquivo key","Certificate PEM":"Certificado PEM","Private Key PEM":"Chave privada PEM","Add Forwarder":"Adicionar forwarder","Save Config":"Salvar config","All service changes apply live.":"Todas as mudanças de serviço aplicam ao vivo.","Saved and applied live.":"Salvo e aplicado ao vivo.","Saved live with warnings: {warnings}":"Salvo ao vivo com avisos: {warnings}","Processing…":"Processando…","Listen address required.":"Endereço de listen obrigatório.","Domain required.":"Domínio obrigatório.","Domain and email required.":"Domínio e email obrigatórios.","Cert and key paths required.":"Caminhos do certificado e da chave obrigatórios.","Added. Save config to apply.":"Adicionado. Salve a config para aplicar.","Generating…":"Gerando…","Generated ✓ paths set.":"Gerado ✓ caminhos definidos.","Generating key…":"Gerando chave…","Key generated. Save config to apply.":"Chave gerada. Salve a config para aplicar.","Loading public key…":"Carregando chave pública…","Self-signed cert generated.":"Certificado autoassinado gerado.","Let's Encrypt cert issued.":"Certificado Let's Encrypt emitido.","PEM saved.":"PEM salvo.","Saved ✓ paths set.":"Salvo ✓ caminhos definidos.","Name, cert PEM, and key PEM required.":"Nome, cert PEM e chave PEM obrigatórios.","Name, cert, and key required.":"Nome, cert e chave obrigatórios.","Save Changes":"Salvar alterações"
+  }
+};
+const I18N_ALIASES = {
+  "Painel":"Dashboard","Visão geral":"Overview","Contas":"Accounts","Administração":"Administration","Servidor":"Server","Sistema":"System","Configurações":"Settings","Tráfego":"Traffic","Revendedores":"Resellers","Usuários Xray":"Xray Users","Controle VPN":"VPN Control","Sair":"Logout",
+  "Total de contas":"Total accounts","ativas":"active","expiradas":"expired","Limite disponível":"available limit","Carregando cota…":"Loading quota…","Conexões ativas":"Active connections","SSH + Xray online agora":"SSH + Xray online now","Pronto para revendedores":"Ready for resellers","monitoramento em tempo real":"Server monitoring in real time","Carga do processador":"Processor load","Memória usada":"Memory used",
+  "Ações rápidas":"Quick actions","Criar SSH":"Create SSH","Criar Xray":"Create Xray","Novo revendedor":"New reseller","Configurar serviços":"Configure services","Usuário, senha, validade e limite.":"User, password, expiry and limit.","UUID, label, validade e conexões.":"UUID, label, expiry and connections.","Plano, validade e limite de contas.":"Plan, expiry and account limit.","Portas, DNSTT, UDPGW e TLS.":"Ports, DNSTT, UDPGW and TLS.","Minha cota":"My quota","Carregando…":"Loading…",
+  "Minha conta":"My Account","Usuários":"Users","Usuário":"User","Autenticação":"Auth","Conexões":"Conn","Máximo":"Max","Dono":"Owner","Ações":"Actions","Criar / atualizar usuário":"Create / update user","Mostrar formulário":"Show form","Ocultar formulário":"Hide form","Salvar usuário":"Save user","Cancelar":"Cancel","Gerar":"Gen","Copiar":"Copy","Editar":"Edit","Excluir":"Del","Recarregar":"Reload","Atualizar":"Refresh",
+  "Rodando":"Running","Parado":"Stopped","rodando":"running","parado":"stopped","desativado":"disabled","API de contadores":"Counters API","Reparar contadores":"Repair counters","Iniciar":"Start","Parar":"Stop","Reiniciar":"Restart","Inbounds e clientes":"Inbounds & Clients","Configuração Xray":"Xray Config","Editor de configuração":"Config editor","Carregar JSON":"Load JSON","Salvar e reiniciar":"Save & Restart","Logs do sistema":"System Logs","últimas 200 linhas":"last 200 lines","Clientes Xray":"Xray clients","Núcleo Xray":"Xray Core","Ativado":"Enabled","Tempo ativo":"Uptime","Precisa de reparo":"Needs repair",
+  "Nome":"Name","Nome de exibição":"Display Name","Data de vencimento":"Expiry Date","Máx. conexões":"Max Connections","Ilimitado":"Unlimited","Ativo":"Active","Suspenso":"Suspended","Expirado":"Expired","Sem vencimento":"No expiration","ocioso":"idle","Nenhum cliente.":"No clients.","Adicionar cliente":"Add Client","Novo usuário.":"New user.","Carregado.":"Loaded.","Salvo.":"Saved.","Salvando…":"Saving…","Erro ao carregar usuários.":"Error loading users.","Erro ao excluir.":"Error deleting.","Credenciais inválidas.":"Invalid credentials.","Conta suspensa ou expirada.":"Account suspended or expired.","Falha no login.":"Login failed.","Erro de rede.":"Network error.","Sessão expirada — faça login novamente.":"Session expired — please sign in again.",
+  "Rede":"Network","Listen principal (SSH / HTTP)":"Main Listen (SSH / HTTP)","Endereços extras de listen":"Extra Listen Addresses","SSH e geral":"SSH & General","Limite padrão de upload (Mbps)":"Default Upload Limit (Mbps)","Limite padrão de download (Mbps)":"Default Download Limit (Mbps)","Logs silenciosos":"Quiet Logs","Exibir contagem de usuários":"User Count Display","Banner SSH":"SSH Banner","Texto do banner":"Banner Text","Túnel DNSTT":"DNSTT Tunnel","Domínio":"Domain","Chave privada":"Private Key","Chave pública":"Public Key","Gateway UDP":"UDP Gateway","Endereço de listen":"Listen Address","Certificado":"Certificate","Gerar autoassinado":"Generate Self-Signed","Colar texto PEM":"Paste PEM text","Caminhos personalizados":"Custom file paths","Arquivo cert":"Cert File","Arquivo key":"Key File","Adicionar forwarder":"Add Forwarder","Salvar config":"Save Config","Todas as mudanças de serviço aplicam ao vivo.":"All service changes apply live."
+};
+
+Object.assign(I18N_TEXT["en-US"], {
+  "Servers":"Servers","Reseller area":"Reseller area","shared quota":"shared quota","available":"available","used":"used","breakdown":"breakdown",
+  "Create Xray clients with the same experience as the main panel. Each Xray client uses the same limit shared with SSH accounts.":"Create Xray clients with the same experience as the main panel. Each Xray client uses the same limit shared with SSH accounts.",
+  "Loading inbounds…":"Loading inbounds…","SSH -- · Xray --":"SSH -- · Xray --","active ·":"active ·","expired":"expired",
+  "Binary: /opt/sshpanel/xray · Config: /opt/sshpanel/xray_config.json · Online counters use Xray Stats API on 127.0.0.1:10085":"Binary: /opt/sshpanel/xray · Config: /opt/sshpanel/xray_config.json · Online counters use Xray Stats API on 127.0.0.1:10085",
+  "Public Key — share with dnstt clients":"Public Key — share with DNSTT clients","auto-saved to /opt/sshpanel/dnstt.key":"auto-saved to /opt/sshpanel/dnstt.key",
+  "Max UDP Sessions Per Client":"Max UDP Sessions Per Client","(not total server users)":"(not total server users)","Service Name":"Service Name","Mode":"Mode","Protocol":"Protocol","Port":"Port","Tag":"Tag","Listen IP":"Listen IP","Method":"Method","Host":"Host","Path":"Path","Dest":"Dest","Short ID":"Short ID","Server Name":"Server Name","Cert File Path":"Cert File Path","Key File Path":"Key File Path","Certificate source:":"Certificate source:","Self-Signed":"Self-Signed","Paste PEM":"Paste PEM","File Path":"File Path","Save PEM":"Save PEM","Generate":"Generate","Public Key":"Public Key","Debug Logging":"Debug Logging","Name":"Name","Private Key PEM":"Private Key PEM","Certificate PEM":"Certificate PEM","Domain Name":"Domain Name"
+});
+Object.assign(I18N_TEXT["pt-BR"], {
+  "Servers":"Servidores","Reseller area":"Área do revendedor","shared quota":"cota única","available":"disponíveis","used":"usadas","breakdown":"divisão",
+  "Create Xray clients with the same experience as the main panel. Each Xray client uses the same limit shared with SSH accounts.":"Crie clientes Xray com a mesma experiência do painel principal. Cada cliente Xray desconta do mesmo limite usado pelas contas SSH.",
+  "Loading inbounds…":"Carregando inbounds…","SSH -- · Xray --":"SSH -- · Xray --","active ·":"ativas ·","expired":"expiradas",
+  "Binary: /opt/sshpanel/xray · Config: /opt/sshpanel/xray_config.json · Online counters use Xray Stats API on 127.0.0.1:10085":"Binário: /opt/sshpanel/xray · Config: /opt/sshpanel/xray_config.json · Contadores online usam a Xray Stats API em 127.0.0.1:10085",
+  "Public Key — share with dnstt clients":"Chave pública — compartilhe com clientes DNSTT","auto-saved to /opt/sshpanel/dnstt.key":"salva automaticamente em /opt/sshpanel/dnstt.key",
+  "Max UDP Sessions Per Client":"Máx. sessões UDP por cliente","(not total server users)":"(não é o total de usuários do servidor)","Service Name":"Nome do serviço","Mode":"Modo","Protocol":"Protocolo","Port":"Porta","Tag":"Tag","Listen IP":"IP de listen","Method":"Método","Host":"Host","Path":"Caminho","Dest":"Destino","Short ID":"ID curto","Server Name":"Nome do servidor","Cert File Path":"Caminho do arquivo cert","Key File Path":"Caminho do arquivo key","Certificate source:":"Fonte do certificado:","Self-Signed":"Autoassinado","Paste PEM":"Colar PEM","File Path":"Caminho do arquivo","Save PEM":"Salvar PEM","Generate":"Gerar","Public Key":"Chave pública","Debug Logging":"Log de debug","Name":"Nome","Private Key PEM":"Chave privada PEM","Certificate PEM":"Certificado PEM","Domain Name":"Nome do domínio"
+});
+Object.assign(I18N_ALIASES, {
+  "Servidores":"Servers","Área do revendedor":"Reseller area","cota única":"shared quota","disponíveis":"available","usadas":"used","divisão":"breakdown",
+  "Crie clientes Xray com a mesma experiência do painel principal. Cada cliente Xray desconta do mesmo limite usado pelas contas SSH.":"Create Xray clients with the same experience as the main panel. Each Xray client uses the same limit shared with SSH accounts.",
+  "Carregando inbounds…":"Loading inbounds…","Loading inbounds…":"Loading inbounds…","ativas ·":"active ·","expiradas":"expired",
+  "Binário: /opt/sshpanel/xray · Config: /opt/sshpanel/xray_config.json · Contadores online usam a Xray Stats API em 127.0.0.1:10085":"Binary: /opt/sshpanel/xray · Config: /opt/sshpanel/xray_config.json · Online counters use Xray Stats API on 127.0.0.1:10085",
+  "Public Key — share with dnstt clients":"Public Key — share with dnstt clients","Chave pública — compartilhe com clientes DNSTT":"Public Key — share with dnstt clients",
+  "Máx. sessões UDP por cliente":"Max UDP Sessions Per Client","(não é o total de usuários do servidor)":"(not total server users)","Nome do serviço":"Service Name","Modo":"Mode","Protocolo":"Protocol","Porta":"Port","IP de listen":"Listen IP","Método":"Method","Caminho":"Path","Destino":"Dest","ID curto":"Short ID","Nome do servidor":"Server Name","Caminho do arquivo cert":"Cert File Path","Caminho do arquivo key":"Key File Path","Fonte do certificado:":"Certificate source:","Autoassinado":"Self-Signed","Colar PEM":"Paste PEM","Caminho do arquivo":"File Path","Salvar PEM":"Save PEM","Chave pública":"Public Key","Nome do domínio":"Domain Name"
+});
+const I18N_REVERSE = Object.fromEntries(SUPPORTED_LANGS.map(lang => [lang, Object.fromEntries(Object.entries(I18N_TEXT[lang] || {}).map(([k, v]) => [v, k]))]));
+let currentLang = detectInitialLanguage();
+let i18nTranslating = false;
+let i18nQueued = false;
+
+function detectInitialLanguage() {
+  const saved = localStorage.getItem(LANG_STORAGE_KEY);
+  if (SUPPORTED_LANGS.includes(saved)) return saved;
+  const langs = (navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language || ""]).join(" ").toLowerCase();
+  return langs.includes("pt") ? "pt-BR" : "en-US";
+}
+function normalizeI18nText(value) { return String(value ?? "").replace(/\s+/g, " ").trim(); }
+function i18nCanonicalKey(value) {
+  const text = normalizeI18nText(value);
+  if (!text) return "";
+  if (Object.prototype.hasOwnProperty.call(I18N_TEXT["en-US"], text)) return text;
+  if (I18N_ALIASES[text]) return I18N_ALIASES[text];
+  for (const lang of SUPPORTED_LANGS) {
+    if (I18N_REVERSE[lang][text]) return I18N_REVERSE[lang][text];
+  }
+  return "";
+}
+function t(key, vars = {}) {
+  const dict = I18N_TEXT[currentLang] || I18N_TEXT["en-US"];
+  let out = dict[key] || I18N_TEXT["en-US"][key] || key;
+  return out.replace(/\{(\w+)\}/g, (_, name) => Object.prototype.hasOwnProperty.call(vars, name) ? vars[name] : "");
+}
+function shouldSkipI18n(el) {
+  return !el || !el.closest || !!el.closest("script,style,textarea,pre,code,[data-no-i18n]");
+}
+function translateTextNode(node) {
+  const raw = node.nodeValue || "";
+  const key = i18nCanonicalKey(raw);
+  if (!key) return;
+  const translated = t(key);
+  const lead = raw.match(/^\s*/)?.[0] || "";
+  const tail = raw.match(/\s*$/)?.[0] || "";
+  const next = lead + translated + tail;
+  if (node.nodeValue !== next) node.nodeValue = next;
+}
+function translateStatic(root = document.body) {
+  if (!root) return;
+  i18nTranslating = true;
+  try {
+    if (root.nodeType === Node.TEXT_NODE) translateTextNode(root);
+    const base = root.nodeType === Node.ELEMENT_NODE ? root : document.body;
+    if (!base) return;
+    const walker = document.createTreeWalker(base, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        return shouldSkipI18n(node.parentElement) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT;
+      }
+    });
+    const nodes = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    nodes.forEach(translateTextNode);
+    base.querySelectorAll?.("[placeholder],[title],[aria-label]").forEach(el => {
+      if (shouldSkipI18n(el)) return;
+      ["placeholder", "title", "aria-label"].forEach(attr => {
+        const value = el.getAttribute(attr);
+        const key = i18nCanonicalKey(value);
+        if (key) el.setAttribute(attr, t(key));
+      });
+    });
+  } finally {
+    i18nTranslating = false;
+  }
+}
+function queueI18nRefresh() {
+  if (i18nTranslating || i18nQueued) return;
+  i18nQueued = true;
+  requestAnimationFrame(() => {
+    i18nQueued = false;
+    translateStatic(document.body);
+  });
+}
+function startI18nObserver() {
+  if (!document.body || window.__dragonI18nObserver) return;
+  window.__dragonI18nObserver = new MutationObserver(() => queueI18nRefresh());
+  window.__dragonI18nObserver.observe(document.body, { childList: true, characterData: true, subtree: true, attributes: true, attributeFilter: ["placeholder", "title", "aria-label"] });
+}
+function applyLanguage(lang, options = {}) {
+  currentLang = SUPPORTED_LANGS.includes(lang) ? lang : "en-US";
+  if (options.persist !== false) localStorage.setItem(LANG_STORAGE_KEY, currentLang);
+  document.documentElement.lang = currentLang.toLowerCase();
+  if (languageSelect) languageSelect.value = currentLang;
+  updatePageHeading();
+  translateStatic(document.body);
+  document.documentElement.classList.remove("i18n-pending");
+}
+
 // ─── DOM refs ─────────────────────────────────────────────────────────────────
 const loginOverlay  = document.getElementById("loginOverlay");
 const loginUser     = document.getElementById("loginUser");
@@ -26,10 +190,9 @@ const logoutBtn     = document.getElementById("logoutBtn");
 const menuToggle    = document.getElementById("menuToggle");
 const drawerBackdrop = document.getElementById("drawerBackdrop");
 const themeToggle   = document.getElementById("themeToggle");
+const languageSelect = document.getElementById("languageSelect");
 const pageTitle     = document.getElementById("pageTitle");
 const pageEyebrow   = document.getElementById("pageEyebrow");
-const sidebarUsername = document.getElementById("sidebarUsername");
-const sidebarRole   = document.getElementById("sidebarRole");
 const dashTotalUsers = document.getElementById("dashTotalUsers");
 const dashActiveUsers = document.getElementById("dashActiveUsers");
 const dashExpiredUsers = document.getElementById("dashExpiredUsers");
@@ -226,18 +389,18 @@ function inboundStructure(inbounds = []) {
 function clientStatusHTML(c) {
   const exp = c.expires_at ? new Date(c.expires_at) : null;
   const daysLeft = c.expiration_days;
-  if (c.expired) return `<span style="color:var(--danger);font-size:.68rem;">Expired</span>`;
-  if (daysLeft === -1 || !exp) return `<span style="color:var(--success);font-size:.68rem;">Active</span>`;
-  return `<span style="color:var(--success);font-size:.68rem;">Active (${escapeHTML(daysLeft)}d)</span>`;
+  if (c.expired) return `<span style="color:var(--danger);font-size:.68rem;">${t("Expired")}</span>`;
+  if (daysLeft === -1 || !exp) return `<span style="color:var(--success);font-size:.68rem;">${t("Active")}</span>`;
+  return `<span style="color:var(--success);font-size:.68rem;">${t("Active ({days}d)", {days: escapeHTML(daysLeft)})}</span>`;
 }
 
 function clientExpiryLabel(c) {
   const exp = c.expires_at ? new Date(c.expires_at) : null;
-  return exp ? exp.toLocaleDateString() : "Unlimited";
+  return exp ? exp.toLocaleDateString() : t("Unlimited");
 }
 
 function clientOnlineHTML(c) {
-  return `${c.online ? '<span class="badge-on">online</span>' : '<span class="badge-off">offline</span>'}<div class="hint">${escapeHTML(formatLastActive(c.last_active))}</div>`;
+  return `${c.online ? `<span class="badge-on">${t("online")}</span>` : `<span class="badge-off">${t("offline")}</span>`}<div class="hint">${escapeHTML(formatLastActive(c.last_active))}</div>`;
 }
 
 function updateCell(row, name, html) {
@@ -262,7 +425,7 @@ function patchRenderedInbounds(inbounds) {
     const onlineCount = clients.filter(c => !!c.online).length;
     const chip = section.querySelector('[data-role="inbound-online-chip"]');
     if (chip) {
-      chip.textContent = `${onlineCount} online`;
+      chip.textContent = t("{count} online", {count: onlineCount});
       chip.classList.toggle("green", onlineCount > 0);
     }
 
@@ -284,15 +447,20 @@ function patchRenderedInbounds(inbounds) {
 
 // ─── Navigation / shell ──────────────────────────────────────────────────────
 const tabTitles = {
-  dashboard: ["Painel", "Visão geral"],
-  ssh: ["Contas", "SSH / SlowDNS"],
-  xray: ["Contas", "Xray Users"],
-  resellers: ["Administração", "Revendedores"],
-  stats: ["Servidor", "Monitoramento"],
-  vnstat: ["Tráfego", "VnStat"],
-  logs: ["Sistema", "Logs"],
-  server: ["Sistema", "Configurações"],
+  dashboard: ["Dashboard", "Overview"],
+  ssh: ["Accounts", "SSH / SlowDNS"],
+  xray: ["Accounts", "Xray Users"],
+  resellers: ["Administration", "Resellers"],
+  stats: ["Server", "Monitoring"],
+  vnstat: ["Traffic", "VnStat"],
+  logs: ["System", "Logs"],
+  server: ["System", "Settings"],
 };
+function updatePageHeading() {
+  const [eyebrow, title] = tabTitles[currentTab] || ["Dashboard", currentTab];
+  if (pageEyebrow) pageEyebrow.textContent = t(eyebrow);
+  if (pageTitle) pageTitle.textContent = t(title);
+}
 
 function selectTab(tab) {
   currentTab = tab;
@@ -303,15 +471,13 @@ function selectTab(tab) {
   document.querySelectorAll(".tab-pane").forEach(p => p.classList.remove("active"));
   btn.classList.add("active");
   pane.classList.add("active");
-  const [eyebrow, title] = tabTitles[tab] || ["Painel", tab];
-  if (pageEyebrow) pageEyebrow.textContent = eyebrow;
-  if (pageTitle) pageTitle.textContent = title;
+  updatePageHeading();
   document.body.classList.remove("sidebar-open");
 
   if (tab === "dashboard") refreshDashboard();
   if (tab === "xray") {
     loadXrayStatus();
-    loadInbounds({ force: true });
+    loadInbounds({ silent: true });
     if (currentRole === "superadmin") loadWizardFromConfig();
   }
   if (tab === "stats" && currentRole === "superadmin") loadStats();
@@ -322,9 +488,10 @@ document.querySelectorAll(".tab-btn").forEach(btn => btn.addEventListener("click
 menuToggle?.addEventListener("click", () => document.body.classList.add("sidebar-open"));
 drawerBackdrop?.addEventListener("click", () => document.body.classList.remove("sidebar-open"));
 themeToggle?.addEventListener("click", () => document.body.classList.toggle("light-mode"));
+languageSelect?.addEventListener("change", () => { applyLanguage(languageSelect.value); renderDashboardCounters(); });
 document.querySelectorAll(".quick-action[data-jump]").forEach(btn => btn.addEventListener("click", () => selectTab(btn.dataset.jump)));
-document.getElementById("quickCreateUserBtn")?.addEventListener("click", () => { selectTab("ssh"); setFormCollapsed(false); fUsername?.focus(); });
-document.getElementById("quickOpenXrayBtn")?.addEventListener("click", () => selectTab("xray"));
+applyLanguage(currentLang, { persist: false });
+startI18nObserver();
 
 // ─── Login / Logout ───────────────────────────────────────────────────────────
 loginBtn.addEventListener("click", doLogin);
@@ -350,9 +517,9 @@ async function doLogin() {
       body: JSON.stringify({ username: loginUser.value.trim(), password: loginPass.value }),
     });
     if (!res.ok) {
-      loginErr.textContent = res.status === 401 ? "Invalid credentials." :
-                             res.status === 403 ? "Account suspended or expired." :
-                             "Login failed.";
+      loginErr.textContent = res.status === 401 ? t("Invalid credentials.") :
+                             res.status === 403 ? t("Account suspended or expired.") :
+                             t("Login failed.");
       return;
     }
     const data = await res.json();
@@ -364,7 +531,7 @@ async function doLogin() {
     mainApp.classList.remove("hidden");
     initAfterLogin();
   } catch (e) {
-    loginErr.textContent = "Network error.";
+    loginErr.textContent = t("Network error.");
   } finally {
     loginBtn.disabled = false;
   }
@@ -378,8 +545,6 @@ function clearTimers() {
 
 function initAfterLogin() {
   meUsername.textContent = currentUser;
-  if (sidebarUsername) sidebarUsername.textContent = currentUser;
-  if (sidebarRole) sidebarRole.textContent = currentRole === "superadmin" ? "Super Admin" : "Revendedor";
   roleChip.innerHTML = currentRole === "superadmin"
     ? `<span class="chip green">superadmin</span>`
     : `<span class="chip warn">reseller</span>`;
@@ -396,7 +561,6 @@ function initAfterLogin() {
 
   resellerInfoCard.classList.toggle("hidden", currentRole !== "reseller");
   dashboardQuotaCard?.classList.toggle("hidden", currentRole !== "reseller");
-  updateRoleWelcome();
 
   selectTab("dashboard");
 
@@ -420,22 +584,6 @@ function initAfterLogin() {
   usersTimer = setInterval(() => loadUsersSilent(), 3000);
 }
 
-function updateRoleWelcome() {
-  const title = document.getElementById("welcomeTitle");
-  const sub = document.getElementById("welcomeSub");
-  const kicker = document.getElementById("welcomeKicker");
-  if (!title || !sub || !kicker) return;
-  const name = currentUser || "admin";
-  title.textContent = `Bem-vindo de volta, ${name} 👋`;
-  if (currentRole === "reseller") {
-    kicker.textContent = "Painel do revendedor";
-    sub.textContent = "Crie contas SSH e Xray com cota única, sem precisar tocar em configurações técnicas.";
-  } else {
-    kicker.textContent = "Painel operacional";
-    sub.textContent = "Gerencie SSH, Xray, revendedores e servidor em poucos cliques.";
-  }
-}
-
 // ─── Me (reseller info) ───────────────────────────────────────────────────────
 async function loadMe() {
   try {
@@ -445,8 +593,8 @@ async function loadMe() {
     const used = d.used_users ?? 0;
     const max = d.max_users || 0;
     rUsedMax.textContent = used + " / " + (max || "∞");
-    rExpiry.textContent  = d.expires_at ? fmtDate(d.expires_at) : "Sem vencimento";
-    rStatus.textContent  = d.is_active  ? "Ativo" : "Suspenso";
+    rExpiry.textContent  = d.expires_at ? fmtDate(d.expires_at) : t("No expiration");
+    rStatus.textContent  = d.is_active  ? t("Active") : t("Suspended");
     rStatus.style.color  = d.is_active  ? "var(--success)" : "var(--danger)";
     updateQuotaCard(used, max, d.used_ssh_users || 0, d.used_xray_users || 0);
     renderDashboardCounters();
@@ -476,9 +624,9 @@ function updateQuotaCard(used, max, sshUsed = 0, xrayUsed = 0) {
   dashQuotaChip.textContent = `${used} / ${labelMax}`;
   dashQuotaChip.className = `chip ${pct >= 90 ? "red" : pct >= 75 ? "warn" : "green"}`;
   dashQuotaText.textContent = unlimited
-    ? "Sem limite definido pelo admin"
-    : `${remaining} contas disponíveis · ${pct}% usado`;
-  dashQuotaBreakdown.textContent = `SSH ${sshUsed} · Xray ${xrayUsed}`;
+    ? t("No limit set by admin")
+    : t("{remaining} accounts available · {pct}% used", {remaining, pct});
+  dashQuotaBreakdown.textContent = t("SSH {ssh} · Xray {xray}", {ssh: sshUsed, xray: xrayUsed});
   dashQuotaBar.style.width = `${pct}%`;
 
   if (dashQuotaRemaining) {
@@ -487,8 +635,8 @@ function updateQuotaCard(used, max, sshUsed = 0, xrayUsed = 0) {
   }
   if (dashQuotaSummaryText) {
     dashQuotaSummaryText.textContent = unlimited
-      ? `${used} usadas · sem limite`
-      : `${used}/${max} usadas · ${pct}% do plano`;
+      ? t("{used} used · unlimited", {used})
+      : t("{used}/{max} used · {pct}% of plan", {used, max, pct});
   }
   if (dashQuotaMiniBar) dashQuotaMiniBar.style.width = `${pct}%`;
   if (xrayResellerQuotaUsed) xrayResellerQuotaUsed.textContent = `${used}/${labelMax}`;
@@ -496,7 +644,7 @@ function updateQuotaCard(used, max, sshUsed = 0, xrayUsed = 0) {
     xrayResellerQuotaRemaining.textContent = String(remaining);
     setQuotaTone(xrayResellerQuotaRemaining, tone);
   }
-  if (xrayResellerQuotaMix) xrayResellerQuotaMix.textContent = `SSH ${sshUsed} · Xray ${xrayUsed}`;
+  if (xrayResellerQuotaMix) xrayResellerQuotaMix.textContent = t("SSH {ssh} · Xray {xray}", {ssh: sshUsed, xray: xrayUsed});
 }
 
 function flattenXrayClients(inbounds = []) {
@@ -520,11 +668,11 @@ function formatLastActive(value) {
   if (!value) return "--";
   const diff = Math.max(0, Date.now() - new Date(value).getTime());
   const sec = Math.floor(diff / 1000);
-  if (sec < 60) return `${sec}s atrás`;
+  if (sec < 60) return `${sec}s ${t("ago")}`;
   const min = Math.floor(sec / 60);
-  if (min < 60) return `${min}m atrás`;
+  if (min < 60) return `${min}m ${t("ago")}`;
   const hrs = Math.floor(min / 60);
-  if (hrs < 24) return `${hrs}h atrás`;
+  if (hrs < 24) return `${hrs}h ${t("ago")}`;
   return new Date(value).toLocaleString();
 }
 
@@ -548,11 +696,11 @@ function renderDashboardCounters() {
   dashExpiredUsers.textContent = expired;
   if (dashAccountBreakdown) dashAccountBreakdown.textContent = `SSH ${sshUsers.length} · Xray ${xrayClients.length}`;
   dashConnections.textContent = liveTotal;
-  if (dashConnectionsText) dashConnectionsText.textContent = `${sshConns} SSH · ${xrayOnline} Xray online`;
+  if (dashConnectionsText) dashConnectionsText.textContent = t("{ssh} SSH · {xray} Xray online", {ssh: sshConns, xray: xrayOnline});
   if (dashXrayClients) dashXrayClients.textContent = xrayClients.length;
   if (dashXrayStatus) {
     const running = xrayChip?.textContent || "--";
-    dashXrayStatus.textContent = `${xrayOnline} online · ${xrayActive} ativos · ${xrayExpired} expirados · Core: ${running}`;
+    dashXrayStatus.textContent = t("{online} online · {active} active · {expired} expired · Core: {core}", {online: xrayOnline, active: xrayActive, expired: xrayExpired, core: running});
   }
 
   const me = dashboardCache.me;
@@ -585,7 +733,7 @@ newUserBtn.addEventListener("click", () => {
   setFormCollapsed(false);
   userForm.reset();
   fTotpPeriod.value = 60; fTotpWindow.value = 1; fTotpDigits.value = 6;
-  userStatus.textContent = "New user.";
+  userStatus.textContent = t("New user.");
   fUsername.focus();
 });
 cancelUserBtn.addEventListener("click", () => setFormCollapsed(true));
@@ -595,26 +743,26 @@ document.getElementById("genTotpBtn").addEventListener("click", () => {
   if (!fTotpPeriod.value) fTotpPeriod.value = 60;
   if (!fTotpWindow.value) fTotpWindow.value = 1;
   if (!fTotpDigits.value) fTotpDigits.value = 6;
-  userStatus.textContent = "TOTP secret generated.";
+  userStatus.textContent = t("TOTP secret generated.");
 });
 document.getElementById("clearTotpBtn").addEventListener("click", () => { fTotpSecret.value = ""; });
 
 function setFormCollapsed(v) {
   formCollapsed = v;
   userFormWrap.classList.toggle("collapsed", v);
-  toggleFormBtn.textContent = v ? "Show form" : "Hide form";
+  toggleFormBtn.textContent = v ? t("Show form") : t("Hide form");
 }
 
 async function loadUsers() {
-  userStatus.textContent = "Loading…";
+  userStatus.textContent = t("Loading…");
   try {
     const res  = await api("/api/users");
     const data = await res.json();
     renderUsers(data || []);
-    userStatus.textContent = "Loaded.";
-    lastReload.textContent = "Last reload: " + new Date().toLocaleTimeString();
+    userStatus.textContent = t("Loaded.");
+    lastReload.textContent = t("Last reload: {time}", {time: new Date().toLocaleTimeString()});
   } catch (e) {
-    if (e.message==="auth") { doAuthError(); } else { userStatus.textContent = "Error loading users."; }
+    if (e.message==="auth") { doAuthError(); } else { userStatus.textContent = t("Error loading users."); }
   }
 }
 async function loadUsersSilent() {
@@ -642,7 +790,7 @@ function renderUsers(users) {
     const tr = document.createElement("tr");
     const cells = [
       u.username,
-      on ? '<span class="badge-on">online</span>' : '<span class="badge-off">idle</span>',
+      on ? `<span class="badge-on">${t("online")}</span>` : `<span class="badge-off">${t("idle")}</span>`,
       u.totp_enabled ? (u.allow_static_password ? "TOTP+pw" : "TOTP") : "Password",
       u.active_conns ?? 0,
       u.max_connections || 0,
@@ -658,11 +806,11 @@ function renderUsers(users) {
     });
     const tdA = document.createElement("td");
     const editBtn = Object.assign(document.createElement("button"), {
-      className:"btn btn-ghost btn-sm", textContent:"Edit",
+      className:"btn btn-ghost btn-sm", textContent:t("Edit"),
       onclick: () => fillUserForm(u),
     });
     const delBtn = Object.assign(document.createElement("button"), {
-      className:"btn btn-danger btn-sm", textContent:"Del",
+      className:"btn btn-danger btn-sm", textContent:t("Del"),
       style: "margin-left:4px;",
       onclick: () => deleteUser(u.username),
     });
@@ -671,7 +819,7 @@ function renderUsers(users) {
     usersBody.appendChild(tr);
   });
   const activeCount = Math.max(0, users.length - expiredCount);
-  userCountChip.textContent = `${users.length} total · ${activeCount} ativas · ${online} online`;
+  userCountChip.textContent = t("{count} total · {active} active · {online} online", {count: users.length, active: activeCount, online});
 }
 
 function fillUserForm(u) {
@@ -687,13 +835,13 @@ function fillUserForm(u) {
   fUp.value             = u.limit_mbps_up || "";
   fDown.value           = u.limit_mbps_down || "";
   fExpires.value        = u.expires_at ? localFromISO(u.expires_at) : "";
-  userStatus.textContent = `Editing ${u.username}`;
+  userStatus.textContent = t("Editing {name}", {name: u.username});
 }
 
 userForm.addEventListener("submit", async e => {
   e.preventDefault();
   saveUserBtn.disabled = true;
-  userStatus.textContent = "Saving…";
+  userStatus.textContent = t("Saving…");
   const payload = {
     username: fUsername.value.trim(),
     password: fPassword.value || undefined,
@@ -710,30 +858,30 @@ userForm.addEventListener("submit", async e => {
   try {
     const res = await api("/api/users/create", { method:"POST", body: JSON.stringify(payload) });
     if (!res.ok) throw new Error(await res.text());
-    userStatus.textContent = "Saved.";
+    userStatus.textContent = t("Saved.");
     fPassword.value = "";
     loadUsers();
     if (currentRole === "reseller") loadMe();
   } catch (e) {
     if (e.message==="auth") doAuthError();
-    else userStatus.textContent = "Error: " + e.message;
+    else userStatus.textContent = t("Error: {error}", {error: e.message});
   } finally {
     saveUserBtn.disabled = false;
   }
 });
 
 async function deleteUser(username) {
-  if (!confirm(`Delete user "${username}"?`)) return;
-  userStatus.textContent = `Deleting ${username}…`;
+  if (!confirm(t("Delete user \"{name}\"?", {name: username}))) return;
+  userStatus.textContent = t("Deleting {name}…", {name: username});
   try {
     const res = await api(`/api/users/delete?username=${encodeURIComponent(username)}`, { method:"DELETE" });
     if (!res.ok && res.status !== 204) throw new Error("delete failed");
-    userStatus.textContent = "Deleted.";
+    userStatus.textContent = t("Deleted.");
     loadUsers();
     if (currentRole === "reseller") loadMe();
   } catch (e) {
     if (e.message==="auth") doAuthError();
-    else userStatus.textContent = "Error deleting.";
+    else userStatus.textContent = t("Error deleting.");
   }
 }
 
@@ -754,67 +902,67 @@ async function loadXrayStatus() {
     const res = await api("/api/xray/status");
     const s   = await res.json();
     const run = !!s.running;
-    xrayChip.textContent  = run ? "running" : (s.enabled ? "stopped" : "disabled");
+    xrayChip.textContent  = run ? t("running") : (s.enabled ? t("stopped") : t("disabled"));
     xrayChip.className    = "chip " + (run ? "green" : "red");
-    xRunning.textContent  = run ? "Running" : "Stopped";
+    xRunning.textContent  = run ? t("Running") : t("Stopped");
     xRunning.style.color  = run ? "var(--success)" : "var(--danger)";
     xPID.textContent      = s.pid    || "--";
     xUptime.textContent   = s.uptime || "--";
     const statsCfgEl = document.getElementById("xStatsConfig");
     const repairBtn = document.getElementById("xRepairStatsBtn");
     if (statsCfgEl) {
-      statsCfgEl.textContent = s.stats_configured ? "OK" : "Needs repair";
+      statsCfgEl.textContent = s.stats_configured ? t("OK") : t("Needs repair");
       statsCfgEl.style.color = s.stats_configured ? "var(--success)" : "var(--warning)";
     }
     if (repairBtn) repairBtn.style.display = s.stats_configured ? "none" : "";
     if (xOnlineUsers) xOnlineUsers.textContent = String(s.online_users ?? 0);
     if (!s.stats_configured && xStatus) {
       const missing = Array.isArray(s.stats_missing) && s.stats_missing.length ? ` Missing: ${s.stats_missing.join(", ")}.` : "";
-      xStatus.textContent = "Online counters need Stats API repair." + missing;
+      xStatus.textContent = t("Online counters need Stats API repair.") + missing;
     } else if (s.stats_error && xStatus) {
-      xStatus.textContent = "Online counters: " + s.stats_error;
+      xStatus.textContent = t("Online counters: {error}", {error: s.stats_error});
     } else if (xStatus) {
-      xStatus.textContent = s.api_server ? `Counters API ready at ${s.api_server}.` : "Counters API ready.";
+      xStatus.textContent = s.api_server ? t("Counters API ready at {server}.", {server: s.api_server}) : t("Counters API ready.");
     }
     if (dashServers) dashServers.textContent = s.enabled ? "1" : "0";
-    if (dashServerStatus) dashServerStatus.textContent = run ? "1 online" : (s.enabled ? "parado" : "desativado");
+    if (dashServerStatus) dashServerStatus.textContent = run ? t("{count} online", {count: 1}) : (s.enabled ? t("stopped") : t("disabled"));
     renderDashboardCounters();
-    if (s.error) xStatus.textContent = "Error: " + s.error;
+    if (s.error) xStatus.textContent = t("Error: {error}", {error: s.error});
   } catch (e) { if (e.message==="auth") doAuthError(); }
 }
 
 async function repairXrayStats() {
   const btn = document.getElementById("xRepairStatsBtn");
   if (btn) btn.disabled = true;
-  xStatus.textContent = "Checking and repairing Xray counters API…";
+  xStatus.textContent = currentLang === "pt-BR" ? "Verificando e reparando a API de contadores do Xray…" : "Checking and repairing Xray counters API…";
   try {
     const res = await api("/api/xray/stats/repair", { method:"POST" });
     if (!res.ok) throw new Error(await res.text());
     const d = await res.json().catch(() => ({}));
     xStatus.textContent = d.changed
-      ? (d.restarted ? "Counters API repaired and Xray restarted." : "Counters API repaired. Restart Xray to apply it.")
-      : "Counters API already looks correct.";
+      ? (d.restarted ? (currentLang === "pt-BR" ? "API de contadores reparada e Xray reiniciado." : "Counters API repaired and Xray restarted.") : (currentLang === "pt-BR" ? "API de contadores reparada. Reinicie o Xray para aplicar." : "Counters API repaired. Restart Xray to apply it."))
+      : (currentLang === "pt-BR" ? "A API de contadores já parece correta." : "Counters API already looks correct.");
     setTimeout(loadXrayStatus, 700);
     setTimeout(() => loadInbounds({ force: true }), 1200);
   } catch (e) {
     if (e.message==="auth") doAuthError();
-    else xStatus.textContent = "Error repairing counters: "+e.message;
+    else xStatus.textContent = (currentLang === "pt-BR" ? "Erro ao reparar contadores: " : "Error repairing counters: ")+e.message;
   } finally {
     if (btn) btn.disabled = false;
   }
 }
 
 async function xrayCtrl(action) {
-  xStatus.textContent = action.charAt(0).toUpperCase()+action.slice(1)+"ing Xray…";
+  xStatus.textContent = (currentLang === "pt-BR" ? "Processando Xray…" : action.charAt(0).toUpperCase()+action.slice(1)+"ing Xray…");
   try {
     const res = await api(`/api/xray/${action}`, { method:"POST" });
     if (!res.ok) throw new Error(await res.text());
-    xStatus.textContent = "Xray "+action+" OK.";
+    xStatus.textContent = currentLang === "pt-BR" ? "Xray OK." : "Xray "+action+" OK.";
     setTimeout(loadXrayStatus, 700);
     setTimeout(() => loadInbounds({ force: true }), 1200);
   } catch (e) {
     if (e.message==="auth") doAuthError();
-    else xStatus.textContent = "Error: "+e.message;
+    else xStatus.textContent = t("Error: {error}", {error: e.message});
   }
 }
 
@@ -822,7 +970,7 @@ async function loadInbounds(options = {}) {
   const { silent = false, force = false } = options || {};
   if (inboundsRefreshInFlight) return;
   inboundsRefreshInFlight = true;
-  if (!silent) inboundsContainer.innerHTML = '<div class="hint" style="padding:8px 0;">Loading…</div>';
+  if (!silent) inboundsContainer.innerHTML = `<div class="hint" style="padding:8px 0;">${t("Loading…")}</div>`;
   else inboundsContainer.classList.add("xray-refreshing");
   try {
     const res      = await api("/api/xray/inbounds");
@@ -830,7 +978,7 @@ async function loadInbounds(options = {}) {
     const inbounds = await res.json();
     renderInbounds(inbounds || [], { silent, force });
   } catch (e) {
-    if (!silent) inboundsContainer.textContent = "Error loading inbounds.";
+    if (!silent) inboundsContainer.textContent = t("Error loading inbounds.");
     if (e.message==="auth") doAuthError();
   } finally {
     inboundsRefreshInFlight = false;
@@ -864,12 +1012,12 @@ function renderInbounds(inbounds, options = {}) {
   if (silent && !force && nextStructure === lastInboundsStructure && patchRenderedInbounds(inbounds)) return;
   if (silent && !force && isXrayClientEditorActive()) {
     patchRenderedInbounds(inbounds);
-    if (xStatus) xStatus.textContent = "New client data is available; editing was preserved.";
+    if (xStatus) xStatus.textContent = t("New client data is available; editing was preserved.");
     return;
   }
 
   if (!inbounds.length) {
-    inboundsContainer.innerHTML = '<div class="hint" style="padding:8px 0;">No VLESS/VMess/Trojan inbounds found.</div>';
+    inboundsContainer.innerHTML = `<div class="hint" style="padding:8px 0;">${t("No VLESS/VMess/Trojan inbounds found.")}</div>`;
     lastInboundsStructure = nextStructure;
     return;
   }
@@ -892,9 +1040,9 @@ function renderInbounds(inbounds, options = {}) {
         <span class="chip">${escapeHTML(ib.protocol)}</span>
         ${escapeHTML(ib.tag || "untagged")}
         <span class="hint">:${escapeHTML(ib.port ?? "?")}</span>
-        <span class="chip ${onlineCount ? "green" : ""}" data-role="inbound-online-chip">${onlineCount} online</span>
+        <span class="chip ${onlineCount ? "green" : ""}" data-role="inbound-online-chip">${t("{count} online", {count: onlineCount})}</span>
       </div>
-      <button class="btn btn-sm" onclick="openAddClient('${ib.tag}')">+ Add Client</button>`;
+      <button class="btn btn-sm" onclick="openAddClient('${ib.tag}')">${t("+ Add Client")}</button>`;
     section.appendChild(hdr);
 
     // Add client mini-form (hidden by default)
@@ -911,14 +1059,14 @@ function renderInbounds(inbounds, options = {}) {
             <button class="btn btn-ghost btn-sm" type="button" onclick="document.getElementById('newUUID-${ib.tag}').value=genUUID()">Gen</button>
           </div>
         </div>
-        <div class="field"><label>Email / label</label><input id="newEmail-${ib.tag}" placeholder="user@example" style="border-radius:6px;"/></div>
-        <div class="field"><label>Display Name</label><input id="newName-${ib.tag}" placeholder="e.g. Maykinho01" style="border-radius:6px;"/></div>
-        <div class="field"><label>Expiry Date</label><input type="datetime-local" id="newExpiry-${ib.tag}" style="border-radius:6px;color-scheme:dark;"/></div>
-        <div class="field"><label>Max Connections <span class="hint">(0 = unlimited)</span></label><input type="number" min="0" id="newMaxConns-${ib.tag}" placeholder="0" style="border-radius:6px;"/></div>
+        <div class="field"><label>${t("Email / label")}</label><input id="newEmail-${ib.tag}" placeholder="user@example" style="border-radius:6px;"/></div>
+        <div class="field"><label>${t("Display Name")}</label><input id="newName-${ib.tag}" placeholder="e.g. Maykinho01" style="border-radius:6px;"/></div>
+        <div class="field"><label>${t("Expiry Date")}</label><input type="datetime-local" id="newExpiry-${ib.tag}" style="border-radius:6px;color-scheme:dark;"/></div>
+        <div class="field"><label>${t("Max Connections")} <span class="hint">${t("(0 = unlimited)")}</span></label><input type="number" min="0" id="newMaxConns-${ib.tag}" placeholder="0" style="border-radius:6px;"/></div>
       </div>
       <div class="form-actions" style="margin-top:6px;">
-        <button class="btn btn-sm" onclick="addClient('${ib.tag}')">Add</button>
-        <button class="btn btn-ghost btn-sm" onclick="document.getElementById('add-form-${ib.tag}').classList.add('hidden')">Cancel</button>
+        <button class="btn btn-sm" onclick="addClient('${ib.tag}')">${t("Add")}</button>
+        <button class="btn btn-ghost btn-sm" onclick="document.getElementById('add-form-${ib.tag}').classList.add('hidden')">${t("Cancel")}</button>
       </div>`;
     section.appendChild(addForm);
 
@@ -926,10 +1074,10 @@ function renderInbounds(inbounds, options = {}) {
     const tblWrap = document.createElement("div");
     tblWrap.className = "tbl-wrap";
     if (!clients.length) {
-      tblWrap.innerHTML = '<div class="hint" style="padding:4px 0;">No clients.</div>';
+      tblWrap.innerHTML = `<div class="hint" style="padding:4px 0;">${t("No clients.")}</div>`;
     } else {
       const tbl = document.createElement("table");
-      tbl.innerHTML = `<thead><tr><th>Name</th><th>UUID</th><th>Email</th><th>Expiry</th><th>Status</th><th>Online</th><th>Traffic</th><th>Max</th><th>Actions</th></tr></thead>`;
+      tbl.innerHTML = `<thead><tr><th>${t("Name")}</th><th>UUID</th><th>${t("Email")}</th><th>${t("Expiry")}</th><th>${t("Status")}</th><th>${t("Online")}</th><th>${t("Traffic")}</th><th>${t("Max")}</th><th>${t("Actions")}</th></tr></thead>`;
       const tbody = document.createElement("tbody");
       clients.forEach(c => {
         const tr = document.createElement("tr");
@@ -947,17 +1095,17 @@ function renderInbounds(inbounds, options = {}) {
         actTd.style.whiteSpace = "nowrap";
         const copyBtn = document.createElement("button");
         copyBtn.className = "btn btn-ghost btn-sm";
-        copyBtn.textContent = "Copy";
-        copyBtn.onclick = async () => { await copyText(c.id); xStatus.textContent = "Copied client ID."; };
+        copyBtn.textContent = t("Copy");
+        copyBtn.onclick = async () => { await copyText(c.id); xStatus.textContent = t("Copied client ID."); };
         const editBtn = document.createElement("button");
         editBtn.className = "btn btn-warn btn-sm";
         editBtn.style.marginLeft = "4px";
-        editBtn.textContent = "Edit";
+        editBtn.textContent = t("Edit");
         editBtn.onclick = () => openEditXrayClient(ib.tag, c);
         const delBtn = document.createElement("button");
         delBtn.className = "btn btn-danger btn-sm";
         delBtn.style.marginLeft = "4px";
-        delBtn.textContent = "Del";
+        delBtn.textContent = t("Del");
         delBtn.onclick = () => removeClient(ib.tag, c.id);
         actTd.append(copyBtn, editBtn, delBtn);
         tr.appendChild(actTd);
@@ -994,31 +1142,31 @@ async function addClient(tag) {
   const name       = (nameEl?.value || "").trim();
   const expiresAt  = isoFromLocal(expiryEl?.value || "");
   const maxConns   = parseInt(maxConnsEl?.value || "0", 10) || 0;
-  if (!uuid) { xStatus.textContent = "UUID required."; return; }
+  if (!uuid) { xStatus.textContent = t("UUID required."); return; }
   try {
     const res = await api("/api/xray/clients/add", {
       method: "POST",
       body: JSON.stringify({ inbound_tag: tag, uuid, email, name, expires_at: expiresAt, max_connections: maxConns }),
     });
     if (!res.ok) throw new Error(await res.text());
-    xStatus.textContent = `Client ${uuid.slice(0,8)}… added. Restarting Xray…`;
+    xStatus.textContent = t("Client {id}… added. Restarting Xray…", {id: uuid.slice(0,8)});
     setTimeout(() => { loadInbounds({ force: true }); if (currentRole === "reseller") loadMe(); }, 1500);
   } catch (e) {
     if (e.message==="auth") doAuthError();
-    else xStatus.textContent = "Error: "+e.message;
+    else xStatus.textContent = t("Error: {error}", {error: e.message});
   }
 }
 
 async function removeClient(tag, uuid) {
-  if (!confirm(`Remove client ${uuid.slice(0,8)}… from ${tag}?`)) return;
+  if (!confirm(t("Remove client {id}… from {tag}?", {id: uuid.slice(0,8), tag}))) return;
   try {
     const res = await api(`/api/xray/clients/remove?inbound_tag=${encodeURIComponent(tag)}&uuid=${encodeURIComponent(uuid)}`, { method:"DELETE" });
     if (!res.ok && res.status !== 204) throw new Error(await res.text());
-    xStatus.textContent = "Client removed. Restarting Xray…";
+    xStatus.textContent = t("Client removed. Restarting Xray…");
     setTimeout(() => { loadInbounds({ force: true }); if (currentRole === "reseller") loadMe(); }, 1500);
   } catch (e) {
     if (e.message==="auth") doAuthError();
-    else xStatus.textContent = "Error: "+e.message;
+    else xStatus.textContent = t("Error: {error}", {error: e.message});
   }
 }
 
@@ -1029,25 +1177,25 @@ async function loadXrayCfg() {
     const text = await res.text();
     try { xCfgEditor.value = JSON.stringify(JSON.parse(text), null, 2); }
     catch { xCfgEditor.value = text; }
-    xCfgStatus.textContent = "Config loaded.";
+    xCfgStatus.textContent = t("Config loaded.");
   } catch (e) {
     if (e.message==="auth") doAuthError();
-    else xCfgStatus.textContent = "Error: "+e.message;
+    else xCfgStatus.textContent = t("Error: {error}", {error: e.message});
   }
 }
 
 async function saveXrayCfg() {
   const text = xCfgEditor.value.trim();
-  try { JSON.parse(text); } catch(e) { xCfgStatus.textContent = "Invalid JSON: "+e.message; return; }
-  xCfgStatus.textContent = "Saving…";
+  try { JSON.parse(text); } catch(e) { xCfgStatus.textContent = t("Invalid JSON: {error}", {error: e.message}); return; }
+  xCfgStatus.textContent = t("Saving…");
   try {
     const res = await api("/api/xray/config", { method:"POST", body: text });
     if (!res.ok) throw new Error(await res.text());
-    xCfgStatus.textContent = "Saved. Restarting Xray…";
+    xCfgStatus.textContent = t("Saved. Restarting Xray…");
     await xrayCtrl("restart");
   } catch (e) {
     if (e.message==="auth") doAuthError();
-    else xCfgStatus.textContent = "Error: "+e.message;
+    else xCfgStatus.textContent = t("Error: {error}", {error: e.message});
   }
 }
 
@@ -1111,11 +1259,11 @@ function renderResellers(list) {
       <td></td>`;
     const tdA = tr.lastElementChild;
     const editBtn = Object.assign(document.createElement("button"),{
-      className:"btn btn-ghost btn-sm", textContent:"Edit",
+      className:"btn btn-ghost btn-sm", textContent:t("Edit"),
       onclick: () => fillResellerForm(r),
     });
     const delBtn = Object.assign(document.createElement("button"),{
-      className:"btn btn-danger btn-sm", textContent:"Del",
+      className:"btn btn-danger btn-sm", textContent:t("Del"),
       style: "margin-left:4px;",
       onclick: () => deleteReseller(r.username),
     });
@@ -2006,7 +2154,7 @@ function doAuthError() {
   clearTimers();
   mainApp.classList.add("hidden");
   loginOverlay.classList.remove("hidden");
-  loginErr.textContent = "Session expired — please sign in again.";
+  loginErr.textContent = t("Session expired — please sign in again.");
 }
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────

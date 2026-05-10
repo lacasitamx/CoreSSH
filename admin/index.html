@@ -1,10 +1,22 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="i18n-pending">
 <head>
 <meta charset="UTF-8"/>
 <title>DragonCore Panel</title>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<link rel="stylesheet" href="assets/app.css?v=20260510xraystable1"/>
+<style>html.i18n-pending body{visibility:hidden}</style>
+<script>
+(function(){
+  try{
+    var saved=localStorage.getItem("PANEL_LANG");
+    var langs=(navigator.languages&&navigator.languages.length?navigator.languages:[navigator.language||""]).join(" ").toLowerCase();
+    var lang=saved || (langs.indexOf("pt")!==-1 ? "pt-BR" : "en-US");
+    document.documentElement.lang=lang.toLowerCase();
+  }catch(e){}
+  setTimeout(function(){document.documentElement.classList.remove("i18n-pending");},2500);
+})();
+</script>
+<link rel="stylesheet" href="assets/app.css?v=20260510i18n1"/>
 </head>
 <body>
 <div class="app">
@@ -45,13 +57,6 @@
         <button class="tab-btn superadmin-only hidden" data-tab="logs"><span class="nav-icon">☰</span><span>Logs</span></button>
         <button class="tab-btn superadmin-only hidden" data-tab="server"><span class="nav-icon">⚙</span><span>Configurações</span></button>
       </nav>
-      <div class="sidebar-foot">
-        <div class="avatar-dragon">🐉</div>
-        <div>
-          <strong id="sidebarUsername">--</strong>
-          <span id="sidebarRole">--</span>
-        </div>
-      </div>
     </aside>
     <div class="drawer-backdrop" id="drawerBackdrop"></div>
     <section class="workspace">
@@ -65,6 +70,10 @@
         </div>
         <div class="topbar-actions">
           <button class="icon-btn" id="themeToggle" type="button" title="Alternar tema">☀</button>
+          <select id="languageSelect" class="language-select" title="Language" aria-label="Language">
+            <option value="pt-BR">PT-BR</option>
+            <option value="en-US">EN-US</option>
+          </select>
           <div class="user-pill">
             <span id="roleChip"></span>
             <strong id="meUsername"></strong>
@@ -76,18 +85,6 @@
 
   <!-- ═══════════ Dashboard Tab ═══════════ -->
   <div class="tab-pane active" id="tab-dashboard">
-    <div class="welcome-card">
-      <div>
-        <div class="welcome-kicker" id="welcomeKicker">Painel operacional</div>
-        <h1 id="welcomeTitle">Bem-vindo de volta 👋</h1>
-        <p id="welcomeSub">Gerencie SSH, Xray, revendedores e servidor em poucos cliques.</p>
-      </div>
-      <div class="welcome-actions">
-        <button class="btn btn-light" type="button" id="quickCreateUserBtn">+ Criar conta</button>
-        <button class="btn btn-soft" type="button" id="quickOpenXrayBtn">Xray</button>
-      </div>
-    </div>
-
     <div class="dash-grid">
       <div class="dash-card accent-blue">
         <div class="dash-card-main">
@@ -876,6 +873,6 @@
 </div><!-- /shell -->
 </div><!-- /app -->
 
-<script defer src="assets/app.js?v=20260510xraystable1"></script>
+<script defer src="assets/app.js?v=20260510i18n1"></script>
 </body>
 </html>
