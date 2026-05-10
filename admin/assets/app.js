@@ -37,6 +37,15 @@ const dashServers = document.getElementById("dashServers");
 const dashServerStatus = document.getElementById("dashServerStatus");
 const dashXrayClients = document.getElementById("dashXrayClients");
 const dashXrayStatus = document.getElementById("dashXrayStatus");
+const dashCpuVal = document.getElementById("dashCpuVal");
+const dashCpuText = document.getElementById("dashCpuText");
+const dashCpuBar = document.getElementById("dashCpuBar");
+const dashRamVal = document.getElementById("dashRamVal");
+const dashRamText = document.getElementById("dashRamText");
+const dashRamBar = document.getElementById("dashRamBar");
+const dashNetVal = document.getElementById("dashNetVal");
+const dashNetText = document.getElementById("dashNetText");
+const dashNetTotal = document.getElementById("dashNetTotal");
 const dashQuotaChip = document.getElementById("dashQuotaChip");
 const dashQuotaBar = document.getElementById("dashQuotaBar");
 const dashQuotaText = document.getElementById("dashQuotaText");
@@ -85,6 +94,7 @@ const xRunning       = document.getElementById("xRunning");
 const xPID           = document.getElementById("xPID");
 const xUptime        = document.getElementById("xUptime");
 const xStatus        = document.getElementById("xStatus");
+const xOnlineUsers   = document.getElementById("xOnlineUsers");
 const xCfgEditor     = document.getElementById("xCfgEditor");
 const xCfgStatus     = document.getElementById("xCfgStatus");
 const xLogsBox       = document.getElementById("xLogsBox");
@@ -468,6 +478,7 @@ function refreshDashboard() {
   loadUsersSilent();
   loadInbounds();
   loadXrayStatus();
+  if (currentRole === "superadmin") loadStats();
   if (currentRole === "reseller") loadMe();
 }
 
@@ -634,7 +645,7 @@ document.getElementById("xStartBtn").addEventListener("click", () => xrayCtrl("s
 document.getElementById("xStopBtn").addEventListener("click", () => xrayCtrl("stop"));
 document.getElementById("xRestartBtn").addEventListener("click", () => xrayCtrl("restart"));
 document.getElementById("xRepairStatsBtn")?.addEventListener("click", repairXrayStats);
-document.getElementById("xRefreshBtn").addEventListener("click", loadXrayStatus);
+document.getElementById("xRefreshBtn").addEventListener("click", () => { loadXrayStatus(); loadInbounds(); });
 document.getElementById("xLoadInboundsBtn").addEventListener("click", loadInbounds);
 document.getElementById("xLoadCfgBtn").addEventListener("click", loadXrayCfg);
 document.getElementById("xSaveCfgBtn").addEventListener("click", saveXrayCfg);
@@ -727,6 +738,24 @@ async function loadInbounds() {
   }
 }
 
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {}
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.left = "-9999px";
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  try { return document.execCommand("copy"); }
+  finally { document.body.removeChild(ta); }
+}
+
 function renderInbounds(inbounds) {
   updateDashboardXray(inbounds);
   if (!inbounds.length) {
@@ -815,7 +844,7 @@ function renderInbounds(inbounds) {
         const copyBtn = document.createElement("button");
         copyBtn.className = "btn btn-ghost btn-sm";
         copyBtn.textContent = "Copy";
-        copyBtn.onclick = () => navigator.clipboard.writeText(c.id);
+        copyBtn.onclick = async () => { await copyText(c.id); xStatus.textContent = "Copied client ID."; };
         const editBtn = document.createElement("button");
         editBtn.className = "btn btn-warn btn-sm";
         editBtn.style.marginLeft = "4px";
@@ -1043,10 +1072,37 @@ async function deleteReseller(username) {
 // ─── Stats ────────────────────────────────────────────────────────────────────
 document.querySelector("[data-tab='stats']")?.addEventListener("click", loadStats);
 
+function updateDashboardStats(s) {
+  if (!s) return;
+  const cpu = Number(s.cpu_percent ?? 0);
+  const mem = s.mem_percent == null ? null : Number(s.mem_percent);
+  if (dashCpuVal) dashCpuVal.textContent = fmtPct(cpu);
+  if (dashCpuBar) dashCpuBar.style.width = Math.min(100, Math.max(0, cpu)) + "%";
+  if (dashCpuText) dashCpuText.textContent = cpu >= 85 ? "Carga alta" : cpu >= 60 ? "Carga moderada" : "Carga normal";
+  if (dashRamVal) dashRamVal.textContent = mem == null ? "--%" : fmtPct(mem);
+  if (dashRamBar) dashRamBar.style.width = mem == null ? "0%" : Math.min(100, Math.max(0, mem)) + "%";
+  if (dashRamText) {
+    const used = s.mem_used_bytes, total = s.mem_total_bytes;
+    dashRamText.textContent = used != null && total != null ? `${fmtBytes(used)} / ${fmtBytes(total)}` : "Memória usada";
+  }
+  const ifaces = Array.isArray(s.interfaces) ? s.interfaces : [];
+  let rx = 0, tx = 0, rxTotal = 0, txTotal = 0;
+  ifaces.forEach(it => {
+    rx += Number(it.rx_mbps || 0);
+    tx += Number(it.tx_mbps || 0);
+    rxTotal += Number(it.rx_bytes || 0);
+    txTotal += Number(it.tx_bytes || 0);
+  });
+  if (dashNetVal) dashNetVal.textContent = `${fmtMbps(rx + tx)} Mb/s`;
+  if (dashNetText) dashNetText.textContent = `RX ${fmtMbps(rx)} · TX ${fmtMbps(tx)} Mb/s`;
+  if (dashNetTotal) dashNetTotal.textContent = `Total ${fmtBytes(rxTotal + txTotal)}`;
+}
+
 async function loadStats() {
   try {
     const res = await api("/api/stats");
     const s   = await res.json();
+    updateDashboardStats(s);
     const cpu = s?.cpu_percent ?? 0;
     cpuVal.textContent = fmtPct(cpu);
     cpuBar.style.width = Math.min(100, Math.max(0, cpu)) + "%";

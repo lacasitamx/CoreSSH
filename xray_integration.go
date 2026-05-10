@@ -409,7 +409,11 @@ func (m *XrayManager) refreshRuntimeStats() {
 	for email, counters := range traffic {
 		prev := m.statsByEmail[email]
 		st := xrayRuntimeStat{Email: email, Uplink: counters.Uplink, Downlink: counters.Downlink, LastActive: prev.LastActive}
-		if prev.Email != "" && (counters.Uplink != prev.Uplink || counters.Downlink != prev.Downlink) {
+		changed := counters.Uplink != prev.Uplink || counters.Downlink != prev.Downlink
+		// When a panel starts after Xray, the first successful poll may already
+		// contain non-zero per-user traffic. Treat that as recent activity so
+		// online counters do not stay at zero until the next byte moves.
+		if changed && (prev.Email != "" || counters.Uplink+counters.Downlink > 0) {
 			st.LastActive = now
 		}
 		m.statsByEmail[email] = st
@@ -441,34 +445,63 @@ func (m *XrayManager) queryUserTraffic() (map[string]xrayTrafficCounters, error)
 
 func parseXrayStatsOutput(out []byte) map[string]xrayTrafficCounters {
 	result := map[string]xrayTrafficCounters{}
+	type rawStat struct {
+		Name  string          `json:"name"`
+		Value json.RawMessage `json:"value"`
+	}
 	var js struct {
-		Stat []struct {
-			Name  string `json:"name"`
-			Value int64  `json:"value"`
-		} `json:"stat"`
-		Stats []struct {
-			Name  string `json:"name"`
-			Value int64  `json:"value"`
-		} `json:"stats"`
+		Stat  []rawStat `json:"stat"`
+		Stats []rawStat `json:"stats"`
 	}
 	if json.Unmarshal(out, &js) == nil {
 		for _, st := range js.Stat {
-			addXrayCounter(result, st.Name, st.Value)
+			addXrayCounter(result, st.Name, parseXrayStatValue(st.Value))
 		}
 		for _, st := range js.Stats {
-			addXrayCounter(result, st.Name, st.Value)
+			addXrayCounter(result, st.Name, parseXrayStatValue(st.Value))
 		}
 	}
 	if len(result) > 0 {
 		return result
 	}
 
-	re := regexp.MustCompile(`(?s)name:\s*"([^"]+)"\s+value:\s*([0-9]+)`)
-	for _, m := range re.FindAllSubmatch(out, -1) {
+	// Text/protobuf form: name: "user>>>..." value: 123
+	reText := regexp.MustCompile(`(?s)name:\s*"([^"]+)"\s+value:\s*([0-9]+)`)
+	for _, m := range reText.FindAllSubmatch(out, -1) {
+		v, _ := strconv.ParseInt(string(m[2]), 10, 64)
+		addXrayCounter(result, string(m[1]), v)
+	}
+	if len(result) > 0 {
+		return result
+	}
+
+	// Some Xray/protobuf JSON builds encode int64 values as strings.
+	reJSON := regexp.MustCompile(`"name"\s*:\s*"([^"]+)"[^}]*"value"\s*:\s*"?([0-9]+)"?`)
+	for _, m := range reJSON.FindAllSubmatch(out, -1) {
 		v, _ := strconv.ParseInt(string(m[2]), 10, 64)
 		addXrayCounter(result, string(m[1]), v)
 	}
 	return result
+}
+
+func parseXrayStatValue(raw json.RawMessage) int64 {
+	if len(raw) == 0 {
+		return 0
+	}
+	var n int64
+	if err := json.Unmarshal(raw, &n); err == nil {
+		return n
+	}
+	var f float64
+	if err := json.Unmarshal(raw, &f); err == nil {
+		return int64(f)
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		v, _ := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+		return v
+	}
+	return 0
 }
 
 func addXrayCounter(result map[string]xrayTrafficCounters, name string, value int64) {
@@ -756,6 +789,10 @@ func ensureXrayStatsAPIConfig(raw map[string]interface{}) (bool, xrayStatsConfig
 		changed = true
 	}
 
+	if ensureXrayClientEmails(raw) {
+		changed = true
+	}
+
 	return changed, checkXrayStatsAPIConfig(raw)
 }
 
@@ -802,6 +839,9 @@ func checkXrayStatsAPIConfig(raw map[string]interface{}) xrayStatsConfigCheck {
 	if findObjectByTag(outbounds, "api") == nil {
 		missing = append(missing, "api outbound")
 	}
+	if n := countXrayClientEmailIssues(raw); n > 0 {
+		missing = append(missing, fmt.Sprintf("%d client stats labels", n))
+	}
 	routing := asObject(raw["routing"])
 	if routing == nil {
 		missing = append(missing, "routing api rule")
@@ -843,6 +883,129 @@ func discoverAPIServerFromRaw(raw map[string]interface{}) string {
 		return host + ":" + port
 	}
 	return ""
+}
+
+func countXrayClientEmailIssues(raw map[string]interface{}) int {
+	inbounds, _ := raw["inbounds"].([]interface{})
+	seen := map[string]int{}
+	issues := 0
+	for _, ib := range inbounds {
+		ibMap, ok := ib.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		proto, _ := ibMap["protocol"].(string)
+		if !xrayClientProtos[strings.ToLower(proto)] {
+			continue
+		}
+		settings, _ := ibMap["settings"].(map[string]interface{})
+		if settings == nil {
+			continue
+		}
+		clients, _ := settings["clients"].([]interface{})
+		for _, item := range clients {
+			cm, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			email := safeXrayStatsEmail(firstNonEmptyString(cm["email"]))
+			if email == "" || seen[email] > 0 {
+				issues++
+			}
+			if email != "" {
+				seen[email]++
+			}
+		}
+	}
+	return issues
+}
+
+func ensureXrayClientEmails(raw map[string]interface{}) bool {
+	changed := false
+	inbounds, _ := raw["inbounds"].([]interface{})
+	seen := map[string]int{}
+	for _, ib := range inbounds {
+		ibMap, ok := ib.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		proto, _ := ibMap["protocol"].(string)
+		if !xrayClientProtos[strings.ToLower(proto)] {
+			continue
+		}
+		settings, _ := ibMap["settings"].(map[string]interface{})
+		if settings == nil {
+			continue
+		}
+		clients, _ := settings["clients"].([]interface{})
+		for idx, item := range clients {
+			cm, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			email := safeXrayStatsEmail(firstNonEmptyString(cm["email"]))
+			if email == "" || seen[email] > 0 {
+				base := firstNonEmptyString(cm["name"], cm["email"], cm["id"], cm["password"])
+				if base == "" {
+					base = fmt.Sprintf("client-%d", idx+1)
+				}
+				email = uniqueXrayEmail(base, seen)
+				cm["email"] = email
+				changed = true
+			}
+			seen[email]++
+		}
+	}
+	return changed
+}
+
+func firstNonEmptyString(values ...interface{}) string {
+	for _, v := range values {
+		s := strings.TrimSpace(fmt.Sprint(v))
+		if s != "" && s != "<nil>" {
+			return s
+		}
+	}
+	return ""
+}
+
+func uniqueXrayEmail(base string, seen map[string]int) string {
+	email := safeXrayStatsEmail(base)
+	if email == "" {
+		email = "xray-client"
+	}
+	if len(email) > 40 {
+		email = email[:40]
+		email = strings.Trim(email, "-_.")
+		if email == "" {
+			email = "xray-client"
+		}
+	}
+	candidate := email
+	for i := 2; seen[candidate] > 0; i++ {
+		candidate = fmt.Sprintf("%s-%d", email, i)
+	}
+	return candidate
+}
+
+func safeXrayStatsEmail(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "<nil>" {
+		return ""
+	}
+	var b strings.Builder
+	lastDash := false
+	for _, r := range s {
+		ok := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '@' || r == '.' || r == '_' || r == '-'
+		if ok {
+			b.WriteRune(r)
+			lastDash = false
+		} else if !lastDash {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	return strings.Trim(b.String(), "-_.")
 }
 
 func asObject(v interface{}) map[string]interface{} {
@@ -1033,9 +1196,10 @@ func handleXrayLogs(w http.ResponseWriter, r *http.Request) {
 
 // XrayClientInfo is a single client entry inside an Xray inbound.
 type XrayClientInfo struct {
-	UUID  string `json:"id"`
-	Email string `json:"email"`
-	Level int    `json:"level,omitempty"`
+	UUID     string `json:"id"`
+	Password string `json:"password,omitempty"`
+	Email    string `json:"email"`
+	Level    int    `json:"level,omitempty"`
 	// Runtime counters from the Xray stats API. Online means this user's
 	// traffic counters changed inside the configured online window.
 	Online        bool       `json:"online"`
@@ -1103,6 +1267,11 @@ func (m *XrayManager) ListInbounds() ([]XrayInboundInfo, error) {
 		clients := ib.Settings.Clients
 		if clients == nil {
 			clients = []XrayClientInfo{}
+		}
+		for i := range clients {
+			if clients[i].UUID == "" && clients[i].Password != "" {
+				clients[i].UUID = clients[i].Password
+			}
 		}
 		result = append(result, XrayInboundInfo{
 			Tag:      ib.Tag,
