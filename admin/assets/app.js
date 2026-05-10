@@ -189,7 +189,6 @@ const roleChip      = document.getElementById("roleChip");
 const logoutBtn     = document.getElementById("logoutBtn");
 const menuToggle    = document.getElementById("menuToggle");
 const drawerBackdrop = document.getElementById("drawerBackdrop");
-const themeToggle   = document.getElementById("themeToggle");
 const languageSelect = document.getElementById("languageSelect");
 const pageTitle     = document.getElementById("pageTitle");
 const pageEyebrow   = document.getElementById("pageEyebrow");
@@ -487,7 +486,6 @@ function selectTab(tab) {
 document.querySelectorAll(".tab-btn").forEach(btn => btn.addEventListener("click", () => selectTab(btn.dataset.tab)));
 menuToggle?.addEventListener("click", () => document.body.classList.add("sidebar-open"));
 drawerBackdrop?.addEventListener("click", () => document.body.classList.remove("sidebar-open"));
-themeToggle?.addEventListener("click", () => document.body.classList.toggle("light-mode"));
 languageSelect?.addEventListener("change", () => { applyLanguage(languageSelect.value); renderDashboardCounters(); });
 document.querySelectorAll(".quick-action[data-jump]").forEach(btn => btn.addEventListener("click", () => selectTab(btn.dataset.jump)));
 applyLanguage(currentLang, { persist: false });
@@ -545,6 +543,8 @@ function clearTimers() {
 
 function initAfterLogin() {
   meUsername.textContent = currentUser;
+  mainApp.classList.remove("role-superadmin", "role-reseller");
+  mainApp.classList.add(currentRole === "superadmin" ? "role-superadmin" : "role-reseller");
   roleChip.innerHTML = currentRole === "superadmin"
     ? `<span class="chip green">superadmin</span>`
     : `<span class="chip warn">reseller</span>`;

@@ -2,7 +2,7 @@
 <html lang="en" class="i18n-pending">
 <head>
 <meta charset="UTF-8"/>
-<title>DragonCore Panel</title>
+<title>DragonCore Command</title>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <style>html.i18n-pending body{visibility:hidden}</style>
 <script>
@@ -16,7 +16,7 @@
   setTimeout(function(){document.documentElement.classList.remove("i18n-pending");},2500);
 })();
 </script>
-<link rel="stylesheet" href="assets/app.css?v=20260510i18n1"/>
+<link rel="stylesheet" href="assets/app.css?v=20260510black3"/>
 </head>
 <body>
 <div class="app">
@@ -25,8 +25,8 @@
 <!-- Login overlay -->
 <div class="overlay" id="loginOverlay">
   <div class="overlay-inner">
-    <div class="ov-title">SSH Panel</div>
-    <div class="ov-sub">Sign in with your admin or reseller credentials.</div>
+    <div class="ov-title">DragonCore Command</div>
+    <div class="ov-sub">Access the private control node with admin or reseller credentials.</div>
     <input id="loginUser" class="ov-field" placeholder="Username" autocomplete="username"/>
     <input id="loginPass" class="ov-field" type="password" placeholder="Password" autocomplete="current-password"/>
     <button class="btn" id="loginBtn" style="width:100%;margin-top:6px;justify-content:center;">Sign in</button>
@@ -39,10 +39,10 @@
   <div class="panel-layout">
     <aside class="sidebar" id="sidebar">
       <div class="brand-block">
-        <div class="brand-mark">🐉</div>
+        <div class="brand-mark">DC</div>
         <div class="brand-copy">
           <strong>DragonCore</strong>
-          <span>VPN Control</span>
+          <span>Command Node</span>
         </div>
       </div>
       <nav id="mainNav" class="side-nav">
@@ -69,7 +69,6 @@
           </div>
         </div>
         <div class="topbar-actions">
-          <button class="icon-btn" id="themeToggle" type="button" title="Alternar tema">☀</button>
           <select id="languageSelect" class="language-select" title="Language" aria-label="Language">
             <option value="pt-BR">PT-BR</option>
             <option value="en-US">EN-US</option>
@@ -128,7 +127,7 @@
         </div>
         <div class="dash-icon">◇</div>
       </div>
-      <div class="dash-card accent-blue superadmin-only hidden">
+      <div class="dash-card dash-resource accent-blue superadmin-only hidden">
         <div class="dash-card-main">
           <span class="dash-label">CPU</span>
           <strong id="dashCpuVal">--%</strong>
@@ -137,7 +136,7 @@
         </div>
         <div class="dash-icon">◴</div>
       </div>
-      <div class="dash-card accent-green superadmin-only hidden">
+      <div class="dash-card dash-resource accent-green superadmin-only hidden">
         <div class="dash-card-main">
           <span class="dash-label">RAM</span>
           <strong id="dashRamVal">--%</strong>
@@ -146,7 +145,7 @@
         </div>
         <div class="dash-icon">▣</div>
       </div>
-      <div class="dash-card accent-purple superadmin-only hidden">
+      <div class="dash-card dash-resource accent-purple superadmin-only hidden">
         <div class="dash-card-main">
           <span class="dash-label">Rede</span>
           <strong id="dashNetVal">--</strong>
@@ -873,6 +872,6 @@
 </div><!-- /shell -->
 </div><!-- /app -->
 
-<script defer src="assets/app.js?v=20260510i18n1"></script>
+<script defer src="assets/app.js?v=20260510black2"></script>
 </body>
 </html>
