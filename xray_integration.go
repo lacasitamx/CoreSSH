@@ -251,6 +251,7 @@ type XrayStatusDTO struct {
 
 // Status returns a snapshot of the current xray process state.
 func (m *XrayManager) Status() XrayStatusDTO {
+	m.refreshRuntimeStatsIfStale(3 * time.Second)
 	m.mu.Lock()
 	s := XrayStatusDTO{}
 	if m.cfg != nil {
@@ -406,17 +407,34 @@ func (m *XrayManager) refreshRuntimeStats() {
 	if m.statsByEmail == nil {
 		m.statsByEmail = make(map[string]xrayRuntimeStat, len(traffic))
 	}
+	seen := make(map[string]bool, len(traffic))
 	for email, counters := range traffic {
+		seen[email] = true
 		prev := m.statsByEmail[email]
 		st := xrayRuntimeStat{Email: email, Uplink: counters.Uplink, Downlink: counters.Downlink, LastActive: prev.LastActive}
 		changed := counters.Uplink != prev.Uplink || counters.Downlink != prev.Downlink
-		// When a panel starts after Xray, the first successful poll may already
-		// contain non-zero per-user traffic. Treat that as recent activity so
-		// online counters do not stay at zero until the next byte moves.
+		// First successful poll with non-zero traffic means the client has been
+		// active since Xray started. Later polls refresh LastActive only when bytes
+		// move, which avoids counting old idle clients forever.
 		if changed && (prev.Email != "" || counters.Uplink+counters.Downlink > 0) {
 			st.LastActive = now
 		}
 		m.statsByEmail[email] = st
+	}
+	// Keep old entries, but do not delete them immediately. Xray may omit zero
+	// counters for users that have not moved traffic yet.
+	_ = seen
+}
+
+func (m *XrayManager) refreshRuntimeStatsIfStale(maxAge time.Duration) {
+	if !m.isRunningSnapshot() {
+		return
+	}
+	m.statsMu.RLock()
+	last := m.lastStatsPoll
+	m.statsMu.RUnlock()
+	if last.IsZero() || time.Since(last) >= maxAge {
+		m.refreshRuntimeStats()
 	}
 }
 
@@ -425,16 +443,18 @@ func (m *XrayManager) queryUserTraffic() (map[string]xrayTrafficCounters, error)
 	if !ok {
 		return nil, fmt.Errorf("Xray API stats not configured; add an api inbound or set xray.api_server")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
 	attempts := [][]string{
 		{"api", "statsquery", "--server=" + apiServer, "-pattern", "user>>>", "-reset=false"},
+		{"api", "statsquery", "--server", apiServer, "-pattern", "user>>>", "-reset=false"},
+		{"api", "statsquery", "--server=" + apiServer, "-pattern", "user>>>"},
 		{"api", "statsquery", "--server", apiServer, "-pattern", "user>>>"},
 	}
 	var lastErr error
 	for _, args := range attempts {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		cmd := exec.CommandContext(ctx, binPath, args...)
 		out, err := cmd.CombinedOutput()
+		cancel()
 		if err == nil {
 			return parseXrayStatsOutput(out), nil
 		}
@@ -505,12 +525,17 @@ func parseXrayStatValue(raw json.RawMessage) int64 {
 }
 
 func addXrayCounter(result map[string]xrayTrafficCounters, name string, value int64) {
+	// Xray user traffic stats are normally named:
+	//   user>>>EMAIL>>>traffic>>>uplink
+	//   user>>>EMAIL>>>traffic>>>downlink
+	// Older code expected a fifth segment and therefore ignored valid Xray
+	// Stats API responses, which made every client look offline.
 	parts := strings.Split(name, ">>>")
-	if len(parts) < 5 || parts[0] != "user" || parts[2] != "traffic" {
+	if len(parts) < 4 || parts[0] != "user" || parts[2] != "traffic" {
 		return
 	}
-	email := parts[1]
-	direction := parts[4]
+	email := strings.TrimSpace(parts[1])
+	direction := strings.ToLower(strings.TrimSpace(parts[3]))
 	if email == "" {
 		return
 	}
@@ -527,17 +552,22 @@ func addXrayCounter(result map[string]xrayTrafficCounters, name string, value in
 }
 
 func (m *XrayManager) RuntimeStatsForEmail(email string) (xrayRuntimeStat, bool) {
-	email = strings.TrimSpace(email)
-	if email == "" {
-		return xrayRuntimeStat{}, false
-	}
+	return m.RuntimeStatsForKeys(email)
+}
+
+func (m *XrayManager) RuntimeStatsForKeys(keys ...string) (xrayRuntimeStat, bool) {
 	m.statsMu.RLock()
-	st, ok := m.statsByEmail[email]
-	m.statsMu.RUnlock()
-	if !ok || st.Email == "" {
-		return xrayRuntimeStat{}, false
+	defer m.statsMu.RUnlock()
+	for _, key := range keys {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		if st, ok := m.statsByEmail[key]; ok && st.Email != "" {
+			return st, true
+		}
 	}
-	return st, true
+	return xrayRuntimeStat{}, false
 }
 
 func (m *XrayManager) CountOnlineUsers() int {
@@ -953,6 +983,10 @@ func ensureXrayClientEmails(raw map[string]interface{}) bool {
 				cm["email"] = email
 				changed = true
 			}
+			if _, ok := cm["level"]; !ok {
+				cm["level"] = float64(0)
+				changed = true
+			}
 			seen[email]++
 		}
 	}
@@ -1066,6 +1100,18 @@ func handleXrayStatus(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+	// Be practical for old/manual configs: if the panel detects missing Stats API
+	// pieces or missing per-client stat labels, repair once automatically. This
+	// avoids a dashboard that says "OK" but continues to show zero Xray online
+	// users until a technical admin manually edits JSON.
+	if check, err := xrayMgr.CheckStatsAPIConfig(); err == nil && !check.Configured {
+		wasRunning := xrayMgr.isRunningSnapshot()
+		if changed, err := xrayMgr.EnsureStatsAPIConfig(); err == nil && changed && wasRunning {
+			if err := xrayMgr.Restart(); err != nil {
+				log.Printf("xray: auto stats repair restart failed: %v", err)
+			}
+		}
+	}
 	status := xrayMgr.Status()
 	if sess := sessionFromCtx(r.Context()); sess != nil && sess.Role == RoleReseller && statsStore != nil {
 		metas, err := statsStore.ListXrayClientsByOwner(r.Context(), sess.Username)
@@ -1074,7 +1120,7 @@ func handleXrayStatus(w http.ResponseWriter, r *http.Request) {
 			window := xrayMgr.onlineWindow()
 			now := time.Now()
 			for _, m := range metas {
-				st, ok := xrayMgr.RuntimeStatsForEmail(m.Email)
+				st, ok := xrayMgr.RuntimeStatsForKeys(m.Email, m.UUID, m.Name)
 				if ok && !st.LastActive.IsZero() && now.Sub(st.LastActive) <= window {
 					status.OnlineUsers++
 				}
@@ -1453,6 +1499,7 @@ func handleXrayInbounds(w http.ResponseWriter, r *http.Request) {
 					c.ExpiresAt = m.ExpiresAt
 					c.MaxConns = m.MaxConns
 					c.OwnerUsername = m.OwnerUsername
+					applyXrayRuntimeStats(&c)
 					if m.ExpiresAt == nil {
 						c.ExpirationDays = -1
 					} else if m.ExpiresAt.Before(now) {
@@ -1485,7 +1532,7 @@ func applyXrayRuntimeStats(c *XrayClientInfo) {
 	if c == nil {
 		return
 	}
-	st, ok := xrayMgr.RuntimeStatsForEmail(c.Email)
+	st, ok := xrayMgr.RuntimeStatsForKeys(c.Email, c.UUID, c.Name)
 	if !ok {
 		return
 	}

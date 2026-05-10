@@ -561,6 +561,48 @@ func setCurrentStats(s StatsDTO) {
 	statsMu.Unlock()
 }
 
+// primeCurrentStats fills RAM and interface totals immediately at startup so
+// the dashboard does not show placeholder values while waiting for the first
+// polling interval. CPU still becomes accurate after the second /proc/stat
+// sample, but it is rendered as 0.0% instead of --.
+func primeCurrentStats() {
+	netMap, _ := readNetDev()
+	interfaces := make([]InterfaceStats, 0, len(netMap))
+	for name, ctrs := range netMap {
+		if isIgnoredInterface(name) {
+			continue
+		}
+		st := InterfaceStats{Name: name}
+		if ifaceTotalsMgr != nil {
+			rxTotal, txTotal := ifaceTotalsMgr.ApplyKernel(name, ctrs.RxBytes, ctrs.TxBytes)
+			st.RxBytes = rxTotal
+			st.TxBytes = txTotal
+		} else {
+			st.RxBytes = ctrs.RxBytes
+			st.TxBytes = ctrs.TxBytes
+		}
+		interfaces = append(interfaces, st)
+	}
+	sort.Slice(interfaces, func(i, j int) bool { return interfaces[i].Name < interfaces[j].Name })
+	memTotal, memAvail, _ := readMemInfo()
+	var memUsed uint64
+	var memPercent float64
+	if memTotal > 0 {
+		if memAvail <= memTotal {
+			memUsed = memTotal - memAvail
+			memPercent = 100.0 * float64(memUsed) / float64(memTotal)
+		}
+	}
+	setCurrentStats(StatsDTO{
+		CPUPercent: 0,
+		MemTotal:   memTotal,
+		MemUsed:    memUsed,
+		MemAvail:   memAvail,
+		MemPercent: memPercent,
+		Interfaces: interfaces,
+	})
+}
+
 type IfaceTotals struct {
 	Iface             string
 	TotalRxBytes      uint64
@@ -1310,8 +1352,8 @@ func startAdminAPI(store *Store, addr string, adminDir string) {
 	mux.Handle("/api/users/create", sessionMiddleware(http.HandlerFunc(handleCreateUser(store))))
 	mux.Handle("/api/users/delete", sessionMiddleware(http.HandlerFunc(handleDeleteUser(store))))
 
-	// Superadmin-only: server stats + DNSTT
-	mux.Handle("/api/stats", saSession(http.HandlerFunc(handleStats)))
+	// Server stats: visible to authenticated sessions; reset remains superadmin-only.
+	mux.Handle("/api/stats", sessionMiddleware(http.HandlerFunc(handleStats)))
 	mux.Handle("/api/stats/interfaces/reset", saSession(http.HandlerFunc(handleResetInterfaceStats(store))))
 	mux.Handle("/api/vnstat", saSession(http.HandlerFunc(handleVnstat(store))))
 	mux.Handle("/api/vnstat/reset", saSession(http.HandlerFunc(handleVnstatReset(store))))
@@ -2586,6 +2628,7 @@ func main() {
 	}
 
 	// start background collector for CPU + interface stats
+	primeCurrentStats()
 	startStatsCollector()
 
 	adminAddr := os.Getenv("ADMIN_HTTP_ADDR")

@@ -9,6 +9,7 @@ let tlsForwardersState = [];
 let editingXrayClientId = null;
 let wzInbounds = [];
 let dashboardCache = { sshUsers: [], xrayInbounds: [], me: null };
+let currentTab = "dashboard";
 
 // ─── DOM refs ─────────────────────────────────────────────────────────────────
 const loginOverlay  = document.getElementById("loginOverlay");
@@ -206,6 +207,7 @@ const tabTitles = {
 };
 
 function selectTab(tab) {
+  currentTab = tab;
   const pane = document.getElementById("tab-" + tab);
   const btn = document.querySelector(`.tab-btn[data-tab="${tab}"]`);
   if (!pane || !btn) return;
@@ -311,14 +313,18 @@ function initAfterLogin() {
   selectTab("dashboard");
 
   if (currentRole === "superadmin") {
-    loadStats();
-    statsTimer = setInterval(loadStats, 2000);
+    loadDashboardStats();
+    statsTimer = setInterval(() => {
+      loadDashboardStats();
+      if (currentTab === "stats") loadStats();
+    }, 2000);
   } else {
     loadMe();
   }
-  xrayTimer = setInterval(loadXrayStatus, 7000);
+  xrayTimer = setInterval(() => { loadXrayStatus(); if (currentTab === "xray") loadInbounds(); }, 7000);
 
   loadUsers();
+  loadXrayStatus();
   loadInbounds();
   usersTimer = setInterval(() => loadUsersSilent(), 3000);
 }
@@ -1072,6 +1078,22 @@ async function deleteReseller(username) {
 // ─── Stats ────────────────────────────────────────────────────────────────────
 document.querySelector("[data-tab='stats']")?.addEventListener("click", loadStats);
 
+async function loadDashboardStats() {
+  try {
+    const res = await api("/api/stats");
+    if (!res.ok) throw new Error(await res.text());
+    const s = await res.json();
+    updateDashboardStats(s);
+  } catch (e) {
+    if (e.message === "auth") doAuthError();
+    else {
+      if (dashCpuVal) dashCpuVal.textContent = "erro";
+      if (dashRamVal) dashRamVal.textContent = "erro";
+      if (dashNetVal) dashNetVal.textContent = "erro";
+    }
+  }
+}
+
 function updateDashboardStats(s) {
   if (!s) return;
   const cpu = Number(s.cpu_percent ?? 0);
@@ -1101,28 +1123,33 @@ function updateDashboardStats(s) {
 async function loadStats() {
   try {
     const res = await api("/api/stats");
+    if (!res.ok) throw new Error(await res.text());
     const s   = await res.json();
     updateDashboardStats(s);
-    const cpu = s?.cpu_percent ?? 0;
-    cpuVal.textContent = fmtPct(cpu);
-    cpuBar.style.width = Math.min(100, Math.max(0, cpu)) + "%";
-    const mp  = s?.mem_percent ?? null;
-    memVal.textContent = mp == null ? "--%"  : fmtPct(mp);
-    memBar.style.width = mp == null ? "0%"   : Math.min(100, Math.max(0, mp)) + "%";
+    const cpu = Number(s?.cpu_percent ?? 0);
+    if (cpuVal) cpuVal.textContent = fmtPct(cpu);
+    if (cpuBar) cpuBar.style.width = Math.min(100, Math.max(0, cpu)) + "%";
+    const mp  = s?.mem_percent == null ? null : Number(s.mem_percent);
+    if (memVal) memVal.textContent = mp == null ? "--%"  : fmtPct(mp);
+    if (memBar) memBar.style.width = mp == null ? "0%"   : Math.min(100, Math.max(0, mp)) + "%";
     const mu = s?.mem_used_bytes, mt = s?.mem_total_bytes;
-    memDetail.textContent = (mu != null && mt != null) ? `${fmtBytes(mu)} / ${fmtBytes(mt)}` : "";
+    if (memDetail) memDetail.textContent = (mu != null && mt != null) ? `${fmtBytes(mu)} / ${fmtBytes(mt)}` : "";
     const ifaces = Array.isArray(s.interfaces) ? s.interfaces : [];
-    ifaceBody.innerHTML = "";
+    if (ifaceBody) ifaceBody.innerHTML = "";
     let totRx = 0, totTx = 0;
     ifaces.forEach(it => {
-      totRx += it.rx_bytes||0; totTx += it.tx_bytes||0;
+      totRx += Number(it.rx_bytes||0); totTx += Number(it.tx_bytes||0);
+      if (!ifaceBody) return;
       const tr = document.createElement("tr");
       tr.innerHTML = `<td>${it.name}</td><td>${fmtMbps(it.rx_mbps)}</td><td>${fmtMbps(it.tx_mbps)}</td><td>${fmtBytes(it.rx_bytes)}</td><td>${fmtBytes(it.tx_bytes)}</td>`;
       ifaceBody.appendChild(tr);
     });
-    ifaceSummary.textContent = `Total: ${fmtBytes(totRx)} rx / ${fmtBytes(totTx)} tx`;
-    statsUpdated.textContent = "Updated: " + new Date().toLocaleTimeString();
-  } catch (e) { if (e.message==="auth") doAuthError(); }
+    if (ifaceSummary) ifaceSummary.textContent = `Total: ${fmtBytes(totRx)} rx / ${fmtBytes(totTx)} tx`;
+    if (statsUpdated) statsUpdated.textContent = "Updated: " + new Date().toLocaleTimeString();
+  } catch (e) {
+    if (e.message==="auth") doAuthError();
+    else if (statsUpdated) statsUpdated.textContent = "Erro ao carregar stats.";
+  }
 }
 
 resetIfaceStatsBtn?.addEventListener("click", resetInterfaceStats);
