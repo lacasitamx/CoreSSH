@@ -10,6 +10,8 @@ let editingXrayClientId = null;
 let wzInbounds = [];
 let dashboardCache = { sshUsers: [], xrayInbounds: [], me: null };
 let currentTab = "dashboard";
+let inboundsRefreshInFlight = false;
+let lastInboundsStructure = "";
 
 // ─── DOM refs ─────────────────────────────────────────────────────────────────
 const loginOverlay  = document.getElementById("loginOverlay");
@@ -194,6 +196,92 @@ function genUUID() {
     (c^crypto.getRandomValues(new Uint8Array(1))[0]&15>>c/4).toString(16));
 }
 
+
+function escapeHTML(value) {
+  return String(value ?? "").replace(/[&<>'"]/g, ch => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;",
+  }[ch]));
+}
+
+function isVisible(el) {
+  return !!el && !el.classList.contains("hidden") && getComputedStyle(el).display !== "none";
+}
+
+function isXrayClientEditorActive() {
+  const active = document.activeElement;
+  if (active && active.closest && (active.closest("#inboundsContainer") || active.closest("#editXrayClientPanel"))) return true;
+  if (isVisible(document.getElementById("editXrayClientPanel"))) return true;
+  return Array.from(document.querySelectorAll('#inboundsContainer [id^="add-form-"]')).some(isVisible);
+}
+
+function inboundStructure(inbounds = []) {
+  return JSON.stringify((inbounds || []).map(ib => ({
+    tag: ib.tag || "",
+    protocol: ib.protocol || "",
+    port: ib.port ?? "",
+    clients: (ib.clients || []).map(c => c.id || ""),
+  })));
+}
+
+function clientStatusHTML(c) {
+  const exp = c.expires_at ? new Date(c.expires_at) : null;
+  const daysLeft = c.expiration_days;
+  if (c.expired) return `<span style="color:var(--danger);font-size:.68rem;">Expired</span>`;
+  if (daysLeft === -1 || !exp) return `<span style="color:var(--success);font-size:.68rem;">Active</span>`;
+  return `<span style="color:var(--success);font-size:.68rem;">Active (${escapeHTML(daysLeft)}d)</span>`;
+}
+
+function clientExpiryLabel(c) {
+  const exp = c.expires_at ? new Date(c.expires_at) : null;
+  return exp ? exp.toLocaleDateString() : "Unlimited";
+}
+
+function clientOnlineHTML(c) {
+  return `${c.online ? '<span class="badge-on">online</span>' : '<span class="badge-off">offline</span>'}<div class="hint">${escapeHTML(formatLastActive(c.last_active))}</div>`;
+}
+
+function updateCell(row, name, html) {
+  const cell = row?.querySelector?.(`[data-cell="${name}"]`);
+  if (cell && cell.innerHTML !== html) cell.innerHTML = html;
+}
+
+function patchRenderedInbounds(inbounds) {
+  const sections = Array.from(inboundsContainer.querySelectorAll("[data-inbound-tag]"));
+  if (sections.length !== inbounds.length) return false;
+
+  for (const ib of inbounds) {
+    const tag = String(ib.tag || "");
+    const section = sections.find(el => el.dataset.inboundTag === tag);
+    if (!section) return false;
+    if (section.dataset.inboundProtocol !== String(ib.protocol || "") || section.dataset.inboundPort !== String(ib.port ?? "")) return false;
+
+    const clients = ib.clients || [];
+    const rows = Array.from(section.querySelectorAll("tr[data-client-id]"));
+    if (rows.length !== clients.length) return false;
+
+    const onlineCount = clients.filter(c => !!c.online).length;
+    const chip = section.querySelector('[data-role="inbound-online-chip"]');
+    if (chip) {
+      chip.textContent = `${onlineCount} online`;
+      chip.classList.toggle("green", onlineCount > 0);
+    }
+
+    for (const c of clients) {
+      const row = rows.find(el => el.dataset.clientId === String(c.id || ""));
+      if (!row) return false;
+      updateCell(row, "name", escapeHTML(c.name || "—"));
+      updateCell(row, "uuid", escapeHTML(c.id || "—"));
+      updateCell(row, "email", escapeHTML(c.email || "—"));
+      updateCell(row, "expiry", escapeHTML(clientExpiryLabel(c)));
+      updateCell(row, "status", clientStatusHTML(c));
+      updateCell(row, "online", clientOnlineHTML(c));
+      updateCell(row, "traffic", escapeHTML(formatBytes(c.total_bytes)));
+      updateCell(row, "max", escapeHTML(c.max_conns || "∞"));
+    }
+  }
+  return true;
+}
+
 // ─── Navigation / shell ──────────────────────────────────────────────────────
 const tabTitles = {
   dashboard: ["Painel", "Visão geral"],
@@ -223,7 +311,7 @@ function selectTab(tab) {
   if (tab === "dashboard") refreshDashboard();
   if (tab === "xray") {
     loadXrayStatus();
-    loadInbounds();
+    loadInbounds({ force: true });
     if (currentRole === "superadmin") loadWizardFromConfig();
   }
   if (tab === "stats" && currentRole === "superadmin") loadStats();
@@ -321,11 +409,14 @@ function initAfterLogin() {
   } else {
     loadMe();
   }
-  xrayTimer = setInterval(() => { loadXrayStatus(); if (currentTab === "xray") loadInbounds(); }, 7000);
+  xrayTimer = setInterval(() => {
+    loadXrayStatus();
+    if (currentTab === "xray") loadInbounds({ silent: true });
+  }, 7000);
 
   loadUsers();
   loadXrayStatus();
-  loadInbounds();
+  loadInbounds({ silent: true });
   usersTimer = setInterval(() => loadUsersSilent(), 3000);
 }
 
@@ -482,7 +573,7 @@ function updateDashboardXray(inbounds = []) {
 
 function refreshDashboard() {
   loadUsersSilent();
-  loadInbounds();
+  loadInbounds({ silent: true });
   loadXrayStatus();
   if (currentRole === "superadmin") loadStats();
   if (currentRole === "reseller") loadMe();
@@ -651,17 +742,12 @@ document.getElementById("xStartBtn").addEventListener("click", () => xrayCtrl("s
 document.getElementById("xStopBtn").addEventListener("click", () => xrayCtrl("stop"));
 document.getElementById("xRestartBtn").addEventListener("click", () => xrayCtrl("restart"));
 document.getElementById("xRepairStatsBtn")?.addEventListener("click", repairXrayStats);
-document.getElementById("xRefreshBtn").addEventListener("click", () => { loadXrayStatus(); loadInbounds(); });
-document.getElementById("xLoadInboundsBtn").addEventListener("click", loadInbounds);
+document.getElementById("xRefreshBtn").addEventListener("click", () => { loadXrayStatus(); loadInbounds({ force: true }); });
+document.getElementById("xLoadInboundsBtn").addEventListener("click", () => loadInbounds({ force: true }));
 document.getElementById("xLoadCfgBtn").addEventListener("click", loadXrayCfg);
 document.getElementById("xSaveCfgBtn").addEventListener("click", saveXrayCfg);
 document.getElementById("xLoadLogsBtn").addEventListener("click", loadXrayLogs);
 
-document.querySelector("[data-tab='xray']")?.addEventListener("click", () => {
-  loadXrayStatus();
-  loadInbounds();
-  if (currentRole === "superadmin") loadWizardFromConfig();
-});
 
 async function loadXrayStatus() {
   try {
@@ -709,7 +795,7 @@ async function repairXrayStats() {
       ? (d.restarted ? "Counters API repaired and Xray restarted." : "Counters API repaired. Restart Xray to apply it.")
       : "Counters API already looks correct.";
     setTimeout(loadXrayStatus, 700);
-    setTimeout(loadInbounds, 1200);
+    setTimeout(() => loadInbounds({ force: true }), 1200);
   } catch (e) {
     if (e.message==="auth") doAuthError();
     else xStatus.textContent = "Error repairing counters: "+e.message;
@@ -725,22 +811,30 @@ async function xrayCtrl(action) {
     if (!res.ok) throw new Error(await res.text());
     xStatus.textContent = "Xray "+action+" OK.";
     setTimeout(loadXrayStatus, 700);
-    setTimeout(loadInbounds, 1200);
+    setTimeout(() => loadInbounds({ force: true }), 1200);
   } catch (e) {
     if (e.message==="auth") doAuthError();
     else xStatus.textContent = "Error: "+e.message;
   }
 }
 
-async function loadInbounds() {
-  inboundsContainer.innerHTML = '<div class="hint" style="padding:8px 0;">Loading…</div>';
+async function loadInbounds(options = {}) {
+  const { silent = false, force = false } = options || {};
+  if (inboundsRefreshInFlight) return;
+  inboundsRefreshInFlight = true;
+  if (!silent) inboundsContainer.innerHTML = '<div class="hint" style="padding:8px 0;">Loading…</div>';
+  else inboundsContainer.classList.add("xray-refreshing");
   try {
     const res      = await api("/api/xray/inbounds");
+    if (!res.ok) throw new Error(await res.text());
     const inbounds = await res.json();
-    renderInbounds(inbounds || []);
+    renderInbounds(inbounds || [], { silent, force });
   } catch (e) {
-    inboundsContainer.textContent = "Error loading inbounds.";
+    if (!silent) inboundsContainer.textContent = "Error loading inbounds.";
     if (e.message==="auth") doAuthError();
+  } finally {
+    inboundsRefreshInFlight = false;
+    inboundsContainer.classList.remove("xray-refreshing");
   }
 }
 
@@ -762,15 +856,30 @@ async function copyText(text) {
   finally { document.body.removeChild(ta); }
 }
 
-function renderInbounds(inbounds) {
+function renderInbounds(inbounds, options = {}) {
+  const { silent = false, force = false } = options || {};
   updateDashboardXray(inbounds);
+  const nextStructure = inboundStructure(inbounds);
+
+  if (silent && !force && nextStructure === lastInboundsStructure && patchRenderedInbounds(inbounds)) return;
+  if (silent && !force && isXrayClientEditorActive()) {
+    patchRenderedInbounds(inbounds);
+    if (xStatus) xStatus.textContent = "New client data is available; editing was preserved.";
+    return;
+  }
+
   if (!inbounds.length) {
     inboundsContainer.innerHTML = '<div class="hint" style="padding:8px 0;">No VLESS/VMess/Trojan inbounds found.</div>';
+    lastInboundsStructure = nextStructure;
     return;
   }
   inboundsContainer.innerHTML = "";
+  lastInboundsStructure = nextStructure;
   inbounds.forEach(ib => {
     const section = document.createElement("div");
+    section.dataset.inboundTag = String(ib.tag || "");
+    section.dataset.inboundProtocol = String(ib.protocol || "");
+    section.dataset.inboundPort = String(ib.port ?? "");
     section.style = "margin-bottom:14px;";
 
     const hdr = document.createElement("div");
@@ -780,10 +889,10 @@ function renderInbounds(inbounds) {
     const onlineCount = clients.filter(c => !!c.online).length;
     hdr.innerHTML = `
       <div class="card-title" style="font-size:.8rem;">
-        <span class="chip">${ib.protocol}</span>
-        ${ib.tag || "untagged"}
-        <span class="hint">:${ib.port ?? "?"}</span>
-        <span class="chip ${onlineCount ? "green" : ""}">${onlineCount} online</span>
+        <span class="chip">${escapeHTML(ib.protocol)}</span>
+        ${escapeHTML(ib.tag || "untagged")}
+        <span class="hint">:${escapeHTML(ib.port ?? "?")}</span>
+        <span class="chip ${onlineCount ? "green" : ""}" data-role="inbound-online-chip">${onlineCount} online</span>
       </div>
       <button class="btn btn-sm" onclick="openAddClient('${ib.tag}')">+ Add Client</button>`;
     section.appendChild(hdr);
@@ -823,28 +932,17 @@ function renderInbounds(inbounds) {
       tbl.innerHTML = `<thead><tr><th>Name</th><th>UUID</th><th>Email</th><th>Expiry</th><th>Status</th><th>Online</th><th>Traffic</th><th>Max</th><th>Actions</th></tr></thead>`;
       const tbody = document.createElement("tbody");
       clients.forEach(c => {
-        const exp = c.expires_at ? new Date(c.expires_at) : null;
-        const expStr = exp ? exp.toLocaleDateString() : "Unlimited";
-        const isExpired = !!c.expired;
-        const daysLeft = c.expiration_days;
-        let statusHtml;
-        if (isExpired) {
-          statusHtml = `<span style="color:var(--danger);font-size:.68rem;">Expired</span>`;
-        } else if (daysLeft === -1 || !exp) {
-          statusHtml = `<span style="color:var(--success);font-size:.68rem;">Active</span>`;
-        } else {
-          statusHtml = `<span style="color:var(--success);font-size:.68rem;">Active (${daysLeft}d)</span>`;
-        }
         const tr = document.createElement("tr");
+        tr.dataset.clientId = String(c.id || "");
         tr.innerHTML = `
-          <td>${c.name || "—"}</td>
-          <td style="font-family:monospace;font-size:.65rem;">${c.id}</td>
-          <td>${c.email || "—"}</td>
-          <td style="font-size:.7rem;">${expStr}</td>
-          <td>${statusHtml}</td>
-          <td>${c.online ? '<span class="badge-on">online</span>' : '<span class="badge-off">offline</span>'}<div class="hint">${formatLastActive(c.last_active)}</div></td>
-          <td style="font-size:.7rem;">${formatBytes(c.total_bytes)}</td>
-          <td style="font-size:.7rem;">${c.max_conns || "∞"}</td>`;
+          <td data-cell="name">${escapeHTML(c.name || "—")}</td>
+          <td data-cell="uuid" style="font-family:monospace;font-size:.65rem;">${escapeHTML(c.id || "—")}</td>
+          <td data-cell="email">${escapeHTML(c.email || "—")}</td>
+          <td data-cell="expiry" style="font-size:.7rem;">${escapeHTML(clientExpiryLabel(c))}</td>
+          <td data-cell="status">${clientStatusHTML(c)}</td>
+          <td data-cell="online">${clientOnlineHTML(c)}</td>
+          <td data-cell="traffic" style="font-size:.7rem;">${escapeHTML(formatBytes(c.total_bytes))}</td>
+          <td data-cell="max" style="font-size:.7rem;">${escapeHTML(c.max_conns || "∞")}</td>`;
         const actTd = document.createElement("td");
         actTd.style.whiteSpace = "nowrap";
         const copyBtn = document.createElement("button");
@@ -904,7 +1002,7 @@ async function addClient(tag) {
     });
     if (!res.ok) throw new Error(await res.text());
     xStatus.textContent = `Client ${uuid.slice(0,8)}… added. Restarting Xray…`;
-    setTimeout(() => { loadInbounds(); if (currentRole === "reseller") loadMe(); }, 1500);
+    setTimeout(() => { loadInbounds({ force: true }); if (currentRole === "reseller") loadMe(); }, 1500);
   } catch (e) {
     if (e.message==="auth") doAuthError();
     else xStatus.textContent = "Error: "+e.message;
@@ -917,7 +1015,7 @@ async function removeClient(tag, uuid) {
     const res = await api(`/api/xray/clients/remove?inbound_tag=${encodeURIComponent(tag)}&uuid=${encodeURIComponent(uuid)}`, { method:"DELETE" });
     if (!res.ok && res.status !== 204) throw new Error(await res.text());
     xStatus.textContent = "Client removed. Restarting Xray…";
-    setTimeout(() => { loadInbounds(); if (currentRole === "reseller") loadMe(); }, 1500);
+    setTimeout(() => { loadInbounds({ force: true }); if (currentRole === "reseller") loadMe(); }, 1500);
   } catch (e) {
     if (e.message==="auth") doAuthError();
     else xStatus.textContent = "Error: "+e.message;
@@ -1639,7 +1737,7 @@ async function saveEditXrayClient() {
     const res = await api("/api/xray/clients/update", { method:"POST", body: JSON.stringify(payload) });
     if (!res.ok) throw new Error(await res.text());
     st.textContent = "Saved.";
-    setTimeout(() => { closeEditXrayClient(); loadInbounds(); }, 700);
+    setTimeout(() => { closeEditXrayClient(); loadInbounds({ force: true }); }, 700);
   } catch (e) {
     if (e.message==="auth") doAuthError();
     else st.textContent = "Error: " + e.message;
