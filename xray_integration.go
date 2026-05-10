@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,6 +9,8 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -19,6 +22,13 @@ type XrayConfig struct {
 	Enabled    bool   `json:"enabled"`
 	BinPath    string `json:"bin_path"`    // e.g. /opt/sshpanel/xray
 	ConfigFile string `json:"config_file"` // e.g. /opt/sshpanel/xray_config.json
+
+	// Optional Xray API endpoint used for online client counters. If empty,
+	// the panel auto-detects a local inbound tagged "api" from the Xray config.
+	APIServer string `json:"api_server,omitempty"` // e.g. 127.0.0.1:10085
+	// A client is considered online when its Xray stats traffic changed recently.
+	OnlineWindowSeconds int `json:"online_window_seconds,omitempty"` // default 90
+	StatsPollSeconds    int `json:"stats_poll_seconds,omitempty"`    // default 15
 }
 
 // xrayLogRing is a fixed-capacity circular buffer for captured log lines.
@@ -81,6 +91,24 @@ type XrayManager struct {
 	cfg       *XrayConfig
 	startTime time.Time
 	lastErr   string
+
+	statsMu       sync.RWMutex
+	statsByEmail  map[string]xrayRuntimeStat
+	lastStatsErr  string
+	lastStatsPoll time.Time
+	pollStarted   bool
+}
+
+type xrayTrafficCounters struct {
+	Uplink   int64
+	Downlink int64
+}
+
+type xrayRuntimeStat struct {
+	Email      string
+	Uplink     int64
+	Downlink   int64
+	LastActive time.Time
 }
 
 var xrayMgr = &XrayManager{}
@@ -93,6 +121,7 @@ func initXrayManager(cfg *XrayConfig) {
 	xrayMgr.mu.Lock()
 	xrayMgr.cfg = cfg
 	xrayMgr.mu.Unlock()
+	xrayMgr.startStatsPoller()
 
 	if cfg.Enabled {
 		if err := xrayMgr.Start(); err != nil {
@@ -128,6 +157,11 @@ func (m *XrayManager) Start() error {
 	}
 	if _, err := os.Stat(m.cfg.BinPath); err != nil {
 		return fmt.Errorf("xray binary not found at %s", m.cfg.BinPath)
+	}
+	if changed, err := m.ensureStatsAPIConfigLocked(); err != nil {
+		return fmt.Errorf("xray stats api check failed: %w", err)
+	} else if changed {
+		log.Printf("xray: repaired Stats API support in config before start")
 	}
 
 	args := []string{"run"}
@@ -201,18 +235,23 @@ func (m *XrayManager) Restart() error {
 
 // XrayStatusDTO is returned by /api/xray/status.
 type XrayStatusDTO struct {
-	Enabled bool   `json:"enabled"`
-	Running bool   `json:"running"`
-	PID     int    `json:"pid,omitempty"`
-	Uptime  string `json:"uptime,omitempty"`
-	Error   string `json:"error,omitempty"`
+	Enabled         bool       `json:"enabled"`
+	Running         bool       `json:"running"`
+	PID             int        `json:"pid,omitempty"`
+	Uptime          string     `json:"uptime,omitempty"`
+	Error           string     `json:"error,omitempty"`
+	OnlineUsers     int        `json:"online_users"`
+	StatsError      string     `json:"stats_error,omitempty"`
+	StatsConfigured bool       `json:"stats_configured"`
+	StatsMissing    []string   `json:"stats_missing,omitempty"`
+	APIServer       string     `json:"api_server,omitempty"`
+	LastStatsPoll   *time.Time `json:"last_stats_poll,omitempty"`
+	OnlineWindowSec int        `json:"online_window_seconds"`
 }
 
 // Status returns a snapshot of the current xray process state.
 func (m *XrayManager) Status() XrayStatusDTO {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	s := XrayStatusDTO{}
 	if m.cfg != nil {
 		s.Enabled = m.cfg.Enabled
@@ -225,7 +264,261 @@ func (m *XrayManager) Status() XrayStatusDTO {
 	if m.lastErr != "" {
 		s.Error = m.lastErr
 	}
+	m.mu.Unlock()
+
+	s.OnlineUsers = m.CountOnlineUsers()
+	s.OnlineWindowSec = int(m.onlineWindow().Seconds())
+	m.statsMu.RLock()
+	if m.lastStatsErr != "" {
+		s.StatsError = m.lastStatsErr
+	}
+	if !m.lastStatsPoll.IsZero() {
+		t := m.lastStatsPoll
+		s.LastStatsPoll = &t
+	}
+	m.statsMu.RUnlock()
+	if check, err := m.CheckStatsAPIConfig(); err == nil {
+		s.StatsConfigured = check.Configured
+		s.StatsMissing = check.Missing
+		s.APIServer = check.APIServer
+	} else if err != nil {
+		s.StatsConfigured = false
+		s.StatsMissing = []string{err.Error()}
+	}
 	return s
+}
+
+func (m *XrayManager) pollInterval() time.Duration {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sec := 15
+	if m.cfg != nil && m.cfg.StatsPollSeconds > 0 {
+		sec = m.cfg.StatsPollSeconds
+	}
+	if sec < 5 {
+		sec = 5
+	}
+	return time.Duration(sec) * time.Second
+}
+
+func (m *XrayManager) onlineWindow() time.Duration {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sec := 90
+	if m.cfg != nil && m.cfg.OnlineWindowSeconds > 0 {
+		sec = m.cfg.OnlineWindowSeconds
+	}
+	if sec < 15 {
+		sec = 15
+	}
+	return time.Duration(sec) * time.Second
+}
+
+func (m *XrayManager) startStatsPoller() {
+	m.mu.Lock()
+	if m.pollStarted {
+		m.mu.Unlock()
+		return
+	}
+	m.pollStarted = true
+	m.mu.Unlock()
+
+	go func() {
+		// First sample establishes a baseline. Active Xray users appear online
+		// after their traffic counters change on a later poll.
+		for {
+			m.refreshRuntimeStats()
+			time.Sleep(m.pollInterval())
+		}
+	}()
+}
+
+func (m *XrayManager) isRunningSnapshot() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.isRunning()
+}
+
+func (m *XrayManager) apiCommandConfig() (binPath, apiServer string, ok bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.cfg == nil || m.cfg.BinPath == "" || m.cfg.ConfigFile == "" {
+		return "", "", false
+	}
+	binPath = m.cfg.BinPath
+	apiServer = strings.TrimSpace(m.cfg.APIServer)
+	if apiServer == "" {
+		apiServer = m.discoverAPIServerLocked()
+	}
+	return binPath, apiServer, apiServer != ""
+}
+
+func (m *XrayManager) discoverAPIServerLocked() string {
+	if m.cfg == nil || m.cfg.ConfigFile == "" {
+		return ""
+	}
+	data, err := os.ReadFile(m.cfg.ConfigFile)
+	if err != nil {
+		return ""
+	}
+	var cfg struct {
+		Inbounds []struct {
+			Tag      string          `json:"tag"`
+			Listen   string          `json:"listen"`
+			Protocol string          `json:"protocol"`
+			Port     json.RawMessage `json:"port"`
+		} `json:"inbounds"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return ""
+	}
+	for _, ib := range cfg.Inbounds {
+		if ib.Tag != "api" || !strings.EqualFold(ib.Protocol, "dokodemo-door") {
+			continue
+		}
+		host := strings.TrimSpace(ib.Listen)
+		if host == "" || host == "0.0.0.0" || host == "::" {
+			host = "127.0.0.1"
+		}
+		port := strings.Trim(string(ib.Port), `"`)
+		if port == "" || port == "null" {
+			continue
+		}
+		return host + ":" + port
+	}
+	return ""
+}
+
+func (m *XrayManager) refreshRuntimeStats() {
+	if !m.isRunningSnapshot() {
+		return
+	}
+	traffic, err := m.queryUserTraffic()
+	now := time.Now()
+	m.statsMu.Lock()
+	defer m.statsMu.Unlock()
+	m.lastStatsPoll = now
+	if err != nil {
+		m.lastStatsErr = err.Error()
+		return
+	}
+	m.lastStatsErr = ""
+	if m.statsByEmail == nil {
+		m.statsByEmail = make(map[string]xrayRuntimeStat, len(traffic))
+	}
+	for email, counters := range traffic {
+		prev := m.statsByEmail[email]
+		st := xrayRuntimeStat{Email: email, Uplink: counters.Uplink, Downlink: counters.Downlink, LastActive: prev.LastActive}
+		if prev.Email != "" && (counters.Uplink != prev.Uplink || counters.Downlink != prev.Downlink) {
+			st.LastActive = now
+		}
+		m.statsByEmail[email] = st
+	}
+}
+
+func (m *XrayManager) queryUserTraffic() (map[string]xrayTrafficCounters, error) {
+	binPath, apiServer, ok := m.apiCommandConfig()
+	if !ok {
+		return nil, fmt.Errorf("Xray API stats not configured; add an api inbound or set xray.api_server")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	attempts := [][]string{
+		{"api", "statsquery", "--server=" + apiServer, "-pattern", "user>>>", "-reset=false"},
+		{"api", "statsquery", "--server", apiServer, "-pattern", "user>>>"},
+	}
+	var lastErr error
+	for _, args := range attempts {
+		cmd := exec.CommandContext(ctx, binPath, args...)
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			return parseXrayStatsOutput(out), nil
+		}
+		lastErr = fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil, fmt.Errorf("Xray stats query failed: %v", lastErr)
+}
+
+func parseXrayStatsOutput(out []byte) map[string]xrayTrafficCounters {
+	result := map[string]xrayTrafficCounters{}
+	var js struct {
+		Stat []struct {
+			Name  string `json:"name"`
+			Value int64  `json:"value"`
+		} `json:"stat"`
+		Stats []struct {
+			Name  string `json:"name"`
+			Value int64  `json:"value"`
+		} `json:"stats"`
+	}
+	if json.Unmarshal(out, &js) == nil {
+		for _, st := range js.Stat {
+			addXrayCounter(result, st.Name, st.Value)
+		}
+		for _, st := range js.Stats {
+			addXrayCounter(result, st.Name, st.Value)
+		}
+	}
+	if len(result) > 0 {
+		return result
+	}
+
+	re := regexp.MustCompile(`(?s)name:\s*"([^"]+)"\s+value:\s*([0-9]+)`)
+	for _, m := range re.FindAllSubmatch(out, -1) {
+		v, _ := strconv.ParseInt(string(m[2]), 10, 64)
+		addXrayCounter(result, string(m[1]), v)
+	}
+	return result
+}
+
+func addXrayCounter(result map[string]xrayTrafficCounters, name string, value int64) {
+	parts := strings.Split(name, ">>>")
+	if len(parts) < 5 || parts[0] != "user" || parts[2] != "traffic" {
+		return
+	}
+	email := parts[1]
+	direction := parts[4]
+	if email == "" {
+		return
+	}
+	c := result[email]
+	switch direction {
+	case "uplink":
+		c.Uplink = value
+	case "downlink":
+		c.Downlink = value
+	default:
+		return
+	}
+	result[email] = c
+}
+
+func (m *XrayManager) RuntimeStatsForEmail(email string) (xrayRuntimeStat, bool) {
+	email = strings.TrimSpace(email)
+	if email == "" {
+		return xrayRuntimeStat{}, false
+	}
+	m.statsMu.RLock()
+	st, ok := m.statsByEmail[email]
+	m.statsMu.RUnlock()
+	if !ok || st.Email == "" {
+		return xrayRuntimeStat{}, false
+	}
+	return st, true
+}
+
+func (m *XrayManager) CountOnlineUsers() int {
+	window := m.onlineWindow()
+	now := time.Now()
+	m.statsMu.RLock()
+	defer m.statsMu.RUnlock()
+	n := 0
+	for _, st := range m.statsByEmail {
+		if !st.LastActive.IsZero() && now.Sub(st.LastActive) <= window {
+			n++
+		}
+	}
+	return n
 }
 
 // GetConfig reads the current xray JSON config file.
@@ -245,10 +538,362 @@ func (m *XrayManager) SetConfig(data []byte) error {
 	if m.cfg == nil || m.cfg.ConfigFile == "" {
 		return fmt.Errorf("xray config file not configured")
 	}
-	if !json.Valid(data) {
-		return fmt.Errorf("invalid JSON")
+	patched, changed, err := patchXrayStatsAPIBytes(data)
+	if err != nil {
+		return err
 	}
-	return os.WriteFile(m.cfg.ConfigFile, data, 0o600)
+	if changed {
+		log.Printf("xray: added/repaired Stats API support while saving config")
+	}
+	return os.WriteFile(m.cfg.ConfigFile, patched, 0o600)
+}
+
+type xrayStatsConfigCheck struct {
+	Configured bool
+	Missing    []string
+	APIServer  string
+}
+
+func (m *XrayManager) CheckStatsAPIConfig() (xrayStatsConfigCheck, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.checkStatsAPIConfigLocked()
+}
+
+func (m *XrayManager) checkStatsAPIConfigLocked() (xrayStatsConfigCheck, error) {
+	if m.cfg == nil || m.cfg.ConfigFile == "" {
+		return xrayStatsConfigCheck{}, fmt.Errorf("xray config file not configured")
+	}
+	data, err := os.ReadFile(m.cfg.ConfigFile)
+	if err != nil {
+		return xrayStatsConfigCheck{}, err
+	}
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return xrayStatsConfigCheck{}, fmt.Errorf("parse xray config: %w", err)
+	}
+	if raw == nil {
+		return xrayStatsConfigCheck{}, fmt.Errorf("xray config must be a JSON object")
+	}
+	check := checkXrayStatsAPIConfig(raw)
+	if check.APIServer == "" {
+		check.APIServer = m.discoverAPIServerFromRaw(raw)
+	}
+	return check, nil
+}
+
+func (m *XrayManager) EnsureStatsAPIConfig() (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.ensureStatsAPIConfigLocked()
+}
+
+func (m *XrayManager) ensureStatsAPIConfigLocked() (bool, error) {
+	if m.cfg == nil || m.cfg.ConfigFile == "" {
+		return false, fmt.Errorf("xray config file not configured")
+	}
+	data, err := os.ReadFile(m.cfg.ConfigFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	patched, changed, err := patchXrayStatsAPIBytes(data)
+	if err != nil {
+		return false, err
+	}
+	if !changed {
+		return false, nil
+	}
+	return true, os.WriteFile(m.cfg.ConfigFile, patched, 0o600)
+}
+
+func patchXrayStatsAPIBytes(data []byte) ([]byte, bool, error) {
+	if !json.Valid(data) {
+		return nil, false, fmt.Errorf("invalid JSON")
+	}
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, false, fmt.Errorf("parse xray config: %w", err)
+	}
+	if raw == nil {
+		return nil, false, fmt.Errorf("xray config must be a JSON object")
+	}
+	changed, _ := ensureXrayStatsAPIConfig(raw)
+	if !changed {
+		return data, false, nil
+	}
+	out, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return nil, false, err
+	}
+	return out, true, nil
+}
+
+func ensureXrayStatsAPIConfig(raw map[string]interface{}) (bool, xrayStatsConfigCheck) {
+	changed := false
+
+	api := asObject(raw["api"])
+	if api == nil {
+		api = map[string]interface{}{}
+		raw["api"] = api
+		changed = true
+	}
+	if tag, _ := api["tag"].(string); tag != "api" {
+		api["tag"] = "api"
+		changed = true
+	}
+	services, ok := api["services"].([]interface{})
+	if !ok {
+		services = []interface{}{}
+	}
+	for _, svc := range []string{"HandlerService", "LoggerService", "StatsService"} {
+		if !sliceHasString(services, svc) {
+			services = append(services, svc)
+			changed = true
+		}
+	}
+	api["services"] = services
+
+	if asObject(raw["stats"]) == nil {
+		raw["stats"] = map[string]interface{}{}
+		changed = true
+	}
+
+	policy := asObject(raw["policy"])
+	if policy == nil {
+		policy = map[string]interface{}{}
+		raw["policy"] = policy
+		changed = true
+	}
+	levels := asObject(policy["levels"])
+	if levels == nil {
+		levels = map[string]interface{}{}
+		policy["levels"] = levels
+		changed = true
+	}
+	level0 := asObject(levels["0"])
+	if level0 == nil {
+		level0 = map[string]interface{}{}
+		levels["0"] = level0
+		changed = true
+	}
+	for _, key := range []string{"statsUserUplink", "statsUserDownlink"} {
+		if v, _ := level0[key].(bool); !v {
+			level0[key] = true
+			changed = true
+		}
+	}
+	system := asObject(policy["system"])
+	if system == nil {
+		system = map[string]interface{}{}
+		policy["system"] = system
+		changed = true
+	}
+	for _, key := range []string{"statsInboundUplink", "statsInboundDownlink"} {
+		if v, _ := system[key].(bool); !v {
+			system[key] = true
+			changed = true
+		}
+	}
+
+	inbounds, _ := raw["inbounds"].([]interface{})
+	apiInbound := findObjectByTag(inbounds, "api")
+	if apiInbound == nil {
+		apiInbound = map[string]interface{}{
+			"tag":      "api",
+			"listen":   "127.0.0.1",
+			"port":     float64(10085),
+			"protocol": "dokodemo-door",
+			"settings": map[string]interface{}{"address": "127.0.0.1"},
+		}
+		inbounds = append([]interface{}{apiInbound}, inbounds...)
+		raw["inbounds"] = inbounds
+		changed = true
+	} else {
+		if proto, _ := apiInbound["protocol"].(string); !strings.EqualFold(proto, "dokodemo-door") {
+			apiInbound["protocol"] = "dokodemo-door"
+			changed = true
+		}
+		if strings.TrimSpace(fmt.Sprint(apiInbound["listen"])) == "" {
+			apiInbound["listen"] = "127.0.0.1"
+			changed = true
+		}
+		if _, ok := apiInbound["port"]; !ok || strings.TrimSpace(fmt.Sprint(apiInbound["port"])) == "" || strings.TrimSpace(fmt.Sprint(apiInbound["port"])) == "<nil>" {
+			apiInbound["port"] = float64(10085)
+			changed = true
+		}
+		settings := asObject(apiInbound["settings"])
+		if settings == nil {
+			settings = map[string]interface{}{}
+			apiInbound["settings"] = settings
+			changed = true
+		}
+		if strings.TrimSpace(fmt.Sprint(settings["address"])) == "" || strings.TrimSpace(fmt.Sprint(settings["address"])) == "<nil>" {
+			settings["address"] = "127.0.0.1"
+			changed = true
+		}
+	}
+
+	outbounds, _ := raw["outbounds"].([]interface{})
+	if findObjectByTag(outbounds, "api") == nil {
+		outbounds = append(outbounds, map[string]interface{}{"tag": "api", "protocol": "freedom", "settings": map[string]interface{}{}})
+		raw["outbounds"] = outbounds
+		changed = true
+	}
+
+	routing := asObject(raw["routing"])
+	if routing == nil {
+		routing = map[string]interface{}{}
+		raw["routing"] = routing
+		changed = true
+	}
+	rules, _ := routing["rules"].([]interface{})
+	if !hasAPIRoutingRule(rules) {
+		rules = append([]interface{}{map[string]interface{}{"type": "field", "inboundTag": []interface{}{"api"}, "outboundTag": "api"}}, rules...)
+		routing["rules"] = rules
+		changed = true
+	}
+
+	return changed, checkXrayStatsAPIConfig(raw)
+}
+
+func checkXrayStatsAPIConfig(raw map[string]interface{}) xrayStatsConfigCheck {
+	missing := []string{}
+	api := asObject(raw["api"])
+	if api == nil {
+		missing = append(missing, "api.services")
+	} else {
+		services, _ := api["services"].([]interface{})
+		if !sliceHasString(services, "StatsService") {
+			missing = append(missing, "api.services StatsService")
+		}
+	}
+	if asObject(raw["stats"]) == nil {
+		missing = append(missing, "stats")
+	}
+	policy := asObject(raw["policy"])
+	levels := asObject(nil)
+	level0 := asObject(nil)
+	if policy != nil {
+		levels = asObject(policy["levels"])
+		if levels != nil {
+			level0 = asObject(levels["0"])
+		}
+	}
+	if level0 == nil {
+		missing = append(missing, "policy.levels.0")
+	} else {
+		if v, _ := level0["statsUserUplink"].(bool); !v {
+			missing = append(missing, "policy.levels.0.statsUserUplink")
+		}
+		if v, _ := level0["statsUserDownlink"].(bool); !v {
+			missing = append(missing, "policy.levels.0.statsUserDownlink")
+		}
+	}
+
+	inbounds, _ := raw["inbounds"].([]interface{})
+	apiInbound := findObjectByTag(inbounds, "api")
+	if apiInbound == nil {
+		missing = append(missing, "api inbound")
+	}
+	outbounds, _ := raw["outbounds"].([]interface{})
+	if findObjectByTag(outbounds, "api") == nil {
+		missing = append(missing, "api outbound")
+	}
+	routing := asObject(raw["routing"])
+	if routing == nil {
+		missing = append(missing, "routing api rule")
+	} else {
+		rules, _ := routing["rules"].([]interface{})
+		if !hasAPIRoutingRule(rules) {
+			missing = append(missing, "routing api rule")
+		}
+	}
+	return xrayStatsConfigCheck{Configured: len(missing) == 0, Missing: missing, APIServer: discoverAPIServerFromRaw(raw)}
+}
+
+func (m *XrayManager) discoverAPIServerFromRaw(raw map[string]interface{}) string {
+	return discoverAPIServerFromRaw(raw)
+}
+
+func discoverAPIServerFromRaw(raw map[string]interface{}) string {
+	inbounds, _ := raw["inbounds"].([]interface{})
+	for _, item := range inbounds {
+		ib, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		tag, _ := ib["tag"].(string)
+		proto, _ := ib["protocol"].(string)
+		if tag != "api" || !strings.EqualFold(proto, "dokodemo-door") {
+			continue
+		}
+		host, _ := ib["listen"].(string)
+		host = strings.TrimSpace(host)
+		if host == "" || host == "0.0.0.0" || host == "::" {
+			host = "127.0.0.1"
+		}
+		port := strings.TrimSpace(fmt.Sprint(ib["port"]))
+		port = strings.Trim(port, `"`)
+		if port == "" || port == "<nil>" || port == "null" {
+			continue
+		}
+		return host + ":" + port
+	}
+	return ""
+}
+
+func asObject(v interface{}) map[string]interface{} {
+	m, _ := v.(map[string]interface{})
+	return m
+}
+
+func findObjectByTag(items []interface{}, tag string) map[string]interface{} {
+	for _, item := range items {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if t, _ := m["tag"].(string); t == tag {
+			return m
+		}
+	}
+	return nil
+}
+
+func sliceHasString(items []interface{}, want string) bool {
+	for _, item := range items {
+		if s, ok := item.(string); ok && strings.EqualFold(s, want) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasAPIRoutingRule(rules []interface{}) bool {
+	for _, item := range rules {
+		rule, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		outbound, _ := rule["outboundTag"].(string)
+		if outbound != "api" {
+			continue
+		}
+		tags, ok := rule["inboundTag"].([]interface{})
+		if !ok {
+			if tag, _ := rule["inboundTag"].(string); tag == "api" {
+				return true
+			}
+			continue
+		}
+		if sliceHasString(tags, "api") {
+			return true
+		}
+	}
+	return false
 }
 
 // ---- Admin HTTP handlers ----
@@ -258,8 +903,23 @@ func handleXrayStatus(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+	status := xrayMgr.Status()
+	if sess := sessionFromCtx(r.Context()); sess != nil && sess.Role == RoleReseller && statsStore != nil {
+		metas, err := statsStore.ListXrayClientsByOwner(r.Context(), sess.Username)
+		if err == nil {
+			status.OnlineUsers = 0
+			window := xrayMgr.onlineWindow()
+			now := time.Now()
+			for _, m := range metas {
+				st, ok := xrayMgr.RuntimeStatsForEmail(m.Email)
+				if ok && !st.LastActive.IsZero() && now.Sub(st.LastActive) <= window {
+					status.OnlineUsers++
+				}
+			}
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(xrayMgr.Status())
+	_ = json.NewEncoder(w).Encode(status)
 }
 
 func handleXrayStart(w http.ResponseWriter, r *http.Request) {
@@ -326,6 +986,36 @@ func handleXrayConfig(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func handleXrayRepairStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	wasRunning := xrayMgr.isRunningSnapshot()
+	changed, err := xrayMgr.EnsureStatsAPIConfig()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	restarted := false
+	if wasRunning {
+		if err := xrayMgr.Restart(); err != nil {
+			http.Error(w, "config repaired but restart failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		restarted = true
+	}
+	check, _ := xrayMgr.CheckStatsAPIConfig()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"changed":          changed,
+		"restarted":        restarted,
+		"stats_configured": check.Configured,
+		"stats_missing":    check.Missing,
+		"api_server":       check.APIServer,
+	})
+}
+
 func handleXrayLogs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -346,11 +1036,19 @@ type XrayClientInfo struct {
 	UUID  string `json:"id"`
 	Email string `json:"email"`
 	Level int    `json:"level,omitempty"`
+	// Runtime counters from the Xray stats API. Online means this user's
+	// traffic counters changed inside the configured online window.
+	Online        bool       `json:"online"`
+	LastActive    *time.Time `json:"last_active,omitempty"`
+	UplinkBytes   int64      `json:"uplink_bytes,omitempty"`
+	DownlinkBytes int64      `json:"downlink_bytes,omitempty"`
+	TotalBytes    int64      `json:"total_bytes,omitempty"`
 	// Metadata from PostgreSQL (enriched by handleXrayInbounds)
 	Name           string     `json:"name,omitempty"`
 	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
 	ExpirationDays int        `json:"expiration_days"`
 	MaxConns       int        `json:"max_conns"`
+	OwnerUsername  string     `json:"owner_username,omitempty"`
 	Expired        bool       `json:"expired,omitempty"`
 }
 
@@ -434,6 +1132,9 @@ func (m *XrayManager) modifyRawConfig(fn func(cfg map[string]interface{}) error)
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return fmt.Errorf("parse xray config: %w", err)
 	}
+	if raw == nil {
+		return fmt.Errorf("xray config must be a JSON object")
+	}
 	if err := fn(raw); err != nil {
 		return err
 	}
@@ -449,6 +1150,7 @@ func (m *XrayManager) AddXrayClient(inboundTag, uuid, email string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.modifyRawConfig(func(raw map[string]interface{}) error {
+		_, _ = ensureXrayStatsAPIConfig(raw)
 		inbounds, _ := raw["inbounds"].([]interface{})
 		for _, ib := range inbounds {
 			ibMap, ok := ib.(map[string]interface{})
@@ -537,26 +1239,51 @@ func handleXrayInbounds(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// Enrich clients with metadata from PostgreSQL when available.
+
+	sess := sessionFromCtx(r.Context())
+	isReseller := sess != nil && sess.Role == RoleReseller
+
+	// Enrich clients with metadata from PostgreSQL when available. Resellers only
+	// see their own Xray clients, but they still see all available inbounds so
+	// they know where they can create new users.
 	if statsStore != nil {
 		metas, err := statsStore.ListAllXrayClients(r.Context())
-		if err == nil {
+		if err != nil {
+			if isReseller {
+				for i := range inbounds {
+					inbounds[i].Clients = []XrayClientInfo{}
+				}
+			} else {
+				for i := range inbounds {
+					for j := range inbounds[i].Clients {
+						applyXrayRuntimeStats(&inbounds[i].Clients[j])
+					}
+				}
+			}
+		} else {
 			metaMap := make(map[string]*XrayClientMeta, len(metas))
 			for _, m := range metas {
 				metaMap[m.UUID] = m
 			}
 			now := time.Now()
 			for i := range inbounds {
+				filtered := make([]XrayClientInfo, 0, len(inbounds[i].Clients))
 				for j := range inbounds[i].Clients {
-					c := &inbounds[i].Clients[j]
+					c := inbounds[i].Clients[j]
+					applyXrayRuntimeStats(&c)
 					m, ok := metaMap[c.UUID]
+					if isReseller && (!ok || m.OwnerUsername != sess.Username) {
+						continue
+					}
 					if !ok {
 						c.ExpirationDays = -1
+						filtered = append(filtered, c)
 						continue
 					}
 					c.Name = m.Name
 					c.ExpiresAt = m.ExpiresAt
 					c.MaxConns = m.MaxConns
+					c.OwnerUsername = m.OwnerUsername
 					if m.ExpiresAt == nil {
 						c.ExpirationDays = -1
 					} else if m.ExpiresAt.Before(now) {
@@ -565,12 +1292,44 @@ func handleXrayInbounds(w http.ResponseWriter, r *http.Request) {
 					} else {
 						c.ExpirationDays = int(m.ExpiresAt.Sub(now).Hours() / 24)
 					}
+					filtered = append(filtered, c)
 				}
+				inbounds[i].Clients = filtered
+			}
+		}
+	} else if isReseller {
+		for i := range inbounds {
+			inbounds[i].Clients = []XrayClientInfo{}
+		}
+	} else {
+		for i := range inbounds {
+			for j := range inbounds[i].Clients {
+				applyXrayRuntimeStats(&inbounds[i].Clients[j])
 			}
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(inbounds)
+}
+
+func applyXrayRuntimeStats(c *XrayClientInfo) {
+	if c == nil {
+		return
+	}
+	st, ok := xrayMgr.RuntimeStatsForEmail(c.Email)
+	if !ok {
+		return
+	}
+	window := xrayMgr.onlineWindow()
+	now := time.Now()
+	c.UplinkBytes = st.Uplink
+	c.DownlinkBytes = st.Downlink
+	c.TotalBytes = st.Uplink + st.Downlink
+	if !st.LastActive.IsZero() {
+		t := st.LastActive
+		c.LastActive = &t
+		c.Online = now.Sub(st.LastActive) <= window
+	}
 }
 
 func handleXrayClientAdd(w http.ResponseWriter, r *http.Request) {
@@ -594,17 +1353,45 @@ func handleXrayClientAdd(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "inbound_tag and uuid required", http.StatusBadRequest)
 		return
 	}
+	req.Email = strings.TrimSpace(req.Email)
+	if req.Email == "" {
+		req.Email = strings.TrimSpace(req.Name)
+	}
+	if req.Email == "" {
+		req.Email = req.UUID
+	}
+
+	sess := sessionFromCtx(r.Context())
+	ownerUsername := ""
+	if sess != nil && sess.Role == RoleReseller {
+		ownerUsername = sess.Username
+		if statsStore == nil {
+			http.Error(w, "storage not available", http.StatusInternalServerError)
+			return
+		}
+		owner, ok := adminUsers.get(sess.Username)
+		if !ok || !owner.IsActive || (owner.ExpiresAt != nil && time.Now().After(*owner.ExpiresAt)) {
+			http.Error(w, "reseller account suspended or expired", http.StatusForbidden)
+			return
+		}
+		if owner.MaxUsers > 0 && countOwnedQuota(r.Context(), statsStore, sess.Username) >= owner.MaxUsers {
+			http.Error(w, fmt.Sprintf("user limit reached (%d)", owner.MaxUsers), http.StatusForbidden)
+			return
+		}
+	}
+
 	if err := xrayMgr.AddXrayClient(req.InboundTag, req.UUID, req.Email); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if statsStore != nil {
 		meta := XrayClientMeta{
-			UUID:       req.UUID,
-			Name:       req.Name,
-			Email:      req.Email,
-			InboundTag: req.InboundTag,
-			MaxConns:   req.MaxConnections,
+			UUID:          req.UUID,
+			Name:          req.Name,
+			Email:         req.Email,
+			InboundTag:    req.InboundTag,
+			OwnerUsername: ownerUsername,
+			MaxConns:      req.MaxConnections,
 		}
 		if req.ExpiresAt != "" {
 			var t time.Time
@@ -653,11 +1440,25 @@ func handleXrayClientUpdate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "storage not available", http.StatusInternalServerError)
 		return
 	}
+
+	existing, err := statsStore.GetXrayClientMeta(r.Context(), req.UUID)
+	if err != nil {
+		http.Error(w, "client metadata not found", http.StatusNotFound)
+		return
+	}
+	sess := sessionFromCtx(r.Context())
+	if sess != nil && sess.Role == RoleReseller && existing.OwnerUsername != sess.Username {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
 	meta := XrayClientMeta{
-		UUID:     req.UUID,
-		Name:     req.Name,
-		Email:    req.Email,
-		MaxConns: req.MaxConnections,
+		UUID:          req.UUID,
+		Name:          req.Name,
+		Email:         req.Email,
+		InboundTag:    existing.InboundTag,
+		OwnerUsername: existing.OwnerUsername,
+		MaxConns:      req.MaxConnections,
 	}
 	if req.ExpiresAt != "" {
 		for _, layout := range []string{time.RFC3339, "2006-01-02T15:04", "2006-01-02"} {
@@ -685,6 +1486,23 @@ func handleXrayClientRemove(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "inbound_tag and uuid required", http.StatusBadRequest)
 		return
 	}
+
+	sess := sessionFromCtx(r.Context())
+	if sess != nil && sess.Role == RoleReseller {
+		if statsStore == nil {
+			http.Error(w, "storage not available", http.StatusInternalServerError)
+			return
+		}
+		meta, err := statsStore.GetXrayClientMeta(r.Context(), uuid)
+		if err != nil || meta.OwnerUsername != sess.Username {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		if meta.InboundTag != "" {
+			inboundTag = meta.InboundTag
+		}
+	}
+
 	if err := xrayMgr.RemoveXrayClient(inboundTag, uuid); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

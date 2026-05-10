@@ -1325,17 +1325,19 @@ func startAdminAPI(store *Store, addr string, adminDir string) {
 	mux.Handle("/api/resellers/create", saSession(http.HandlerFunc(handleCreateReseller(store))))
 	mux.Handle("/api/resellers/delete", saSession(http.HandlerFunc(handleDeleteReseller(store))))
 
-	// Superadmin-only: Xray-core management
-	mux.Handle("/api/xray/status", saSession(http.HandlerFunc(handleXrayStatus)))
+	// Xray-core management. Service/config/log actions are superadmin-only;
+	// authenticated resellers may list inbounds and manage their own Xray clients.
+	mux.Handle("/api/xray/status", sessionMiddleware(http.HandlerFunc(handleXrayStatus)))
 	mux.Handle("/api/xray/start", saSession(http.HandlerFunc(handleXrayStart)))
 	mux.Handle("/api/xray/stop", saSession(http.HandlerFunc(handleXrayStop)))
 	mux.Handle("/api/xray/restart", saSession(http.HandlerFunc(handleXrayRestart)))
+	mux.Handle("/api/xray/stats/repair", saSession(http.HandlerFunc(handleXrayRepairStats)))
 	mux.Handle("/api/xray/config", saSession(http.HandlerFunc(handleXrayConfig)))
 	mux.Handle("/api/xray/logs", saSession(http.HandlerFunc(handleXrayLogs)))
-	mux.Handle("/api/xray/inbounds", saSession(http.HandlerFunc(handleXrayInbounds)))
-	mux.Handle("/api/xray/clients/add", saSession(http.HandlerFunc(handleXrayClientAdd)))
-	mux.Handle("/api/xray/clients/update", saSession(http.HandlerFunc(handleXrayClientUpdate)))
-	mux.Handle("/api/xray/clients/remove", saSession(http.HandlerFunc(handleXrayClientRemove)))
+	mux.Handle("/api/xray/inbounds", sessionMiddleware(http.HandlerFunc(handleXrayInbounds)))
+	mux.Handle("/api/xray/clients/add", sessionMiddleware(http.HandlerFunc(handleXrayClientAdd)))
+	mux.Handle("/api/xray/clients/update", sessionMiddleware(http.HandlerFunc(handleXrayClientUpdate)))
+	mux.Handle("/api/xray/clients/remove", sessionMiddleware(http.HandlerFunc(handleXrayClientRemove)))
 
 	// Superadmin-only: TLS certificate generation
 	mux.Handle("/api/tls/generate-selfsigned", saSession(http.HandlerFunc(handleTLSGenerateSelfSigned)))
@@ -1508,7 +1510,7 @@ func handleCreateUser(store *Store) http.HandlerFunc {
 			).Scan(&existsInDB)
 			if !existsInDB {
 				owner, ok := adminUsers.get(sess.Username)
-				if ok && owner.MaxUsers > 0 && countOwnedUsers(sess.Username) >= owner.MaxUsers {
+				if ok && owner.MaxUsers > 0 && countOwnedQuota(ctx, store, sess.Username) >= owner.MaxUsers {
 					http.Error(w, fmt.Sprintf("user limit reached (%d)", owner.MaxUsers), http.StatusForbidden)
 					return
 				}

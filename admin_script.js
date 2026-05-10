@@ -1,3 +1,4 @@
+
 // ─── State ───────────────────────────────────────────────────────────────────
 let sessionToken = localStorage.getItem("SESSION_TOKEN") || "";
 let currentRole  = "";
@@ -18,6 +19,26 @@ const mainApp       = document.getElementById("mainApp");
 const meUsername    = document.getElementById("meUsername");
 const roleChip      = document.getElementById("roleChip");
 const logoutBtn     = document.getElementById("logoutBtn");
+const menuToggle    = document.getElementById("menuToggle");
+const drawerBackdrop = document.getElementById("drawerBackdrop");
+const themeToggle   = document.getElementById("themeToggle");
+const pageTitle     = document.getElementById("pageTitle");
+const pageEyebrow   = document.getElementById("pageEyebrow");
+const sidebarUsername = document.getElementById("sidebarUsername");
+const sidebarRole   = document.getElementById("sidebarRole");
+const dashTotalUsers = document.getElementById("dashTotalUsers");
+const dashActiveUsers = document.getElementById("dashActiveUsers");
+const dashExpiredUsers = document.getElementById("dashExpiredUsers");
+const dashConnections = document.getElementById("dashConnections");
+const dashServers = document.getElementById("dashServers");
+const dashServerStatus = document.getElementById("dashServerStatus");
+const dashXrayClients = document.getElementById("dashXrayClients");
+const dashXrayStatus = document.getElementById("dashXrayStatus");
+const dashQuotaChip = document.getElementById("dashQuotaChip");
+const dashQuotaBar = document.getElementById("dashQuotaBar");
+const dashQuotaText = document.getElementById("dashQuotaText");
+const dashQuotaBreakdown = document.getElementById("dashQuotaBreakdown");
+const dashboardQuotaCard = document.getElementById("dashboardQuotaCard");
 
 // Users
 const usersBody      = document.getElementById("usersBody");
@@ -153,15 +174,48 @@ function genUUID() {
     (c^crypto.getRandomValues(new Uint8Array(1))[0]&15>>c/4).toString(16));
 }
 
-// ─── Tab switching ────────────────────────────────────────────────────────────
-document.querySelectorAll(".tab-btn").forEach(btn => {
-  btn.addEventListener("click", () => {
-    document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
-    document.querySelectorAll(".tab-pane").forEach(p => p.classList.remove("active"));
-    btn.classList.add("active");
-    document.getElementById("tab-" + btn.dataset.tab).classList.add("active");
-  });
-});
+// ─── Navigation / shell ──────────────────────────────────────────────────────
+const tabTitles = {
+  dashboard: ["Painel", "Visão geral"],
+  ssh: ["Contas", "SSH / SlowDNS"],
+  xray: ["Contas", "Xray Users"],
+  resellers: ["Administração", "Revendedores"],
+  stats: ["Servidor", "Monitoramento"],
+  vnstat: ["Tráfego", "VnStat"],
+  logs: ["Sistema", "Logs"],
+  server: ["Sistema", "Configurações"],
+};
+
+function selectTab(tab) {
+  const pane = document.getElementById("tab-" + tab);
+  const btn = document.querySelector(`.tab-btn[data-tab="${tab}"]`);
+  if (!pane || !btn) return;
+  document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+  document.querySelectorAll(".tab-pane").forEach(p => p.classList.remove("active"));
+  btn.classList.add("active");
+  pane.classList.add("active");
+  const [eyebrow, title] = tabTitles[tab] || ["Painel", tab];
+  if (pageEyebrow) pageEyebrow.textContent = eyebrow;
+  if (pageTitle) pageTitle.textContent = title;
+  document.body.classList.remove("sidebar-open");
+
+  if (tab === "dashboard") refreshDashboard();
+  if (tab === "xray") {
+    loadXrayStatus();
+    loadInbounds();
+    if (currentRole === "superadmin") loadWizardFromConfig();
+  }
+  if (tab === "stats" && currentRole === "superadmin") loadStats();
+  if (tab === "resellers" && currentRole === "superadmin") loadResellers();
+}
+
+document.querySelectorAll(".tab-btn").forEach(btn => btn.addEventListener("click", () => selectTab(btn.dataset.tab)));
+menuToggle?.addEventListener("click", () => document.body.classList.add("sidebar-open"));
+drawerBackdrop?.addEventListener("click", () => document.body.classList.remove("sidebar-open"));
+themeToggle?.addEventListener("click", () => document.body.classList.toggle("light-mode"));
+document.querySelectorAll(".quick-action[data-jump]").forEach(btn => btn.addEventListener("click", () => selectTab(btn.dataset.jump)));
+document.getElementById("quickCreateUserBtn")?.addEventListener("click", () => { selectTab("ssh"); setFormCollapsed(false); fUsername?.focus(); });
+document.getElementById("quickOpenXrayBtn")?.addEventListener("click", () => selectTab("xray"));
 
 // ─── Login / Logout ───────────────────────────────────────────────────────────
 loginBtn.addEventListener("click", doLogin);
@@ -215,31 +269,34 @@ function clearTimers() {
 
 function initAfterLogin() {
   meUsername.textContent = currentUser;
+  if (sidebarUsername) sidebarUsername.textContent = currentUser;
+  if (sidebarRole) sidebarRole.textContent = currentRole === "superadmin" ? "Super Admin" : "Revendedor";
   roleChip.innerHTML = currentRole === "superadmin"
     ? `<span class="chip green">superadmin</span>`
     : `<span class="chip warn">reseller</span>`;
 
-  // Show/hide superadmin-only elements
   document.querySelectorAll(".superadmin-only").forEach(el => {
     el.classList.toggle("hidden", currentRole !== "superadmin");
   });
+  document.querySelectorAll(".xray-admin-only").forEach(el => {
+    el.classList.toggle("hidden", currentRole !== "superadmin");
+  });
 
-  // Reset to SSH tab
-  document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
-  document.querySelectorAll(".tab-pane").forEach(p => p.classList.remove("active"));
-  document.querySelector("[data-tab='ssh']").classList.add("active");
-  document.getElementById("tab-ssh").classList.add("active");
+  resellerInfoCard.classList.toggle("hidden", currentRole !== "reseller");
+  dashboardQuotaCard?.classList.toggle("hidden", currentRole !== "reseller");
+
+  selectTab("dashboard");
 
   if (currentRole === "superadmin") {
     loadStats();
     statsTimer = setInterval(loadStats, 2000);
-    xrayTimer  = setInterval(loadXrayStatus, 5000);
   } else {
-    resellerInfoCard.classList.remove("hidden");
     loadMe();
   }
+  xrayTimer = setInterval(loadXrayStatus, 7000);
 
   loadUsers();
+  loadInbounds();
   usersTimer = setInterval(() => loadUsersSilent(), 3000);
 }
 
@@ -248,11 +305,54 @@ async function loadMe() {
   try {
     const res = await api("/api/auth/me");
     const d   = await res.json();
-    rUsedMax.textContent = (d.used_users ?? "--") + " / " + (d.max_users || "∞");
+    const used = d.used_users ?? 0;
+    const max = d.max_users || 0;
+    rUsedMax.textContent = used + " / " + (max || "∞");
     rExpiry.textContent  = d.expires_at ? fmtDate(d.expires_at) : "No limit";
     rStatus.textContent  = d.is_active  ? "Active" : "Suspended";
     rStatus.style.color  = d.is_active  ? "var(--success)" : "var(--danger)";
+    updateQuotaCard(used, max, d.used_ssh_users || 0, d.used_xray_users || 0);
   } catch {}
+}
+
+function updateQuotaCard(used, max, sshUsed = 0, xrayUsed = 0) {
+  if (!dashQuotaText) return;
+  const labelMax = max || "∞";
+  dashQuotaChip.textContent = `${used} / ${labelMax}`;
+  dashQuotaText.textContent = max ? `${Math.max(0, max - used)} contas disponíveis` : "Sem limite definido pelo admin";
+  dashQuotaBreakdown.textContent = `SSH ${sshUsed} · Xray ${xrayUsed}`;
+  const pct = max ? Math.min(100, Math.round((used / max) * 100)) : 0;
+  dashQuotaBar.style.width = `${pct}%`;
+}
+
+function updateDashboardFromUsers(users = []) {
+  if (!dashTotalUsers) return;
+  const now = new Date();
+  let active = 0, expired = 0, conns = 0;
+  users.forEach(u => {
+    conns += Number(u.active_conns || 0);
+    if (u.expires_at && new Date(u.expires_at) < now) expired++;
+    else active++;
+  });
+  dashTotalUsers.textContent = users.length;
+  dashActiveUsers.textContent = active;
+  dashExpiredUsers.textContent = expired;
+  dashConnections.textContent = conns;
+}
+
+function updateDashboardXray(inbounds = []) {
+  if (!dashXrayClients) return;
+  const total = inbounds.reduce((sum, ib) => sum + ((ib.clients || []).length), 0);
+  dashXrayClients.textContent = total;
+  const running = xrayChip?.textContent || "--";
+  dashXrayStatus.textContent = `Core: ${running}`;
+}
+
+function refreshDashboard() {
+  loadUsersSilent();
+  loadInbounds();
+  loadXrayStatus();
+  if (currentRole === "reseller") loadMe();
 }
 
 // ─── SSH Users ────────────────────────────────────────────────────────────────
@@ -304,6 +404,7 @@ async function loadUsersSilent() {
 }
 
 function renderUsers(users) {
+  updateDashboardFromUsers(users);
   const isSA = currentRole === "superadmin";
   userCountChip.textContent = users.length;
   if (isSA) ownerColHead.classList.remove("hidden");
@@ -418,7 +519,9 @@ document.getElementById("xSaveCfgBtn").addEventListener("click", saveXrayCfg);
 document.getElementById("xLoadLogsBtn").addEventListener("click", loadXrayLogs);
 
 document.querySelector("[data-tab='xray']")?.addEventListener("click", () => {
-  loadXrayStatus(); loadInbounds(); loadWizardFromConfig();
+  loadXrayStatus();
+  loadInbounds();
+  if (currentRole === "superadmin") loadWizardFromConfig();
 });
 
 async function loadXrayStatus() {
@@ -432,6 +535,9 @@ async function loadXrayStatus() {
     xRunning.style.color  = run ? "var(--success)" : "var(--danger)";
     xPID.textContent      = s.pid    || "--";
     xUptime.textContent   = s.uptime || "--";
+    if (dashServers) dashServers.textContent = s.enabled ? "1" : "0";
+    if (dashServerStatus) dashServerStatus.textContent = run ? "1 online" : (s.enabled ? "parado" : "desativado");
+    if (dashXrayStatus) dashXrayStatus.textContent = `Core: ${xrayChip.textContent}`;
     if (s.error) xStatus.textContent = "Error: " + s.error;
   } catch (e) { if (e.message==="auth") doAuthError(); }
 }
@@ -463,6 +569,7 @@ async function loadInbounds() {
 }
 
 function renderInbounds(inbounds) {
+  updateDashboardXray(inbounds);
   if (!inbounds.length) {
     inboundsContainer.innerHTML = '<div class="hint" style="padding:8px 0;">No VLESS/VMess/Trojan inbounds found.</div>';
     return;
@@ -694,7 +801,7 @@ function renderResellers(list) {
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${r.username}</td>
-      <td>${r.used_users} / ${r.max_users || "∞"}</td>
+      <td>${r.used_users} / ${r.max_users || "∞"}<div class="hint">SSH ${r.used_ssh_users || 0} · Xray ${r.used_xray_users || 0}</div></td>
       <td>${r.expires_at ? fmtDate(r.expires_at) : "—"}</td>
       <td><span class="${r.is_active && !expired ? 'badge-on' : 'badge-off'}">${r.is_active && !expired ? "Active" : expired ? "Expired" : "Suspended"}</span></td>
       <td></td>`;

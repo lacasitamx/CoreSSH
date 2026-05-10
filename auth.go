@@ -443,6 +443,7 @@ func startResellerExpiryChecker(store *Store) {
 				u.IsActive = false
 				adminUsers.set(u)
 				disconnectOwnerUsers(u.Username)
+				removeOwnerXrayClients(ctx, store, u.Username)
 			}
 
 			// Reactivate resellers that have been renewed (inactive but expiry now in future/nil)
@@ -537,7 +538,9 @@ func handleMe(w http.ResponseWriter, r *http.Request) {
 	if s.Role == RoleReseller {
 		if u, ok := adminUsers.get(s.Username); ok {
 			resp["max_users"] = u.MaxUsers
-			resp["used_users"] = countOwnedUsers(s.Username)
+			resp["used_users"] = countOwnedQuota(r.Context(), statsStore, s.Username)
+			resp["used_ssh_users"] = countOwnedUsers(s.Username)
+			resp["used_xray_users"] = countOwnedXrayClients(r.Context(), statsStore, s.Username)
 			resp["expires_at"] = u.ExpiresAt
 			resp["is_active"] = u.IsActive
 		}
@@ -554,6 +557,8 @@ type ResellerDTO struct {
 	Role      string     `json:"role"`
 	MaxUsers  int        `json:"max_users"`
 	UsedUsers int        `json:"used_users"`
+	UsedSSH   int        `json:"used_ssh_users"`
+	UsedXray  int        `json:"used_xray_users"`
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 	IsActive  bool       `json:"is_active"`
 	CreatedAt time.Time  `json:"created_at"`
@@ -577,7 +582,9 @@ func handleListResellers(store *Store) http.HandlerFunc {
 				Username:  u.Username,
 				Role:      u.Role,
 				MaxUsers:  u.MaxUsers,
-				UsedUsers: countOwnedUsers(u.Username),
+				UsedUsers: countOwnedQuota(r.Context(), store, u.Username),
+				UsedSSH:   countOwnedUsers(u.Username),
+				UsedXray:  countOwnedXrayClients(r.Context(), store, u.Username),
 				ExpiresAt: u.ExpiresAt,
 				IsActive:  u.IsActive,
 				CreatedAt: u.CreatedAt,
@@ -652,8 +659,12 @@ func handleCreateReseller(store *Store) http.HandlerFunc {
 		}
 		adminUsers.set(u)
 
-		// If reseller was reactivated, users can reconnect automatically.
-		// Reconnect of existing SSH connections happens via the expiry checker.
+		if u.Role == RoleReseller {
+			if !u.IsActive || (u.ExpiresAt != nil && time.Now().After(*u.ExpiresAt)) {
+				disconnectOwnerUsers(u.Username)
+				removeOwnerXrayClients(ctx, store, u.Username)
+			}
+		}
 
 		w.WriteHeader(http.StatusCreated)
 	}
@@ -676,6 +687,7 @@ func handleDeleteReseller(store *Store) http.HandlerFunc {
 			return
 		}
 		disconnectOwnerUsers(username)
+		removeOwnerXrayClients(ctx, store, username)
 		adminUsers.delete(username)
 		w.WriteHeader(http.StatusNoContent)
 	}

@@ -8,29 +8,39 @@ import (
 )
 
 // XrayClientMeta holds metadata stored in PostgreSQL for an Xray client.
-// Xray's own config only stores uuid/email/level; expiry and display name live here.
+// Xray's own config only stores uuid/email/level; expiry, display name,
+// reseller owner, and connection policy live here.
 type XrayClientMeta struct {
-	UUID       string
-	Name       string
-	Email      string
-	InboundTag string
-	ExpiresAt  *time.Time
-	MaxConns   int
-	CreatedAt  time.Time
+	UUID          string
+	Name          string
+	Email         string
+	InboundTag    string
+	OwnerUsername string
+	ExpiresAt     *time.Time
+	MaxConns      int
+	CreatedAt     time.Time
 }
 
 func (s *Store) EnsureXrayClientsSchema(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, `
-		CREATE TABLE IF NOT EXISTS xray_clients (
-			uuid        TEXT PRIMARY KEY,
-			name        TEXT NOT NULL DEFAULT '',
-			email       TEXT NOT NULL DEFAULT '',
-			inbound_tag TEXT NOT NULL DEFAULT '',
-			expires_at  TIMESTAMPTZ,
-			max_conns   INT NOT NULL DEFAULT 0,
-			created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)`)
-	return err
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS xray_clients (
+			uuid           TEXT PRIMARY KEY,
+			name           TEXT NOT NULL DEFAULT '',
+			email          TEXT NOT NULL DEFAULT '',
+			inbound_tag    TEXT NOT NULL DEFAULT '',
+			owner_username TEXT NOT NULL DEFAULT '',
+			expires_at     TIMESTAMPTZ,
+			max_conns      INT NOT NULL DEFAULT 0,
+			created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`ALTER TABLE xray_clients ADD COLUMN IF NOT EXISTS owner_username TEXT NOT NULL DEFAULT ''`,
+	}
+	for _, stmt := range stmts {
+		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) UpsertXrayClientMeta(ctx context.Context, m XrayClientMeta) error {
@@ -39,15 +49,16 @@ func (s *Store) UpsertXrayClientMeta(ctx context.Context, m XrayClientMeta) erro
 		expiresAt = *m.ExpiresAt
 	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO xray_clients (uuid, name, email, inbound_tag, expires_at, max_conns)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO xray_clients (uuid, name, email, inbound_tag, owner_username, expires_at, max_conns)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (uuid) DO UPDATE SET
-			name        = EXCLUDED.name,
-			email       = EXCLUDED.email,
-			inbound_tag = EXCLUDED.inbound_tag,
-			expires_at  = EXCLUDED.expires_at,
-			max_conns   = EXCLUDED.max_conns`,
-		m.UUID, m.Name, m.Email, m.InboundTag, expiresAt, m.MaxConns)
+			name           = EXCLUDED.name,
+			email          = EXCLUDED.email,
+			inbound_tag    = CASE WHEN EXCLUDED.inbound_tag <> '' THEN EXCLUDED.inbound_tag ELSE xray_clients.inbound_tag END,
+			owner_username = CASE WHEN EXCLUDED.owner_username <> '' THEN EXCLUDED.owner_username ELSE xray_clients.owner_username END,
+			expires_at     = EXCLUDED.expires_at,
+			max_conns      = EXCLUDED.max_conns`,
+		m.UUID, m.Name, m.Email, m.InboundTag, m.OwnerUsername, expiresAt, m.MaxConns)
 	return err
 }
 
@@ -55,9 +66,9 @@ func (s *Store) GetXrayClientMeta(ctx context.Context, uuid string) (*XrayClient
 	m := &XrayClientMeta{}
 	var expiresAt sql.NullTime
 	err := s.db.QueryRowContext(ctx, `
-		SELECT uuid, name, email, inbound_tag, expires_at, max_conns, created_at
+		SELECT uuid, name, email, inbound_tag, COALESCE(owner_username, ''), expires_at, max_conns, created_at
 		FROM xray_clients WHERE uuid = $1`, uuid).
-		Scan(&m.UUID, &m.Name, &m.Email, &m.InboundTag, &expiresAt, &m.MaxConns, &m.CreatedAt)
+		Scan(&m.UUID, &m.Name, &m.Email, &m.InboundTag, &m.OwnerUsername, &expiresAt, &m.MaxConns, &m.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -74,17 +85,49 @@ func (s *Store) DeleteXrayClientMeta(ctx context.Context, uuid string) error {
 
 func (s *Store) ListAllXrayClients(ctx context.Context) ([]*XrayClientMeta, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT uuid, name, email, inbound_tag, expires_at, max_conns, created_at
+		SELECT uuid, name, email, inbound_tag, COALESCE(owner_username, ''), expires_at, max_conns, created_at
 		FROM xray_clients ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	return scanXrayClientMetaRows(rows)
+}
+
+func (s *Store) ListXrayClientsByOwner(ctx context.Context, ownerUsername string) ([]*XrayClientMeta, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT uuid, name, email, inbound_tag, COALESCE(owner_username, ''), expires_at, max_conns, created_at
+		FROM xray_clients WHERE owner_username = $1 ORDER BY created_at DESC`, ownerUsername)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanXrayClientMetaRows(rows)
+}
+
+func (s *Store) CountXrayClientsByOwner(ctx context.Context, ownerUsername string) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM xray_clients WHERE owner_username = $1`, ownerUsername).Scan(&n)
+	return n, err
+}
+
+func (s *Store) ListExpiredXrayClients(ctx context.Context) ([]*XrayClientMeta, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT uuid, name, email, inbound_tag, COALESCE(owner_username, ''), expires_at, max_conns, created_at
+		FROM xray_clients WHERE expires_at IS NOT NULL AND expires_at <= NOW()`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanXrayClientMetaRows(rows)
+}
+
+func scanXrayClientMetaRows(rows *sql.Rows) ([]*XrayClientMeta, error) {
 	var out []*XrayClientMeta
 	for rows.Next() {
 		m := &XrayClientMeta{}
 		var expiresAt sql.NullTime
-		if err := rows.Scan(&m.UUID, &m.Name, &m.Email, &m.InboundTag, &expiresAt, &m.MaxConns, &m.CreatedAt); err != nil {
+		if err := rows.Scan(&m.UUID, &m.Name, &m.Email, &m.InboundTag, &m.OwnerUsername, &expiresAt, &m.MaxConns, &m.CreatedAt); err != nil {
 			return nil, err
 		}
 		if expiresAt.Valid {
@@ -95,27 +138,49 @@ func (s *Store) ListAllXrayClients(ctx context.Context) ([]*XrayClientMeta, erro
 	return out, rows.Err()
 }
 
-func (s *Store) ListExpiredXrayClients(ctx context.Context) ([]*XrayClientMeta, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT uuid, name, email, inbound_tag, expires_at, max_conns, created_at
-		FROM xray_clients WHERE expires_at IS NOT NULL AND expires_at <= NOW()`)
+func countOwnedXrayClients(ctx context.Context, store *Store, ownerUsername string) int {
+	if store == nil || ownerUsername == "" {
+		return 0
+	}
+	n, err := store.CountXrayClientsByOwner(ctx, ownerUsername)
 	if err != nil {
-		return nil, err
+		log.Printf("count xray clients for %s: %v", ownerUsername, err)
+		return 0
 	}
-	defer rows.Close()
-	var out []*XrayClientMeta
-	for rows.Next() {
-		m := &XrayClientMeta{}
-		var expiresAt sql.NullTime
-		if err := rows.Scan(&m.UUID, &m.Name, &m.Email, &m.InboundTag, &expiresAt, &m.MaxConns, &m.CreatedAt); err != nil {
-			return nil, err
-		}
-		if expiresAt.Valid {
-			m.ExpiresAt = &expiresAt.Time
-		}
-		out = append(out, m)
+	return n
+}
+
+func countOwnedQuota(ctx context.Context, store *Store, ownerUsername string) int {
+	return countOwnedUsers(ownerUsername) + countOwnedXrayClients(ctx, store, ownerUsername)
+}
+
+func removeOwnerXrayClients(ctx context.Context, store *Store, ownerUsername string) {
+	if store == nil || ownerUsername == "" {
+		return
 	}
-	return out, rows.Err()
+	clients, err := store.ListXrayClientsByOwner(ctx, ownerUsername)
+	if err != nil {
+		log.Printf("xray owner cleanup: list %s: %v", ownerUsername, err)
+		return
+	}
+	needRestart := false
+	for _, m := range clients {
+		if m.InboundTag != "" {
+			if err := xrayMgr.RemoveXrayClient(m.InboundTag, m.UUID); err != nil {
+				log.Printf("xray owner cleanup: remove %s from %s: %v", m.UUID, m.InboundTag, err)
+			} else {
+				needRestart = true
+			}
+		}
+		if err := store.DeleteXrayClientMeta(ctx, m.UUID); err != nil {
+			log.Printf("xray owner cleanup: delete meta %s: %v", m.UUID, err)
+		}
+	}
+	if needRestart {
+		if err := xrayMgr.Restart(); err != nil {
+			log.Printf("xray owner cleanup: restart: %v", err)
+		}
+	}
 }
 
 // startXrayClientExpiryChecker runs a background goroutine that removes expired
