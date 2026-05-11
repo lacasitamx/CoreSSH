@@ -12,6 +12,10 @@ let dashboardCache = { sshUsers: [], xrayInbounds: [], me: null };
 let currentTab = "dashboard";
 let inboundsRefreshInFlight = false;
 let lastInboundsStructure = "";
+let serversCache = [];
+let selectedSSHServerID = localStorage.getItem("SSH_SERVER_ID") || "local";
+let selectedXrayServerID = localStorage.getItem("XRAY_SERVER_ID") || "local";
+let configuringServerID = "";
 
 
 // ─── Language / i18n ─────────────────────────────────────────────────────────
@@ -264,6 +268,12 @@ const xCfgEditor     = document.getElementById("xCfgEditor");
 const xCfgStatus     = document.getElementById("xCfgStatus");
 const xLogsBox       = document.getElementById("xLogsBox");
 const inboundsContainer = document.getElementById("inboundsContainer");
+const sshServerPickerCard = document.getElementById("sshServerPickerCard");
+const xrayServerPickerCard = document.getElementById("xrayServerPickerCard");
+const sshServerSelect = document.getElementById("sshServerSelect");
+const xrayServerSelect = document.getElementById("xrayServerSelect");
+const sshServerHint = document.getElementById("sshServerHint");
+const xrayServerHint = document.getElementById("xrayServerHint");
 
 // Resellers
 const resellersBody     = document.getElementById("resellersBody");
@@ -276,6 +286,27 @@ const rPassword         = document.getElementById("rPassword");
 const rMaxUsers         = document.getElementById("rMaxUsers");
 const rExpires          = document.getElementById("rExpires");
 const rActive           = document.getElementById("rActive");
+
+// Managed servers
+const serversBody = document.getElementById("serversBody");
+const serversCountChip = document.getElementById("serversCountChip");
+const serversStatus = document.getElementById("serversStatus");
+const serverForm = document.getElementById("serverForm");
+const serverFormTitle = document.getElementById("serverFormTitle");
+const srvID = document.getElementById("srvID");
+const srvName = document.getElementById("srvName");
+const srvBaseURL = document.getElementById("srvBaseURL");
+const srvAdminUser = document.getElementById("srvAdminUser");
+const srvAdminKey = document.getElementById("srvAdminKey");
+const srvEnableSSH = document.getElementById("srvEnableSSH");
+const srvEnableXray = document.getElementById("srvEnableXray");
+const srvIsActive = document.getElementById("srvIsActive");
+const serverFormStatus = document.getElementById("serverFormStatus");
+const serversListView = document.getElementById("serversListView");
+const serverConfigSubpage = document.getElementById("serverConfigSubpage");
+const cfgServerName = document.getElementById("cfgServerName");
+const managedConfigEditor = document.getElementById("managedConfigEditor");
+const managedConfigStatus = document.getElementById("managedConfigStatus");
 
 // Stats
 const cpuVal     = document.getElementById("cpuVal");
@@ -309,6 +340,14 @@ async function api(path, opts = {}) {
   if (res.status === 401 || res.status === 403) throw new Error("auth");
   return res;
 }
+function withServerParam(path, serverID) {
+  serverID = serverID || "local";
+  if (!serverID || serverID === "local") return path;
+  return path + (path.includes("?") ? "&" : "?") + "server_id=" + encodeURIComponent(serverID);
+}
+function selectedSSHServer() { return sshServerSelect?.value || selectedSSHServerID || "local"; }
+function selectedXrayServer() { return xrayServerSelect?.value || selectedXrayServerID || "local"; }
+function serverByID(id) { return serversCache.find(s => String(s.id) === String(id)); }
 
 // ─── Formatters ──────────────────────────────────────────────────────────────
 const fmtPct   = n => (n == null || isNaN(n)) ? "--%"  : n.toFixed(1)+"%";
@@ -450,6 +489,7 @@ const tabTitles = {
   ssh: ["Accounts", "SSH / SlowDNS"],
   xray: ["Accounts", "Xray Users"],
   resellers: ["Administration", "Resellers"],
+  servers: ["Administration", "Servers"],
   stats: ["Server", "Monitoring"],
   vnstat: ["Traffic", "VnStat"],
   logs: ["System", "Logs"],
@@ -481,6 +521,7 @@ function selectTab(tab) {
   }
   if (tab === "stats" && currentRole === "superadmin") loadStats();
   if (tab === "resellers" && currentRole === "superadmin") loadResellers();
+  if (tab === "servers" && currentRole === "superadmin") loadServers();
 }
 
 document.querySelectorAll(".tab-btn").forEach(btn => btn.addEventListener("click", () => selectTab(btn.dataset.tab)));
@@ -563,6 +604,7 @@ function initAfterLogin() {
   dashboardQuotaCard?.classList.toggle("hidden", currentRole !== "reseller");
 
   selectTab("dashboard");
+  loadServers();
 
   if (currentRole === "superadmin") {
     loadDashboardStats();
@@ -756,7 +798,7 @@ function setFormCollapsed(v) {
 async function loadUsers() {
   userStatus.textContent = t("Loading…");
   try {
-    const res  = await api("/api/users");
+    const res  = await api(withServerParam("/api/users", selectedSSHServer()));
     const data = await res.json();
     renderUsers(data || []);
     userStatus.textContent = t("Loaded.");
@@ -767,7 +809,7 @@ async function loadUsers() {
 }
 async function loadUsersSilent() {
   try {
-    const res  = await api("/api/users");
+    const res  = await api(withServerParam("/api/users", selectedSSHServer()));
     const data = await res.json();
     renderUsers(data || []);
   } catch (e) {
@@ -854,6 +896,7 @@ userForm.addEventListener("submit", async e => {
     expires_at: isoFromLocal(fExpires.value),
     limit_mbps_up:   parseInt(fUp.value||"0",10),
     limit_mbps_down: parseInt(fDown.value||"0",10),
+    server_id: selectedSSHServer(),
   };
   try {
     const res = await api("/api/users/create", { method:"POST", body: JSON.stringify(payload) });
@@ -874,7 +917,7 @@ async function deleteUser(username) {
   if (!confirm(t("Delete user \"{name}\"?", {name: username}))) return;
   userStatus.textContent = t("Deleting {name}…", {name: username});
   try {
-    const res = await api(`/api/users/delete?username=${encodeURIComponent(username)}`, { method:"DELETE" });
+    const res = await api(withServerParam(`/api/users/delete?username=${encodeURIComponent(username)}`, selectedSSHServer()), { method:"DELETE" });
     if (!res.ok && res.status !== 204) throw new Error("delete failed");
     userStatus.textContent = t("Deleted.");
     loadUsers();
@@ -899,7 +942,7 @@ document.getElementById("xLoadLogsBtn").addEventListener("click", loadXrayLogs);
 
 async function loadXrayStatus() {
   try {
-    const res = await api("/api/xray/status");
+    const res = await api(withServerParam("/api/xray/status", selectedXrayServer()));
     const s   = await res.json();
     const run = !!s.running;
     xrayChip.textContent  = run ? t("running") : (s.enabled ? t("stopped") : t("disabled"));
@@ -924,8 +967,8 @@ async function loadXrayStatus() {
     } else if (xStatus) {
       xStatus.textContent = s.api_server ? t("Counters API ready at {server}.", {server: s.api_server}) : t("Counters API ready.");
     }
-    if (dashServers) dashServers.textContent = s.enabled ? "1" : "0";
-    if (dashServerStatus) dashServerStatus.textContent = run ? t("{count} online", {count: 1}) : (s.enabled ? t("stopped") : t("disabled"));
+    if (dashServers) dashServers.textContent = String((serversCache || []).filter(n => n.is_active !== false).length || (s.enabled ? 1 : 0));
+    if (dashServerStatus) dashServerStatus.textContent = (serversCache || []).length > 1 ? `${(serversCache || []).filter(n => n.is_active !== false).length} nodes configured` : (run ? t("{count} online", {count: 1}) : (s.enabled ? t("stopped") : t("disabled")));
     renderDashboardCounters();
     if (s.error) xStatus.textContent = t("Error: {error}", {error: s.error});
   } catch (e) { if (e.message==="auth") doAuthError(); }
@@ -936,7 +979,7 @@ async function repairXrayStats() {
   if (btn) btn.disabled = true;
   xStatus.textContent = currentLang === "pt-BR" ? "Verificando e reparando a API de contadores do Xray…" : "Checking and repairing Xray counters API…";
   try {
-    const res = await api("/api/xray/stats/repair", { method:"POST" });
+    const res = await api(withServerParam("/api/xray/stats/repair", selectedXrayServer()), { method:"POST" });
     if (!res.ok) throw new Error(await res.text());
     const d = await res.json().catch(() => ({}));
     xStatus.textContent = d.changed
@@ -955,7 +998,7 @@ async function repairXrayStats() {
 async function xrayCtrl(action) {
   xStatus.textContent = (currentLang === "pt-BR" ? "Processando Xray…" : action.charAt(0).toUpperCase()+action.slice(1)+"ing Xray…");
   try {
-    const res = await api(`/api/xray/${action}`, { method:"POST" });
+    const res = await api(withServerParam(`/api/xray/${action}`, selectedXrayServer()), { method:"POST" });
     if (!res.ok) throw new Error(await res.text());
     xStatus.textContent = currentLang === "pt-BR" ? "Xray OK." : "Xray "+action+" OK.";
     setTimeout(loadXrayStatus, 700);
@@ -973,7 +1016,7 @@ async function loadInbounds(options = {}) {
   if (!silent) inboundsContainer.innerHTML = `<div class="hint" style="padding:8px 0;">${t("Loading…")}</div>`;
   else inboundsContainer.classList.add("xray-refreshing");
   try {
-    const res      = await api("/api/xray/inbounds");
+    const res      = await api(withServerParam("/api/xray/inbounds", selectedXrayServer()));
     if (!res.ok) throw new Error(await res.text());
     const inbounds = await res.json();
     renderInbounds(inbounds || [], { silent, force });
@@ -1146,7 +1189,7 @@ async function addClient(tag) {
   try {
     const res = await api("/api/xray/clients/add", {
       method: "POST",
-      body: JSON.stringify({ inbound_tag: tag, uuid, email, name, expires_at: expiresAt, max_connections: maxConns }),
+      body: JSON.stringify({ inbound_tag: tag, uuid, email, name, expires_at: expiresAt, max_connections: maxConns, server_id: selectedXrayServer() }),
     });
     if (!res.ok) throw new Error(await res.text());
     xStatus.textContent = t("Client {id}… added. Restarting Xray…", {id: uuid.slice(0,8)});
@@ -1160,7 +1203,7 @@ async function addClient(tag) {
 async function removeClient(tag, uuid) {
   if (!confirm(t("Remove client {id}… from {tag}?", {id: uuid.slice(0,8), tag}))) return;
   try {
-    const res = await api(`/api/xray/clients/remove?inbound_tag=${encodeURIComponent(tag)}&uuid=${encodeURIComponent(uuid)}`, { method:"DELETE" });
+    const res = await api(withServerParam(`/api/xray/clients/remove?inbound_tag=${encodeURIComponent(tag)}&uuid=${encodeURIComponent(uuid)}`, selectedXrayServer()), { method:"DELETE" });
     if (!res.ok && res.status !== 204) throw new Error(await res.text());
     xStatus.textContent = t("Client removed. Restarting Xray…");
     setTimeout(() => { loadInbounds({ force: true }); if (currentRole === "reseller") loadMe(); }, 1500);
@@ -1172,7 +1215,7 @@ async function removeClient(tag, uuid) {
 
 async function loadXrayCfg() {
   try {
-    const res  = await api("/api/xray/config");
+    const res  = await api(withServerParam("/api/xray/config", selectedXrayServer()));
     if (!res.ok) throw new Error(await res.text());
     const text = await res.text();
     try { xCfgEditor.value = JSON.stringify(JSON.parse(text), null, 2); }
@@ -1189,7 +1232,7 @@ async function saveXrayCfg() {
   try { JSON.parse(text); } catch(e) { xCfgStatus.textContent = t("Invalid JSON: {error}", {error: e.message}); return; }
   xCfgStatus.textContent = t("Saving…");
   try {
-    const res = await api("/api/xray/config", { method:"POST", body: text });
+    const res = await api(withServerParam("/api/xray/config", selectedXrayServer()), { method:"POST", body: text });
     if (!res.ok) throw new Error(await res.text());
     xCfgStatus.textContent = t("Saved. Restarting Xray…");
     await xrayCtrl("restart");
@@ -1201,7 +1244,7 @@ async function saveXrayCfg() {
 
 async function loadXrayLogs() {
   try {
-    const res  = await api("/api/xray/logs");
+    const res  = await api(withServerParam("/api/xray/logs", selectedXrayServer()));
     const data = await res.json();
     xLogsBox.textContent = (data.lines||[]).join("\n");
     xLogsBox.scrollTop   = xLogsBox.scrollHeight;
@@ -1320,6 +1363,250 @@ async function deleteReseller(username) {
     else resellerStatus.textContent = "Error deleting.";
   }
 }
+
+// ─── Managed Servers ─────────────────────────────────────────────────────────
+sshServerSelect?.addEventListener("change", () => {
+  selectedSSHServerID = selectedSSHServer();
+  localStorage.setItem("SSH_SERVER_ID", selectedSSHServerID);
+  loadUsers();
+});
+xrayServerSelect?.addEventListener("change", () => {
+  selectedXrayServerID = selectedXrayServer();
+  localStorage.setItem("XRAY_SERVER_ID", selectedXrayServerID);
+  lastInboundsStructure = "";
+  closeEditXrayClient?.();
+  loadXrayStatus();
+  loadInbounds({ force: true });
+});
+document.getElementById("reloadServersBtn")?.addEventListener("click", loadServers);
+document.getElementById("reloadServersBtn2")?.addEventListener("click", loadServers);
+document.getElementById("refreshServersBtn")?.addEventListener("click", loadServers);
+document.querySelector("[data-tab='servers']")?.addEventListener("click", loadServers);
+document.getElementById("clearServerFormBtn")?.addEventListener("click", clearServerForm);
+document.getElementById("testServerBtn")?.addEventListener("click", testServerForm);
+document.getElementById("backToServersBtn")?.addEventListener("click", () => showServerListView());
+document.getElementById("loadManagedConfigBtn")?.addEventListener("click", () => loadManagedServerConfig(configuringServerID));
+document.getElementById("saveManagedConfigBtn")?.addEventListener("click", saveManagedServerConfig);
+serverForm?.addEventListener("submit", async e => {
+  e.preventDefault();
+  await saveServerForm();
+});
+
+async function loadServers() {
+  try {
+    const res = await api("/api/servers");
+    if (!res.ok) throw new Error(await res.text());
+    serversCache = await res.json() || [];
+  } catch (e) {
+    serversCache = [{ id:"local", name:"Master node", base_url:"local", enable_ssh:true, enable_xray:true, is_active:true, is_local:true }];
+    if (serversStatus) serversStatus.textContent = "Error loading servers: " + e.message;
+    if (e.message === "auth") doAuthError();
+  }
+  renderServerSelectors();
+  renderServersTable();
+}
+
+function renderServerSelectors() {
+  const active = serversCache.filter(s => s.is_active !== false);
+  const sshServers = active.filter(s => s.enable_ssh || s.is_local);
+  const xrayServers = active.filter(s => s.enable_xray || s.is_local);
+  populateServerSelect(sshServerSelect, sshServers, selectedSSHServerID, "ssh");
+  populateServerSelect(xrayServerSelect, xrayServers, selectedXrayServerID, "xray");
+  const hasMultiSSH = sshServers.length > 1;
+  const hasMultiXray = xrayServers.length > 1;
+  sshServerPickerCard?.classList.toggle("hidden", !hasMultiSSH);
+  xrayServerPickerCard?.classList.toggle("hidden", !hasMultiXray);
+  if (sshServerHint) sshServerHint.textContent = hasMultiSSH ? "Choose where SSH users are created and listed." : "Only the master node is available for SSH.";
+  if (xrayServerHint) xrayServerHint.textContent = hasMultiXray ? "Choose where Xray clients are created and listed." : "Only the master node is available for Xray.";
+  if (dashServers) dashServers.textContent = String(active.length || 1);
+  if (dashServerStatus) dashServerStatus.textContent = active.length > 1 ? `${active.length} nodes configured` : "master only";
+}
+
+function populateServerSelect(select, list, selected, kind) {
+  if (!select) return;
+  const current = String(selected || select.value || "local");
+  select.innerHTML = "";
+  list.forEach(s => {
+    const opt = document.createElement("option");
+    opt.value = String(s.id);
+    opt.textContent = `${s.name || s.base_url || s.id}${s.is_local ? " (master)" : ""}`;
+    select.appendChild(opt);
+  });
+  const allowed = list.some(s => String(s.id) === current);
+  select.value = allowed ? current : "local";
+  if (kind === "ssh") {
+    selectedSSHServerID = select.value || "local";
+    localStorage.setItem("SSH_SERVER_ID", selectedSSHServerID);
+  } else {
+    selectedXrayServerID = select.value || "local";
+    localStorage.setItem("XRAY_SERVER_ID", selectedXrayServerID);
+  }
+}
+
+function renderServersTable() {
+  if (!serversBody) return;
+  const rows = serversCache || [];
+  serversCountChip && (serversCountChip.textContent = String(Math.max(0, rows.length - 1)));
+  serversBody.innerHTML = "";
+  rows.forEach(s => {
+    const tr = document.createElement("tr");
+    const opts = `${s.enable_ssh ? "SSH" : ""}${s.enable_ssh && s.enable_xray ? " / " : ""}${s.enable_xray ? "Xray" : ""}` || "disabled";
+    tr.innerHTML = `
+      <td>${escapeHTML(s.name || "—")}${s.is_local ? ' <span class="chip">master</span>' : ""}</td>
+      <td style="font-family:monospace;font-size:.68rem;">${escapeHTML(s.base_url || "local")}</td>
+      <td>${escapeHTML(opts)}</td>
+      <td>${s.is_active ? '<span class="badge-on">active</span>' : '<span class="badge-off">disabled</span>'}</td>`;
+    const td = document.createElement("td");
+    td.style.whiteSpace = "nowrap";
+    const cfgBtn = document.createElement("button");
+    cfgBtn.className = "btn btn-ghost btn-sm";
+    cfgBtn.textContent = "Configure";
+    cfgBtn.onclick = () => openManagedServerConfig(String(s.id));
+    td.appendChild(cfgBtn);
+    if (!s.is_local) {
+      const editBtn = document.createElement("button");
+      editBtn.className = "btn btn-warn btn-sm";
+      editBtn.style.marginLeft = "4px";
+      editBtn.textContent = "Edit";
+      editBtn.onclick = () => fillServerForm(s);
+      const delBtn = document.createElement("button");
+      delBtn.className = "btn btn-danger btn-sm";
+      delBtn.style.marginLeft = "4px";
+      delBtn.textContent = "Del";
+      delBtn.onclick = () => deleteServer(s);
+      td.append(editBtn, delBtn);
+    }
+    tr.appendChild(td);
+    serversBody.appendChild(tr);
+  });
+}
+
+function clearServerForm() {
+  if (!serverForm) return;
+  srvID.value = "";
+  srvName.value = "";
+  srvBaseURL.value = "";
+  srvAdminUser.value = "admin";
+  srvAdminKey.value = "";
+  srvEnableSSH.checked = true;
+  srvEnableXray.checked = true;
+  srvIsActive.checked = true;
+  if (serverFormTitle) serverFormTitle.textContent = "Add / edit server";
+  if (serverFormStatus) serverFormStatus.textContent = "";
+}
+
+function fillServerForm(s) {
+  srvID.value = s.id || "";
+  srvName.value = s.name || "";
+  srvBaseURL.value = s.base_url || "";
+  srvAdminUser.value = s.admin_username || "admin";
+  srvAdminKey.value = "";
+  srvEnableSSH.checked = !!s.enable_ssh;
+  srvEnableXray.checked = !!s.enable_xray;
+  srvIsActive.checked = s.is_active !== false;
+  if (serverFormTitle) serverFormTitle.textContent = "Edit: " + (s.name || s.base_url);
+  if (serverFormStatus) serverFormStatus.textContent = "Leave admin key blank to keep the saved key.";
+}
+
+function serverPayloadFromForm() {
+  return {
+    id: srvID?.value || "",
+    name: srvName?.value.trim() || "",
+    base_url: srvBaseURL?.value.trim() || "",
+    admin_username: srvAdminUser?.value.trim() || "admin",
+    admin_key: srvAdminKey?.value || "",
+    enable_ssh: !!srvEnableSSH?.checked,
+    enable_xray: !!srvEnableXray?.checked,
+    is_active: !!srvIsActive?.checked,
+  };
+}
+
+async function saveServerForm() {
+  if (!serverFormStatus) return;
+  serverFormStatus.textContent = "Saving…";
+  try {
+    const res = await api("/api/servers", { method:"POST", body: JSON.stringify(serverPayloadFromForm()) });
+    if (!res.ok) throw new Error(await res.text());
+    serverFormStatus.textContent = "Saved.";
+    clearServerForm();
+    await loadServers();
+  } catch (e) {
+    if (e.message === "auth") doAuthError();
+    else serverFormStatus.textContent = "Error: " + e.message;
+  }
+}
+
+async function testServerForm() {
+  if (!serverFormStatus) return;
+  serverFormStatus.textContent = "Testing remote login…";
+  try {
+    const res = await api("/api/servers/test", { method:"POST", body: JSON.stringify(serverPayloadFromForm()) });
+    if (!res.ok) throw new Error(await res.text());
+    serverFormStatus.textContent = "Connection OK.";
+  } catch (e) {
+    if (e.message === "auth") doAuthError();
+    else serverFormStatus.textContent = "Test failed: " + e.message;
+  }
+}
+
+async function deleteServer(s) {
+  if (!confirm(`Delete server "${s.name || s.base_url}"?`)) return;
+  try {
+    const res = await api(`/api/servers?id=${encodeURIComponent(s.id)}`, { method:"DELETE" });
+    if (!res.ok && res.status !== 204) throw new Error(await res.text());
+    await loadServers();
+  } catch (e) {
+    if (e.message === "auth") doAuthError();
+    else serversStatus && (serversStatus.textContent = "Delete failed: " + e.message);
+  }
+}
+
+function showServerListView() {
+  serversListView?.classList.remove("hidden");
+  serverConfigSubpage?.classList.add("hidden");
+  configuringServerID = "";
+}
+
+function openManagedServerConfig(id) {
+  configuringServerID = id || "local";
+  const srv = serverByID(configuringServerID) || { name: "Master node" };
+  if (cfgServerName) cfgServerName.textContent = srv.name || srv.base_url || configuringServerID;
+  serversListView?.classList.add("hidden");
+  serverConfigSubpage?.classList.remove("hidden");
+  loadManagedServerConfig(configuringServerID);
+}
+
+async function loadManagedServerConfig(id) {
+  if (!id) return;
+  managedConfigStatus.textContent = "Loading config…";
+  try {
+    const res = await api(withServerParam("/api/servers/config", id));
+    if (!res.ok) throw new Error(await res.text());
+    const text = await res.text();
+    try { managedConfigEditor.value = JSON.stringify(JSON.parse(text), null, 2); }
+    catch { managedConfigEditor.value = text; }
+    managedConfigStatus.textContent = "Config loaded.";
+  } catch (e) {
+    if (e.message === "auth") doAuthError();
+    else managedConfigStatus.textContent = "Error: " + e.message;
+  }
+}
+
+async function saveManagedServerConfig() {
+  if (!configuringServerID) return;
+  const text = managedConfigEditor.value.trim();
+  try { JSON.parse(text); } catch (e) { managedConfigStatus.textContent = "Invalid JSON: " + e.message; return; }
+  managedConfigStatus.textContent = "Saving config…";
+  try {
+    const res = await api(withServerParam("/api/servers/config", configuringServerID), { method:"POST", body: text });
+    if (!res.ok) throw new Error(await res.text());
+    managedConfigStatus.textContent = "Saved and applied.";
+  } catch (e) {
+    if (e.message === "auth") doAuthError();
+    else managedConfigStatus.textContent = "Error: " + e.message;
+  }
+}
+
 
 // ─── Stats ────────────────────────────────────────────────────────────────────
 document.querySelector("[data-tab='stats']")?.addEventListener("click", loadStats);
@@ -1880,6 +2167,7 @@ async function saveEditXrayClient() {
     email:           document.getElementById("editXrayEmail").value.trim(),
     expires_at:      isoFromLocal(document.getElementById("editXrayExpiry").value),
     max_connections: parseInt(document.getElementById("editXrayMaxConns").value || "0", 10),
+    server_id: selectedXrayServer(),
   };
   try {
     const res = await api("/api/xray/clients/update", { method:"POST", body: JSON.stringify(payload) });

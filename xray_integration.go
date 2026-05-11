@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"regexp"
@@ -1100,6 +1101,9 @@ func handleXrayStatus(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+	if proxyManagedServerFromRequest(w, r, statsStore, "/api/xray/status", nil, "") {
+		return
+	}
 	// Be practical for old/manual configs: if the panel detects missing Stats API
 	// pieces or missing per-client stat labels, repair once automatically. This
 	// avoids a dashboard that says "OK" but continues to show zero Xray online
@@ -1136,6 +1140,9 @@ func handleXrayStart(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+	if proxyManagedServerFromRequest(w, r, statsStore, "/api/xray/start", nil, "") {
+		return
+	}
 	if err := xrayMgr.Start(); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1146,6 +1153,9 @@ func handleXrayStart(w http.ResponseWriter, r *http.Request) {
 func handleXrayStop(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if proxyManagedServerFromRequest(w, r, statsStore, "/api/xray/stop", nil, "") {
 		return
 	}
 	if err := xrayMgr.Stop(); err != nil {
@@ -1160,6 +1170,9 @@ func handleXrayRestart(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+	if proxyManagedServerFromRequest(w, r, statsStore, "/api/xray/restart", nil, "") {
+		return
+	}
 	if err := xrayMgr.Restart(); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -1168,6 +1181,20 @@ func handleXrayRestart(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleXrayConfig(w http.ResponseWriter, r *http.Request) {
+	if requestedServerID(r) != "" && requestedServerID(r) != "local" && requestedServerID(r) != "0" {
+		body := []byte(nil)
+		if r.Method == http.MethodPost {
+			var err error
+			body, err = io.ReadAll(io.LimitReader(r.Body, 512*1024))
+			if err != nil {
+				http.Error(w, "failed to read body", http.StatusBadRequest)
+				return
+			}
+		}
+		if proxyManagedServerFromRequest(w, r, statsStore, "/api/xray/config", body, "") {
+			return
+		}
+	}
 	switch r.Method {
 	case http.MethodGet:
 		data, err := xrayMgr.GetConfig()
@@ -1200,6 +1227,9 @@ func handleXrayRepairStats(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+	if proxyManagedServerFromRequest(w, r, statsStore, "/api/xray/stats/repair", nil, "") {
+		return
+	}
 	wasRunning := xrayMgr.isRunningSnapshot()
 	changed, err := xrayMgr.EnsureStatsAPIConfig()
 	if err != nil {
@@ -1228,6 +1258,9 @@ func handleXrayRepairStats(w http.ResponseWriter, r *http.Request) {
 func handleXrayLogs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if proxyManagedServerFromRequest(w, r, statsStore, "/api/xray/logs", nil, "") {
 		return
 	}
 	lines := xrayLogBuf.snapshot()
@@ -1449,6 +1482,13 @@ func handleXrayInbounds(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+	filterOwner := ""
+	if sess := sessionFromCtx(r.Context()); sess != nil && sess.Role == RoleReseller {
+		filterOwner = sess.Username
+	}
+	if proxyManagedServerFromRequest(w, r, statsStore, "/api/xray/inbounds", nil, filterOwner) {
+		return
+	}
 	inbounds, err := xrayMgr.ListInbounds()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -1560,6 +1600,8 @@ func handleXrayClientAdd(w http.ResponseWriter, r *http.Request) {
 		Name           string `json:"name"`
 		ExpiresAt      string `json:"expires_at"` // RFC3339 or YYYY-MM-DD or empty
 		MaxConnections int    `json:"max_connections"`
+		OwnerUsername  string `json:"owner_username,omitempty"`
+		ServerID       string `json:"server_id,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
@@ -1567,6 +1609,27 @@ func handleXrayClientAdd(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.InboundTag == "" || req.UUID == "" {
 		http.Error(w, "inbound_tag and uuid required", http.StatusBadRequest)
+		return
+	}
+	if ms, remote, err := managedServerFromID(r.Context(), statsStore, req.ServerID); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	} else if remote {
+		if !ms.EnableXray {
+			http.Error(w, "Xray creation is disabled for this server", http.StatusForbidden)
+			return
+		}
+		if sess := sessionFromCtx(r.Context()); sess != nil && sess.Role == RoleReseller {
+			req.OwnerUsername = sess.Username
+		}
+		req.ServerID = ""
+		body, _ := json.Marshal(req)
+		status, data, ct, err := proxyManagedServer(r.Context(), ms, http.MethodPost, "/api/xray/clients/add", body, "application/json")
+		if err != nil {
+			http.Error(w, "remote server error: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		writeProxyResponse(w, status, data, ct)
 		return
 	}
 	req.Email = strings.TrimSpace(req.Email)
@@ -1594,6 +1657,8 @@ func handleXrayClientAdd(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, fmt.Sprintf("user limit reached (%d)", owner.MaxUsers), http.StatusForbidden)
 			return
 		}
+	} else if sess != nil && sess.Role == RoleSuperAdmin && strings.TrimSpace(req.OwnerUsername) != "" {
+		ownerUsername = strings.TrimSpace(req.OwnerUsername)
 	}
 
 	if err := xrayMgr.AddXrayClient(req.InboundTag, req.UUID, req.Email); err != nil {
@@ -1643,6 +1708,7 @@ func handleXrayClientUpdate(w http.ResponseWriter, r *http.Request) {
 		Email          string `json:"email"`
 		ExpiresAt      string `json:"expires_at"`
 		MaxConnections int    `json:"max_connections"`
+		ServerID       string `json:"server_id,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
@@ -1650,6 +1716,24 @@ func handleXrayClientUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.UUID == "" {
 		http.Error(w, "uuid required", http.StatusBadRequest)
+		return
+	}
+	if ms, remote, err := managedServerFromID(r.Context(), statsStore, req.ServerID); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	} else if remote {
+		if sess := sessionFromCtx(r.Context()); sess != nil && sess.Role == RoleReseller && !remoteXrayClientOwned(r.Context(), ms, req.UUID, sess.Username) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		req.ServerID = ""
+		body, _ := json.Marshal(req)
+		status, data, ct, err := proxyManagedServer(r.Context(), ms, http.MethodPost, "/api/xray/clients/update", body, "application/json")
+		if err != nil {
+			http.Error(w, "remote server error: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		writeProxyResponse(w, status, data, ct)
 		return
 	}
 	if statsStore == nil {
@@ -1700,6 +1784,23 @@ func handleXrayClientRemove(w http.ResponseWriter, r *http.Request) {
 	uuid := r.URL.Query().Get("uuid")
 	if inboundTag == "" || uuid == "" {
 		http.Error(w, "inbound_tag and uuid required", http.StatusBadRequest)
+		return
+	}
+	if ms, remote, err := managedServerFromID(r.Context(), statsStore, requestedServerID(r)); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	} else if remote {
+		if sess := sessionFromCtx(r.Context()); sess != nil && sess.Role == RoleReseller && !remoteXrayClientOwned(r.Context(), ms, uuid, sess.Username) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		remotePath := "/api/xray/clients/remove?inbound_tag=" + url.QueryEscape(inboundTag) + "&uuid=" + url.QueryEscape(uuid)
+		status, data, ct, err := proxyManagedServer(r.Context(), ms, http.MethodDelete, remotePath, nil, "application/json")
+		if err != nil {
+			http.Error(w, "remote server error: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		writeProxyResponse(w, status, data, ct)
 		return
 	}
 

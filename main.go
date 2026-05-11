@@ -17,6 +17,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -1114,6 +1115,9 @@ func NewStore(dsn string) (*Store, error) {
 	if err := store.EnsureAdminUsersSchema(ctx); err != nil {
 		return nil, err
 	}
+	if err := store.EnsureManagedServersSchema(ctx); err != nil {
+		return nil, err
+	}
 	return store, nil
 }
 
@@ -1367,6 +1371,12 @@ func startAdminAPI(store *Store, addr string, adminDir string) {
 	mux.Handle("/api/resellers/create", saSession(http.HandlerFunc(handleCreateReseller(store))))
 	mux.Handle("/api/resellers/delete", saSession(http.HandlerFunc(handleDeleteReseller(store))))
 
+	// Master/slave server management. Superadmins can add slave nodes; all authenticated
+	// users can read the enabled server list to pick where accounts are created.
+	mux.Handle("/api/servers", sessionMiddleware(http.HandlerFunc(handleServers(store))))
+	mux.Handle("/api/servers/test", saSession(http.HandlerFunc(handleServerTest(store))))
+	mux.Handle("/api/servers/config", saSession(http.HandlerFunc(handleManagedServerConfig(store))))
+
 	// Xray-core management. Service/config/log actions are superadmin-only;
 	// authenticated resellers may list inbounds and manage their own Xray clients.
 	mux.Handle("/api/xray/status", sessionMiddleware(http.HandlerFunc(handleXrayStatus)))
@@ -1425,6 +1435,7 @@ type UserDTO struct {
 	AllowStaticPassword bool       `json:"allow_static_password"`
 	TOTPEnabled         bool       `json:"totp_enabled"`
 	OwnerUsername       string     `json:"owner_username,omitempty"`
+	ServerID            string     `json:"server_id,omitempty"`
 }
 
 func handleListUsers(w http.ResponseWriter, r *http.Request) {
@@ -1434,6 +1445,13 @@ func handleListUsers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sess := sessionFromCtx(r.Context())
+	filterOwner := ""
+	if sess != nil && sess.Role == RoleReseller {
+		filterOwner = sess.Username
+	}
+	if proxyManagedServerFromRequest(w, r, statsStore, "/api/users", nil, filterOwner) {
+		return
+	}
 	states := userMgr.List()
 	out := make([]UserDTO, 0, len(states))
 	for _, u := range states {
@@ -1483,6 +1501,8 @@ type UserPayload struct {
 	TOTPWindow          int     `json:"totp_window"`
 	TOTPDigits          int     `json:"totp_digits"`
 	AllowStaticPassword bool    `json:"allow_static_password"`
+	OwnerUsername       string  `json:"owner_username,omitempty"`
+	ServerID            string  `json:"server_id,omitempty"`
 }
 
 func handleCreateUser(store *Store) http.HandlerFunc {
@@ -1507,6 +1527,27 @@ func handleCreateUser(store *Store) http.HandlerFunc {
 		}
 
 		ctx := r.Context()
+		if ms, remote, err := managedServerFromID(ctx, store, p.ServerID); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		} else if remote {
+			if !ms.EnableSSH {
+				http.Error(w, "SSH creation is disabled for this server", http.StatusForbidden)
+				return
+			}
+			if sess := sessionFromCtx(ctx); sess != nil && sess.Role == RoleReseller {
+				p.OwnerUsername = sess.Username
+			}
+			p.ServerID = ""
+			body, _ := json.Marshal(p)
+			status, data, ct, err := proxyManagedServer(ctx, ms, http.MethodPost, "/api/users/create", body, "application/json")
+			if err != nil {
+				http.Error(w, "remote server error: "+err.Error(), http.StatusBadGateway)
+				return
+			}
+			writeProxyResponse(w, status, data, ct)
+			return
+		}
 
 		// Decide what password to use:
 		// - if payload has non-empty password -> use it
@@ -1557,6 +1598,8 @@ func handleCreateUser(store *Store) http.HandlerFunc {
 					return
 				}
 			}
+		} else if sess != nil && sess.Role == RoleSuperAdmin && strings.TrimSpace(p.OwnerUsername) != "" {
+			ownerUsername = strings.TrimSpace(p.OwnerUsername)
 		}
 
 		cfg := UserConfig{
@@ -1606,6 +1649,23 @@ func handleDeleteUser(store *Store) http.HandlerFunc {
 		}
 
 		ctx := r.Context()
+		if ms, remote, err := managedServerFromID(ctx, store, requestedServerID(r)); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		} else if remote {
+			if sess := sessionFromCtx(ctx); sess != nil && sess.Role == RoleReseller && !remoteSSHUserOwned(ctx, ms, username, sess.Username) {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+			remotePath := "/api/users/delete?username=" + url.QueryEscape(username)
+			status, data, ct, err := proxyManagedServer(ctx, ms, http.MethodDelete, remotePath, nil, "application/json")
+			if err != nil {
+				http.Error(w, "remote server error: "+err.Error(), http.StatusBadGateway)
+				return
+			}
+			writeProxyResponse(w, status, data, ct)
+			return
+		}
 
 		// Resellers may only delete their own users
 		sess := sessionFromCtx(ctx)

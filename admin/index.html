@@ -52,6 +52,7 @@
         <button class="tab-btn" data-tab="xray"><span class="nav-icon">◇</span><span>Xray Users</span></button>
         <div class="nav-group-label superadmin-only hidden">Administração</div>
         <button class="tab-btn superadmin-only hidden" data-tab="resellers"><span class="nav-icon">🏪</span><span>Revendedores</span></button>
+        <button class="tab-btn superadmin-only hidden" data-tab="servers"><span class="nav-icon">▣</span><span>Servidores</span></button>
         <button class="tab-btn superadmin-only hidden" data-tab="stats"><span class="nav-icon">📊</span><span>Servidor</span></button>
         <button class="tab-btn superadmin-only hidden" data-tab="vnstat"><span class="nav-icon">⇅</span><span>Tráfego</span></button>
         <button class="tab-btn superadmin-only hidden" data-tab="logs"><span class="nav-icon">☰</span><span>Logs</span></button>
@@ -199,6 +200,18 @@
       </div>
     </div>
 
+    <div id="sshServerPickerCard" class="card hidden" style="margin-bottom:12px;">
+      <div class="card-hdr">
+        <div class="card-title">Target server</div>
+        <span class="chip">master/slave</span>
+      </div>
+      <div class="form-grid" style="grid-template-columns:1fr auto;align-items:end;">
+        <div class="field"><label>Create/list SSH users on</label><select id="sshServerSelect"></select></div>
+        <button class="btn btn-ghost btn-sm" type="button" id="reloadServersBtn">Reload servers</button>
+      </div>
+      <div class="hint" id="sshServerHint">Servers with SSH enabled are available here.</div>
+    </div>
+
     <div class="grid2">
       <!-- Users list -->
       <div class="card">
@@ -288,6 +301,18 @@
         <span><strong id="xrayResellerQuotaRemaining">--</strong><small>disponíveis</small></span>
         <span><strong id="xrayResellerQuotaMix">SSH -- · Xray --</strong><small>divisão</small></span>
       </div>
+    </div>
+
+    <div id="xrayServerPickerCard" class="card hidden" style="margin-bottom:12px;">
+      <div class="card-hdr">
+        <div class="card-title">Target server</div>
+        <span class="chip">master/slave</span>
+      </div>
+      <div class="form-grid" style="grid-template-columns:1fr auto;align-items:end;">
+        <div class="field"><label>Create/list Xray users on</label><select id="xrayServerSelect"></select></div>
+        <button class="btn btn-ghost btn-sm" type="button" id="reloadServersBtn2">Reload servers</button>
+      </div>
+      <div class="hint" id="xrayServerHint">Servers with Xray enabled are available here.</div>
     </div>
 
     <!-- Status -->
@@ -551,6 +576,64 @@
       </div>
     </div>
   </div><!-- /tab-resellers -->
+
+  <!-- ═══════════ Servers Tab (superadmin only) ═══════════ -->
+  <div class="tab-pane" id="tab-servers">
+    <div id="serversListView">
+      <div class="grid2">
+        <div class="card">
+          <div class="card-hdr">
+            <div class="card-title">Managed servers <span class="chip" id="serversCountChip">0</span></div>
+            <div class="card-actions"><button class="btn btn-ghost btn-sm" id="refreshServersBtn" type="button">Reload</button></div>
+          </div>
+          <div class="tbl-wrap">
+            <table>
+              <thead><tr><th>Name</th><th>URL</th><th>Options</th><th>Status</th><th>Actions</th></tr></thead>
+              <tbody id="serversBody"></tbody>
+            </table>
+          </div>
+          <div class="statusbar"><span id="serversStatus">Add slave nodes so the master can create SSH/Xray users remotely.</span></div>
+        </div>
+
+        <div class="card">
+          <div class="card-hdr"><div class="card-title" id="serverFormTitle">Add / edit server</div></div>
+          <form id="serverForm">
+            <input type="hidden" id="srvID"/>
+            <div class="form-grid">
+              <div class="field"><label>Name</label><input id="srvName" placeholder="Brazil Node 01"/></div>
+              <div class="field"><label>Base URL</label><input id="srvBaseURL" placeholder="https://node.example.com:8080"/></div>
+              <div class="field"><label>Admin username</label><input id="srvAdminUser" placeholder="admin"/></div>
+              <div class="field"><label>Admin key / password</label><input id="srvAdminKey" type="password" placeholder="leave blank to keep saved key"/></div>
+              <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;"><input type="checkbox" id="srvEnableSSH" checked/> SSH enabled</label>
+              <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;"><input type="checkbox" id="srvEnableXray" checked/> Xray enabled</label>
+              <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;"><input type="checkbox" id="srvIsActive" checked/> Active</label>
+            </div>
+            <div class="form-actions" style="margin-top:8px;">
+              <button class="btn" type="submit" id="saveServerBtn">Save server</button>
+              <button class="btn btn-ghost" type="button" id="testServerBtn">Test</button>
+              <button class="btn btn-ghost" type="button" id="clearServerFormBtn">New</button>
+            </div>
+            <div id="serverFormStatus" class="hint" style="margin-top:6px;"></div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <div id="serverConfigSubpage" class="hidden">
+      <div class="card">
+        <div class="card-hdr">
+          <div class="card-title">Configure server <span class="chip" id="cfgServerName">--</span></div>
+          <div class="card-actions">
+            <button class="btn btn-ghost btn-sm" id="backToServersBtn" type="button">Back</button>
+            <button class="btn btn-ghost btn-sm" id="loadManagedConfigBtn" type="button">Reload config</button>
+            <button class="btn btn-sm" id="saveManagedConfigBtn" type="button">Save config</button>
+          </div>
+        </div>
+        <textarea id="managedConfigEditor" rows="24" style="width:100%;box-sizing:border-box;background:var(--input-bg);border:1px solid var(--border);border-radius:8px;color:inherit;padding:10px;font-family:monospace;font-size:.75rem;resize:vertical;"></textarea>
+        <div class="statusbar"><span id="managedConfigStatus">Select Configure on a server to edit that node config.</span></div>
+      </div>
+    </div>
+  </div><!-- /tab-servers -->
 
   <!-- ═══════════ Stats Tab (superadmin only) ═══════════ -->
   <div class="tab-pane" id="tab-stats">
@@ -872,6 +955,6 @@
 </div><!-- /shell -->
 </div><!-- /app -->
 
-<script defer src="assets/app.js?v=20260510black2"></script>
+<script defer src="assets/app.js?v=20260511servers1"></script>
 </body>
 </html>
