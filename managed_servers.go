@@ -296,6 +296,15 @@ func proxyManagedServer(ctx context.Context, ms *ManagedServer, method, path str
 	return resp.StatusCode, data, resp.Header.Get("Content-Type"), nil
 }
 
+func handleManagedProxyOrLocal(store *Store, local http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if proxyManagedServerFromRequest(w, r, store, "", nil, "") {
+			return
+		}
+		local(w, r)
+	}
+}
+
 func writeProxyResponse(w http.ResponseWriter, status int, body []byte, contentType string) {
 	if contentType != "" {
 		w.Header().Set("Content-Type", contentType)

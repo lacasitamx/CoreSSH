@@ -1392,13 +1392,13 @@ func startAdminAPI(store *Store, addr string, adminDir string) {
 	mux.Handle("/api/xray/clients/remove", sessionMiddleware(http.HandlerFunc(handleXrayClientRemove)))
 
 	// Superadmin-only: TLS certificate generation
-	mux.Handle("/api/tls/generate-selfsigned", saSession(http.HandlerFunc(handleTLSGenerateSelfSigned)))
-	mux.Handle("/api/tls/letsencrypt", saSession(http.HandlerFunc(handleTLSLetsEncrypt)))
-	mux.Handle("/api/tls/upload-pem", saSession(http.HandlerFunc(handleTLSUploadPEM)))
+	mux.Handle("/api/tls/generate-selfsigned", saSession(handleManagedProxyOrLocal(store, handleTLSGenerateSelfSigned)))
+	mux.Handle("/api/tls/letsencrypt", saSession(handleManagedProxyOrLocal(store, handleTLSLetsEncrypt)))
+	mux.Handle("/api/tls/upload-pem", saSession(handleManagedProxyOrLocal(store, handleTLSUploadPEM)))
 
 	// Superadmin-only: DNSTT key management
-	mux.Handle("/api/dnstt/genkey", saSession(http.HandlerFunc(handleDnsttGenKey)))
-	mux.Handle("/api/dnstt/pubkey", saSession(http.HandlerFunc(handleDnsttGetPubKey)))
+	mux.Handle("/api/dnstt/genkey", saSession(handleManagedProxyOrLocal(store, handleDnsttGenKey)))
+	mux.Handle("/api/dnstt/pubkey", saSession(handleManagedProxyOrLocal(store, handleDnsttGetPubKey)))
 
 	// Superadmin-only: server config (read/write config.json + live banner apply)
 	mux.Handle("/api/server/config", saSession(http.HandlerFunc(handleServerConfig)))

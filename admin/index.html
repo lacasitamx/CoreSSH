@@ -620,7 +620,7 @@
     </div>
 
     <div id="serverConfigSubpage" class="hidden">
-      <div class="card">
+      <div class="card" style="margin-bottom:12px;">
         <div class="card-hdr">
           <div class="card-title">Configure server <span class="chip" id="cfgServerName">--</span></div>
           <div class="card-actions">
@@ -629,8 +629,151 @@
             <button class="btn btn-sm" id="saveManagedConfigBtn" type="button">Save config</button>
           </div>
         </div>
-        <textarea id="managedConfigEditor" rows="24" style="width:100%;box-sizing:border-box;background:var(--input-bg);border:1px solid var(--border);border-radius:8px;color:inherit;padding:10px;font-family:monospace;font-size:.75rem;resize:vertical;"></textarea>
-        <div class="statusbar"><span id="managedConfigStatus">Select Configure on a server to edit that node config.</span></div>
+        <div class="statusbar"><span id="managedConfigStatus">Select Configure on a server to edit that node config.</span><span class="hint">This visual editor writes the same config.json on the selected node.</span></div>
+      </div>
+
+      <div class="grid2">
+        <div>
+          <div class="card">
+            <div class="card-hdr"><div class="card-title">Network</div><span class="chip green">live</span></div>
+            <div class="field">
+              <label>Main Listen (SSH / HTTP)</label>
+              <input type="text" id="managedCfgListen" placeholder="0.0.0.0:80"/>
+            </div>
+            <div class="field" style="margin-top:8px;">
+              <label>Extra Listen Addresses <span class="hint">(one per line, e.g. 0.0.0.0:8080)</span></label>
+              <textarea id="managedCfgExtraListen" rows="4" style="width:100%;box-sizing:border-box;background:var(--input-bg);border:1px solid var(--border);border-radius:8px;color:inherit;padding:10px;resize:vertical;"></textarea>
+            </div>
+          </div>
+
+          <div class="card" style="margin-top:12px;">
+            <div class="card-hdr"><div class="card-title">SSH & General</div></div>
+            <div class="form-grid">
+              <div class="field"><label>Default Upload Limit (Mbps)</label><input type="number" id="managedCfgLimitUp" min="0" placeholder="0"/></div>
+              <div class="field"><label>Default Download Limit (Mbps)</label><input type="number" id="managedCfgLimitDown" min="0" placeholder="0"/></div>
+              <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;"><input type="checkbox" id="managedCfgQuiet"/> Quiet Logs</label>
+              <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;"><input type="checkbox" id="managedCfgUserCount"/> User Count Display</label>
+            </div>
+          </div>
+
+          <div class="card" style="margin-top:12px;">
+            <div class="card-hdr"><div class="card-title">SSH Banner</div><span class="chip green">live</span></div>
+            <div class="field">
+              <label>Banner Text <span class="hint">(shown to connecting SSH clients)</span></label>
+              <textarea id="managedCfgBanner" rows="5" style="width:100%;box-sizing:border-box;background:var(--input-bg);border:1px solid var(--border);border-radius:8px;color:inherit;padding:10px;resize:vertical;"></textarea>
+            </div>
+            <div class="hint" style="margin-top:6px;">Banner file: /opt/sshpanel/banner.txt</div>
+          </div>
+        </div>
+
+        <div>
+          <div class="card">
+            <div class="card-hdr">
+              <div class="card-title">DNSTT Tunnel</div>
+              <span class="chip green">live</span>
+              <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;margin-left:auto;">
+                <input type="checkbox" id="managedCfgDnsttEnabled" onchange="toggleManagedDnsttFields(this.checked)"/> Enabled
+              </label>
+            </div>
+            <div id="managedDnsttFields" class="form-grid" style="opacity:.4;pointer-events:none;">
+              <div class="field"><label>Domain</label><input type="text" id="managedCfgDnsttDomain" placeholder="t.example.com"/></div>
+              <div class="field"><label>UDP Listen</label><input type="text" id="managedCfgDnsttUDP" placeholder="[::]:5300"/></div>
+              <div class="field" style="grid-column:1/-1">
+                <label>Private Key <span class="hint">auto-saved to /opt/sshpanel/dnstt.key</span></label>
+                <div class="field-row">
+                  <input type="text" id="managedCfgDnsttKey" readonly placeholder="Generate a key first…"/>
+                  <button class="btn btn-ghost btn-sm" type="button" onclick="generateManagedDnsttKey()">Generate</button>
+                  <button class="btn btn-ghost btn-sm" type="button" onclick="loadManagedDnsttPubkey()">Public Key</button>
+                </div>
+                <div id="managedDnsttPubkeyWrap" class="hidden" style="margin-top:6px;padding:8px;border-radius:8px;background:rgba(15,23,42,.9);border:1px solid rgba(55,65,81,.9);">
+                  <div style="font-size:.68rem;color:var(--muted);margin-bottom:4px;">Public Key — share with dnstt clients</div>
+                  <div class="field-row">
+                    <input type="text" id="managedDnsttPubkeyVal" readonly style="font-family:monospace;font-size:.65rem;"/>
+                    <button class="btn btn-ghost btn-sm" type="button" id="managedDnsttCopyBtn" onclick="navigator.clipboard.writeText(document.getElementById('managedDnsttPubkeyVal').value);document.getElementById('managedDnsttCopyBtn').textContent='Copied!';setTimeout(()=>document.getElementById('managedDnsttCopyBtn').textContent='Copy',1500)">Copy</button>
+                  </div>
+                </div>
+                <div id="managedDnsttKeyStatus" class="hint" style="margin-top:4px;"></div>
+              </div>
+              <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;grid-column:1/-1"><input type="checkbox" id="managedCfgDnsttNoStats"/> Disable Stats Log</label>
+              <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;grid-column:1/-1"><input type="checkbox" id="managedCfgDnsttNoConsole"/> Disable Console Log</label>
+            </div>
+          </div>
+
+          <div class="card" style="margin-top:12px">
+            <div class="card-hdr">
+              <div class="card-title">UDP Gateway</div>
+              <span class="chip green">live</span>
+              <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;margin-left:auto;">
+                <input type="checkbox" id="managedCfgUdpgwEnabled" onchange="toggleManagedUdpgwFields(this.checked)"/> Enabled
+              </label>
+            </div>
+            <div id="managedUdpgwFields" class="form-grid" style="opacity:.4;pointer-events:none;">
+              <div class="field"><label>Listen</label><input type="text" id="managedCfgUdpgwListen" placeholder="0.0.0.0:7400"/></div>
+              <div class="field"><label>Max UDP Sessions Per Client <span class="hint">(not total server users)</span></label><input type="number" id="managedCfgUdpgwMaxConns" min="0" placeholder="10"/></div>
+              <div class="field"><label>Idle Timeout</label><input type="text" id="managedCfgUdpgwIdle" placeholder="2m"/></div>
+              <div class="field"><label>Map TTL</label><input type="text" id="managedCfgUdpgwMapTTL" placeholder="90s"/></div>
+              <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;grid-column:1/-1"><input type="checkbox" id="managedCfgUdpgwDebug"/> Debug Logging</label>
+            </div>
+          </div>
+
+          <div class="card" style="margin-top:12px">
+            <div class="card-hdr">
+              <div class="card-title">TLS Forwarders <span class="chip" id="managedTlsCountChip">0</span></div>
+              <span class="chip green">live</span>
+              <button class="btn btn-ghost btn-sm" type="button" onclick="toggleManagedAddTLSForm()">+ Add</button>
+            </div>
+            <div id="managedTlsForwardersList" style="margin-bottom:4px;"></div>
+            <div id="managedAddTLSPanel" class="hidden" style="border:1px solid var(--border);border-radius:8px;padding:10px;margin-top:6px;">
+              <div class="form-grid">
+                <div class="field" style="grid-column:1/-1"><label>Listen Address</label><input type="text" id="managedTlsListenAddr" placeholder="0.0.0.0:443"/></div>
+                <div class="field" style="grid-column:1/-1">
+                  <label>Certificate</label>
+                  <select id="managedTlsCertType" onchange="onManagedTLSTypeChange(this.value)">
+                    <option value="selfsigned">Generate Self-Signed</option>
+                    <option value="letsencrypt">Let's Encrypt (certbot)</option>
+                    <option value="paste">Paste PEM text</option>
+                    <option value="custom">Custom file paths</option>
+                  </select>
+                </div>
+                <div id="managedTlsSSFields" style="grid-column:1/-1"><div class="field"><label>Domain Name <span class="hint">(CN for certificate)</span></label><input type="text" id="managedTlsSSLDomain" placeholder="example.com"/></div></div>
+                <div id="managedTlsLEFields" class="hidden" style="grid-column:1/-1;display:none;grid-template-columns:1fr 1fr;gap:8px;">
+                  <div class="field"><label>Domain</label><input type="text" id="managedTlsLEDomain" placeholder="example.com"/></div>
+                  <div class="field"><label>Email</label><input type="text" id="managedTlsLEEmail" placeholder="admin@example.com"/></div>
+                </div>
+                <div id="managedTlsCustomFields" class="hidden" style="grid-column:1/-1;display:none;grid-template-columns:1fr 1fr;gap:8px;">
+                  <div class="field"><label>Cert File</label><input type="text" id="managedTlsCustomCert" placeholder="/path/to/fullchain.pem"/></div>
+                  <div class="field"><label>Key File</label><input type="text" id="managedTlsCustomKey" placeholder="/path/to/privkey.pem"/></div>
+                </div>
+                <div id="managedTlsPasteFields" class="hidden" style="grid-column:1/-1;display:none;">
+                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                    <div class="field"><label>Certificate PEM</label><textarea id="managedTlsPasteCert" rows="5" placeholder="-----BEGIN CERTIFICATE-----&#10;…" style="font-family:monospace;font-size:.7rem;width:100%;box-sizing:border-box;resize:vertical;background:var(--input-bg);border:1px solid var(--border);border-radius:4px;color:inherit;padding:4px;"></textarea></div>
+                    <div class="field"><label>Private Key PEM</label><textarea id="managedTlsPasteKey" rows="5" placeholder="-----BEGIN EC PRIVATE KEY-----&#10;…" style="font-family:monospace;font-size:.7rem;width:100%;box-sizing:border-box;resize:vertical;background:var(--input-bg);border:1px solid var(--border);border-radius:4px;color:inherit;padding:4px;"></textarea></div>
+                  </div>
+                  <div class="field" style="margin-top:6px;"><label>Name <span class="hint">(storage folder, e.g. my-cert)</span></label><input type="text" id="managedTlsPasteName" placeholder="my-cert"/></div>
+                </div>
+              </div>
+              <div class="form-actions" style="margin-top:8px;">
+                <button class="btn btn-sm" type="button" onclick="addManagedTLSForwarder()">Add Forwarder</button>
+                <button class="btn btn-ghost btn-sm" type="button" onclick="toggleManagedAddTLSForm()">Cancel</button>
+              </div>
+              <div id="managedTlsAddStatus" class="hint" style="margin-top:4px;"></div>
+            </div>
+          </div>
+
+          <div class="card" style="margin-top:12px">
+            <div class="card-hdr"><div class="card-title">Xray Core</div><span class="chip green">live</span></div>
+            <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;margin-top:4px;"><input type="checkbox" id="managedCfgXrayEnabled"/> Enabled</label>
+            <div class="hint" style="margin-top:6px;color:var(--muted);">Binary: /opt/sshpanel/xray &nbsp;·&nbsp; Config: /opt/sshpanel/xray_config.json &nbsp;·&nbsp; Online counters use Xray Stats API on 127.0.0.1:10085</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="save-bar">
+        <div class="card-actions save-bar-actions">
+          <button class="btn" id="saveManagedConfigBottomBtn" type="button">Save Config</button>
+          <button class="btn btn-ghost" id="reloadManagedConfigBottomBtn" type="button">Reload</button>
+        </div>
+        <span class="hint">All service changes apply live on the selected node.</span>
       </div>
     </div>
   </div><!-- /tab-servers -->
@@ -955,6 +1098,6 @@
 </div><!-- /shell -->
 </div><!-- /app -->
 
-<script defer src="assets/app.js?v=20260511servers1"></script>
+<script defer src="assets/app.js?v=20260511servers2"></script>
 </body>
 </html>

@@ -6,6 +6,7 @@ let currentUser  = "";
 let statsTimer   = null, usersTimer = null, xrayTimer = null;
 let formCollapsed = true;
 let tlsForwardersState = [];
+let managedTlsForwardersState = [];
 let editingXrayClientId = null;
 let wzInbounds = [];
 let dashboardCache = { sshUsers: [], xrayInbounds: [], me: null };
@@ -1387,6 +1388,8 @@ document.getElementById("testServerBtn")?.addEventListener("click", testServerFo
 document.getElementById("backToServersBtn")?.addEventListener("click", () => showServerListView());
 document.getElementById("loadManagedConfigBtn")?.addEventListener("click", () => loadManagedServerConfig(configuringServerID));
 document.getElementById("saveManagedConfigBtn")?.addEventListener("click", saveManagedServerConfig);
+document.getElementById("saveManagedConfigBottomBtn")?.addEventListener("click", saveManagedServerConfig);
+document.getElementById("reloadManagedConfigBottomBtn")?.addEventListener("click", () => loadManagedServerConfig(configuringServerID));
 serverForm?.addEventListener("submit", async e => {
   e.preventDefault();
   await saveServerForm();
@@ -1576,34 +1579,278 @@ function openManagedServerConfig(id) {
   loadManagedServerConfig(configuringServerID);
 }
 
+function toggleManagedDnsttFields(on) {
+  const el = document.getElementById("managedDnsttFields");
+  if (!el) return;
+  el.style.opacity = on ? "1" : ".4";
+  el.style.pointerEvents = on ? "" : "none";
+}
+function toggleManagedUdpgwFields(on) {
+  const el = document.getElementById("managedUdpgwFields");
+  if (!el) return;
+  el.style.opacity = on ? "1" : ".4";
+  el.style.pointerEvents = on ? "" : "none";
+}
+
 async function loadManagedServerConfig(id) {
   if (!id) return;
-  managedConfigStatus.textContent = "Loading config…";
+  const st = document.getElementById("managedConfigStatus");
+  if (st) st.textContent = "Loading config…";
   try {
     const res = await api(withServerParam("/api/servers/config", id));
     if (!res.ok) throw new Error(await res.text());
-    const text = await res.text();
-    try { managedConfigEditor.value = JSON.stringify(JSON.parse(text), null, 2); }
-    catch { managedConfigEditor.value = text; }
-    managedConfigStatus.textContent = "Config loaded.";
+    const c = await res.json();
+
+    document.getElementById("managedCfgListen").value = c.listen || "";
+    document.getElementById("managedCfgExtraListen").value = (c.extra_listen || []).join("\n");
+
+    document.getElementById("managedCfgLimitUp").value = c.default_limit_mbps_up || 0;
+    document.getElementById("managedCfgLimitDown").value = c.default_limit_mbps_down || 0;
+    document.getElementById("managedCfgQuiet").checked = !!c.quiet;
+    document.getElementById("managedCfgUserCount").checked = !!c.user_count;
+    document.getElementById("managedCfgBanner").value = c.banner || "";
+
+    const hasDnstt = !!c.dnstt;
+    document.getElementById("managedCfgDnsttEnabled").checked = hasDnstt;
+    toggleManagedDnsttFields(hasDnstt);
+    const d = c.dnstt || {};
+    document.getElementById("managedCfgDnsttDomain").value = d.domain || "";
+    document.getElementById("managedCfgDnsttUDP").value = d.udp_listen || "";
+    document.getElementById("managedCfgDnsttKey").value = d.privkey_file || "/opt/sshpanel/dnstt.key";
+    document.getElementById("managedCfgDnsttNoStats").checked = !!d.disable_stats_log;
+    document.getElementById("managedCfgDnsttNoConsole").checked = !!d.disable_console_log;
+
+    const hasUdpgw = !!c.udpgw;
+    document.getElementById("managedCfgUdpgwEnabled").checked = hasUdpgw;
+    toggleManagedUdpgwFields(hasUdpgw);
+    const u = c.udpgw || {};
+    document.getElementById("managedCfgUdpgwListen").value = u.listen || "";
+    document.getElementById("managedCfgUdpgwMaxConns").value = u.max_client_conns || 0;
+    document.getElementById("managedCfgUdpgwIdle").value = u.idle_timeout || "";
+    document.getElementById("managedCfgUdpgwMapTTL").value = u.map_ttl || "";
+    document.getElementById("managedCfgUdpgwDebug").checked = !!u.debug;
+
+    managedTlsForwardersState = c.tls_forwarders || [];
+    renderManagedTLSForwarders();
+
+    const x = c.xray || {};
+    document.getElementById("managedCfgXrayEnabled").checked = !!x.enabled;
+
+    document.getElementById("managedDnsttPubkeyWrap")?.classList.add("hidden");
+    if (st) st.textContent = "Config loaded.";
   } catch (e) {
     if (e.message === "auth") doAuthError();
-    else managedConfigStatus.textContent = "Error: " + e.message;
+    else if (st) st.textContent = "Error: " + e.message;
   }
+}
+
+function managedConfigFromForm() {
+  const extraLines = document.getElementById("managedCfgExtraListen").value
+    .split("\n").map(s => s.trim()).filter(Boolean);
+  return {
+    listen: document.getElementById("managedCfgListen").value.trim(),
+    extra_listen: extraLines,
+    host_key_file: "/opt/sshpanel/ssh_host_rsa_key",
+    admin_dir: "/opt/sshpanel/admin",
+    default_limit_mbps_up: parseInt(document.getElementById("managedCfgLimitUp").value || "0", 10),
+    default_limit_mbps_down: parseInt(document.getElementById("managedCfgLimitDown").value || "0", 10),
+    quiet: document.getElementById("managedCfgQuiet").checked,
+    user_count: document.getElementById("managedCfgUserCount").checked,
+    banner: document.getElementById("managedCfgBanner").value,
+    banner_file: "/opt/sshpanel/banner.txt",
+    dnstt: document.getElementById("managedCfgDnsttEnabled").checked ? {
+      domain: document.getElementById("managedCfgDnsttDomain").value.trim(),
+      udp_listen: document.getElementById("managedCfgDnsttUDP").value.trim(),
+      privkey_file: document.getElementById("managedCfgDnsttKey").value.trim(),
+      disable_stats_log: document.getElementById("managedCfgDnsttNoStats").checked,
+      disable_console_log: document.getElementById("managedCfgDnsttNoConsole").checked,
+    } : null,
+    udpgw: document.getElementById("managedCfgUdpgwEnabled").checked ? {
+      listen: document.getElementById("managedCfgUdpgwListen").value.trim(),
+      max_client_conns: parseInt(document.getElementById("managedCfgUdpgwMaxConns").value || "0", 10),
+      idle_timeout: document.getElementById("managedCfgUdpgwIdle").value.trim(),
+      map_ttl: document.getElementById("managedCfgUdpgwMapTTL").value.trim(),
+      debug: document.getElementById("managedCfgUdpgwDebug").checked,
+    } : null,
+    tls_forwarders: managedTlsForwardersState,
+    xray: {
+      enabled: document.getElementById("managedCfgXrayEnabled").checked,
+      bin_path: "/opt/sshpanel/xray",
+      config_file: "/opt/sshpanel/xray_config.json",
+      api_server: "127.0.0.1:10085",
+      online_window_seconds: 90,
+      stats_poll_seconds: 15,
+    },
+  };
 }
 
 async function saveManagedServerConfig() {
   if (!configuringServerID) return;
-  const text = managedConfigEditor.value.trim();
-  try { JSON.parse(text); } catch (e) { managedConfigStatus.textContent = "Invalid JSON: " + e.message; return; }
-  managedConfigStatus.textContent = "Saving config…";
+  const st = document.getElementById("managedConfigStatus");
+  if (st) st.textContent = "Saving config…";
   try {
-    const res = await api(withServerParam("/api/servers/config", configuringServerID), { method:"POST", body: text });
+    const cfg = managedConfigFromForm();
+    const res = await api(withServerParam("/api/servers/config", configuringServerID), { method:"POST", body: JSON.stringify(cfg) });
     if (!res.ok) throw new Error(await res.text());
-    managedConfigStatus.textContent = "Saved and applied.";
+    const report = await res.json().catch(() => null);
+    const warnings = report?.warnings || [];
+    const bad = Object.entries(report?.services || {}).filter(([_, v]) => v?.enabled && !v?.running);
+    if (warnings.length || bad.length) {
+      const badText = bad.map(([name, v]) => `${name}: ${v.error || "not running"}`).join(" | ");
+      if (st) st.textContent = "Saved live with warnings: " + [...warnings, badText].filter(Boolean).join(" | ");
+    } else if (st) {
+      st.textContent = "Saved and applied live.";
+    }
   } catch (e) {
     if (e.message === "auth") doAuthError();
-    else managedConfigStatus.textContent = "Error: " + e.message;
+    else if (st) st.textContent = "Error: " + e.message;
+  }
+}
+
+function renderManagedTLSForwarders() {
+  const list = document.getElementById("managedTlsForwardersList");
+  const chip = document.getElementById("managedTlsCountChip");
+  if (!list) return;
+  if (chip) chip.textContent = managedTlsForwardersState.length;
+  if (!managedTlsForwardersState.length) {
+    list.innerHTML = '<div class="hint" style="padding:4px 0;">No TLS forwarders configured.</div>';
+    return;
+  }
+  list.innerHTML = "";
+  managedTlsForwardersState.forEach((fw, i) => {
+    const row = document.createElement("div");
+    row.style = "display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--border);font-size:.73rem;";
+    row.innerHTML = `<span style="flex:1;font-family:monospace;">${escapeHTML(fw.listen || "")}</span>
+      <span class="hint">${escapeHTML(fw.cert_file ? fw.cert_file.split("/").pop() : "no cert")}</span>`;
+    const delBtn = document.createElement("button");
+    delBtn.className = "btn btn-danger btn-sm";
+    delBtn.textContent = "Remove";
+    delBtn.onclick = () => { managedTlsForwardersState.splice(i,1); renderManagedTLSForwarders(); };
+    row.appendChild(delBtn);
+    list.appendChild(row);
+  });
+}
+
+function toggleManagedAddTLSForm() {
+  const panel = document.getElementById("managedAddTLSPanel");
+  if (!panel) return;
+  panel.classList.toggle("hidden");
+  if (!panel.classList.contains("hidden")) {
+    document.getElementById("managedTlsAddStatus").textContent = "";
+    document.getElementById("managedTlsListenAddr").value = "";
+    document.getElementById("managedTlsSSLDomain").value = "";
+    document.getElementById("managedTlsCertType").value = "selfsigned";
+    onManagedTLSTypeChange("selfsigned");
+  }
+}
+
+function onManagedTLSTypeChange(val) {
+  const setVisible = (id, on, display = "") => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.classList.toggle("hidden", !on);
+    el.style.display = on ? display : "none";
+  };
+  setVisible("managedTlsSSFields", val === "selfsigned", "");
+  setVisible("managedTlsLEFields", val === "letsencrypt", "grid");
+  setVisible("managedTlsPasteFields", val === "paste", "");
+  setVisible("managedTlsCustomFields", val === "custom", "grid");
+}
+
+async function addManagedTLSForwarder() {
+  const st = document.getElementById("managedTlsAddStatus");
+  const listen = document.getElementById("managedTlsListenAddr").value.trim();
+  const certType = document.getElementById("managedTlsCertType").value;
+  if (!listen) { st.textContent = "Listen address required."; return; }
+  let certFile = "", keyFile = "";
+  st.textContent = "Processing…";
+  if (certType === "selfsigned") {
+    const domain = document.getElementById("managedTlsSSLDomain").value.trim();
+    if (!domain) { st.textContent = "Domain required."; return; }
+    try {
+      const res = await api(withServerParam("/api/tls/generate-selfsigned", configuringServerID), { method:"POST", body: JSON.stringify({ domain }) });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      certFile = data.cert_file; keyFile = data.key_file;
+      st.textContent = "Self-signed cert generated.";
+    } catch (e) {
+      if (e.message === "auth") doAuthError();
+      else st.textContent = "Cert error: " + e.message;
+      return;
+    }
+  } else if (certType === "letsencrypt") {
+    const domain = document.getElementById("managedTlsLEDomain").value.trim();
+    const email = document.getElementById("managedTlsLEEmail").value.trim();
+    if (!domain || !email) { st.textContent = "Domain and email required."; return; }
+    st.textContent = "Running certbot… (may take ~30s)";
+    try {
+      const res = await api(withServerParam("/api/tls/letsencrypt", configuringServerID), { method:"POST", body: JSON.stringify({ domain, email }) });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      certFile = data.cert_file; keyFile = data.key_file;
+      st.textContent = "Let's Encrypt cert issued.";
+    } catch (e) {
+      if (e.message === "auth") doAuthError();
+      else st.textContent = "certbot error: " + e.message;
+      return;
+    }
+  } else if (certType === "paste") {
+    const name = document.getElementById("managedTlsPasteName").value.trim();
+    const cert = document.getElementById("managedTlsPasteCert").value.trim();
+    const key = document.getElementById("managedTlsPasteKey").value.trim();
+    if (!name || !cert || !key) { st.textContent = "Name, cert PEM, and key PEM required."; return; }
+    try {
+      const res = await api(withServerParam("/api/tls/upload-pem", configuringServerID), { method:"POST", body: JSON.stringify({ name, cert, key }) });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      certFile = data.cert_file; keyFile = data.key_file;
+      st.textContent = "PEM saved.";
+    } catch (e) {
+      if (e.message === "auth") doAuthError();
+      else st.textContent = "Upload error: " + e.message;
+      return;
+    }
+  } else {
+    certFile = document.getElementById("managedTlsCustomCert").value.trim();
+    keyFile = document.getElementById("managedTlsCustomKey").value.trim();
+    if (!certFile || !keyFile) { st.textContent = "Cert and key paths required."; return; }
+  }
+  managedTlsForwardersState.push({ listen, cert_file: certFile, key_file: keyFile });
+  renderManagedTLSForwarders();
+  document.getElementById("managedAddTLSPanel").classList.add("hidden");
+  st.textContent = "Added. Save config to apply.";
+}
+
+async function generateManagedDnsttKey() {
+  const st = document.getElementById("managedDnsttKeyStatus");
+  if (st) st.textContent = "Generating key…";
+  try {
+    const res = await api(withServerParam("/api/dnstt/genkey", configuringServerID), { method:"POST" });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    document.getElementById("managedCfgDnsttKey").value = data.privkey_file || "/opt/sshpanel/dnstt.key";
+    if (st) st.textContent = "Key generated. Save config to apply.";
+    await loadManagedDnsttPubkey();
+  } catch (e) {
+    if (e.message === "auth") doAuthError();
+    else if (st) st.textContent = "Error: " + e.message;
+  }
+}
+
+async function loadManagedDnsttPubkey() {
+  const st = document.getElementById("managedDnsttKeyStatus");
+  if (st) st.textContent = "Loading public key…";
+  try {
+    const res = await api(withServerParam("/api/dnstt/pubkey", configuringServerID));
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    const val = data.public_key || data.pubkey || "";
+    document.getElementById("managedDnsttPubkeyVal").value = val;
+    document.getElementById("managedDnsttPubkeyWrap")?.classList.remove("hidden");
+    if (st) st.textContent = val ? "Public key loaded." : "No public key returned.";
+  } catch (e) {
+    if (e.message === "auth") doAuthError();
+    else if (st) st.textContent = "Error: " + e.message;
   }
 }
 
@@ -1985,10 +2232,16 @@ function toggleAddTLSForm() {
 }
 
 function onTLSTypeChange(val) {
-  document.getElementById("tlsSSFields").style.display     = val === "selfsigned"  ? "" : "none";
-  document.getElementById("tlsLEFields").style.display     = val === "letsencrypt" ? "grid" : "none";
-  document.getElementById("tlsPasteFields").style.display  = val === "paste"       ? "" : "none";
-  document.getElementById("tlsCustomFields").style.display = val === "custom"      ? "grid" : "none";
+  const setVisible = (id, on, display = "") => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.classList.toggle("hidden", !on);
+    el.style.display = on ? display : "none";
+  };
+  setVisible("tlsSSFields", val === "selfsigned", "");
+  setVisible("tlsLEFields", val === "letsencrypt", "grid");
+  setVisible("tlsPasteFields", val === "paste", "");
+  setVisible("tlsCustomFields", val === "custom", "grid");
 }
 
 async function addTLSForwarder() {
