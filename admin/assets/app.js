@@ -9,6 +9,7 @@ let tlsForwardersState = [];
 let managedTlsForwardersState = [];
 let editingXrayClientId = null;
 let wzInbounds = [];
+let wzLoadedFullConfig = null;
 let dashboardCache = { sshUsers: [], xrayInbounds: [], me: null };
 let currentTab = "dashboard";
 let inboundsRefreshInFlight = false;
@@ -352,6 +353,18 @@ function withServerParam(path, serverID) {
 function selectedSSHServer() { return sshServerSelect?.value || selectedSSHServerID || "local"; }
 function selectedXrayServer() { return xrayServerSelect?.value || selectedXrayServerID || "local"; }
 function serverByID(id) { return serversCache.find(s => String(s.id) === String(id)); }
+function selectedXrayServerLabel() {
+  const id = selectedXrayServer();
+  const srv = serverByID(id);
+  if (srv) return srv.name || srv.base_url || id;
+  return id === "local" ? "Master node" : id;
+}
+function reloadXrayConfigForSelectedServer() {
+  const wizPane = document.getElementById("xrayWizardPane");
+  const jsonPane = document.getElementById("xrayCfgPaneJson");
+  if (jsonPane && !jsonPane.classList.contains("hidden")) return loadXrayCfg();
+  if (wizPane && !wizPane.classList.contains("hidden")) return loadWizardFromConfig();
+}
 
 // ─── Formatters ──────────────────────────────────────────────────────────────
 const fmtPct   = n => (n == null || isNaN(n)) ? "--%"  : n.toFixed(1)+"%";
@@ -1221,31 +1234,35 @@ async function removeClient(tag, uuid) {
 }
 
 async function loadXrayCfg() {
+  if (!xCfgEditor) return;
+  const target = selectedXrayServerLabel();
+  if (xCfgStatus) xCfgStatus.textContent = `Loading config from ${target}…`;
   try {
     const res  = await api(withServerParam("/api/xray/config", selectedXrayServer()));
     if (!res.ok) throw new Error(await res.text());
     const text = await res.text();
     try { xCfgEditor.value = JSON.stringify(JSON.parse(text), null, 2); }
     catch { xCfgEditor.value = text; }
-    xCfgStatus.textContent = t("Config loaded.");
+    if (xCfgStatus) xCfgStatus.textContent = `Config loaded from ${target}.`;
   } catch (e) {
     if (e.message==="auth") doAuthError();
-    else xCfgStatus.textContent = t("Error: {error}", {error: e.message});
+    else if (xCfgStatus) xCfgStatus.textContent = t("Error: {error}", {error: e.message});
   }
 }
 
 async function saveXrayCfg() {
-  const text = xCfgEditor.value.trim();
-  try { JSON.parse(text); } catch(e) { xCfgStatus.textContent = t("Invalid JSON: {error}", {error: e.message}); return; }
-  xCfgStatus.textContent = t("Saving…");
+  const text = (xCfgEditor?.value || "").trim();
+  const target = selectedXrayServerLabel();
+  try { JSON.parse(text); } catch(e) { if (xCfgStatus) xCfgStatus.textContent = t("Invalid JSON: {error}", {error: e.message}); return; }
+  if (xCfgStatus) xCfgStatus.textContent = `Saving config to ${target}…`;
   try {
     const res = await api(withServerParam("/api/xray/config", selectedXrayServer()), { method:"POST", body: text });
     if (!res.ok) throw new Error(await res.text());
-    xCfgStatus.textContent = t("Saved. Restarting Xray…");
+    if (xCfgStatus) xCfgStatus.textContent = `Saved on ${target}. Restarting Xray…`;
     await xrayCtrl("restart");
   } catch (e) {
     if (e.message==="auth") doAuthError();
-    else xCfgStatus.textContent = t("Error: {error}", {error: e.message});
+    else if (xCfgStatus) xCfgStatus.textContent = t("Error: {error}", {error: e.message});
   }
 }
 
@@ -1382,8 +1399,11 @@ xrayServerSelect?.addEventListener("change", () => {
   localStorage.setItem("XRAY_SERVER_ID", selectedXrayServerID);
   lastInboundsStructure = "";
   closeEditXrayClient?.();
+  if (xStatus) xStatus.textContent = `Switched Xray target to ${selectedXrayServerLabel()}.`;
   loadXrayStatus();
   loadInbounds({ force: true });
+  reloadXrayConfigForSelectedServer();
+  loadXrayLogs();
 });
 document.getElementById("reloadServersBtn")?.addEventListener("click", loadServers);
 document.getElementById("reloadServersBtn2")?.addEventListener("click", loadServers);
@@ -1423,17 +1443,17 @@ async function loadServersStatus(options = {}) {
   if (!serversStatusGrid) return;
   try {
     if (!Array.isArray(serversCache) || serversCache.length === 0) await loadServers();
-    const nodes = (serversCache || []).filter(s => s && s.is_active !== false);
+    const nodes = (serversCache || []).filter(Boolean);
     if (serversStatusCountChip) serversStatusCountChip.textContent = String(nodes.length);
     if (!silent) {
-      serversStatusPageStatus && (serversStatusPageStatus.textContent = "Loading server usage...");
-      serversStatusGrid.innerHTML = `<div class="hint">Loading nodes...</div>`;
+      serversStatusPageStatus && (serversStatusPageStatus.textContent = "Loading servers...");
+      serversStatusGrid.innerHTML = `<div class="hint">Loading servers...</div>`;
     }
     const rows = await Promise.all(nodes.map(loadSingleServerStatus));
     renderServersStatusCards(rows);
     if (serversStatusPageStatus) {
       const online = rows.filter(r => r.ok).length;
-      serversStatusPageStatus.textContent = `${online}/${rows.length} nodes online - Updated ${new Date().toLocaleTimeString()}`;
+      serversStatusPageStatus.textContent = `${online}/${rows.length} servers online - Updated ${new Date().toLocaleTimeString()}`;
     }
   } catch (e) {
     if (e.message === "auth") doAuthError();
@@ -1453,6 +1473,7 @@ async function fetchJSONForServer(path, serverID) {
 async function loadSingleServerStatus(server) {
   const id = String(server.id || "local");
   const out = { server, ok: true, error: "", stats: null, users: [], inbounds: [], xray: null };
+  if (server.is_active === false) { out.ok = false; out.error = "disabled"; return out; }
   try {
     out.stats = await fetchJSONForServer("/api/stats", id);
   } catch (e) {
@@ -1556,8 +1577,8 @@ function renderServerSelectors() {
   const hasMultiXray = xrayServers.length > 1;
   sshServerPickerCard?.classList.toggle("hidden", !hasMultiSSH);
   xrayServerPickerCard?.classList.toggle("hidden", !hasMultiXray);
-  if (sshServerHint) sshServerHint.textContent = hasMultiSSH ? "Choose where SSH users are created and listed." : "Only the master node is available for SSH.";
-  if (xrayServerHint) xrayServerHint.textContent = hasMultiXray ? "Choose where Xray clients are created and listed." : "Only the master node is available for Xray.";
+  if (sshServerHint) { sshServerHint.textContent = ""; sshServerHint.classList.add("hidden"); }
+  if (xrayServerHint) { xrayServerHint.textContent = ""; xrayServerHint.classList.add("hidden"); }
   if (dashServers) dashServers.textContent = String(active.length || 1);
   if (dashServerStatus) dashServerStatus.textContent = active.length > 1 ? `${active.length} nodes configured` : "master only";
 }
@@ -2591,16 +2612,25 @@ function setXrayCfgMode(mode) {
   }
 }
 
+document.getElementById("wzLogLevel")?.addEventListener("change", updateFullConfigFromWizard);
+
 function loadWizardFromConfig() {
-  api("/api/xray/config").then(async res => {
-    if (!res.ok) return;
-    try {
-      const cfg = JSON.parse(await res.text());
-      document.getElementById("wzLogLevel").value = cfg.log?.loglevel || "warning";
-      wzInbounds = (cfg.inbounds || []).filter(ib => ib.tag !== "api");
-      renderWzInbounds();
-    } catch {}
-  }).catch(() => {});
+  const target = selectedXrayServerLabel();
+  const st = document.getElementById("wzStatus");
+  if (st) st.textContent = `Loading config from ${target}...`;
+  api(withServerParam("/api/xray/config", selectedXrayServer())).then(async res => {
+    if (!res.ok) throw new Error(await res.text());
+    const raw = await res.text();
+    const cfg = JSON.parse(raw);
+    wzLoadedFullConfig = cfg;
+    document.getElementById("wzLogLevel").value = cfg.log?.loglevel || "warning";
+    wzInbounds = (cfg.inbounds || []).filter(ib => ib.tag !== "api");
+    renderWzInbounds();
+    if (st) st.textContent = `Config loaded from ${target}.`;
+  }).catch(e => {
+    if (e.message === "auth") doAuthError();
+    else if (st) st.textContent = "Error: " + e.message;
+  });
 }
 
 function renderWzInbounds() {
@@ -2633,7 +2663,7 @@ function renderWzInbounds() {
     const delBtn = document.createElement("button");
     delBtn.className = "btn btn-danger btn-sm";
     delBtn.textContent = "Remove";
-    delBtn.onclick = () => { wzInbounds.splice(i,1); renderWzInbounds(); };
+    delBtn.onclick = () => { wzInbounds.splice(i,1); renderWzInbounds(); updateFullConfigFromWizard(); };
     row.appendChild(delBtn);
     list.appendChild(row);
   });
@@ -2784,44 +2814,66 @@ function wzSaveInbound() {
   wzInbounds.push(ib);
   renderWzInbounds();
   document.getElementById("wzAddInboundForm").classList.add("hidden");
+  updateFullConfigFromWizard();
   document.getElementById("wzPort").value = "";
   document.getElementById("wzTag").value  = "";
   document.getElementById("wzListenIP").value = "";
 }
 
-async function applyWizardConfig() {
-  const st = document.getElementById("wzStatus");
-  st.textContent = "Saving…";
-  const apiInbound = {
+
+function ensureXrayApiInbound() {
+  return {
     tag: "api",
     listen: "127.0.0.1",
     port: 10085,
     protocol: "dokodemo-door",
     settings: { address: "127.0.0.1" }
   };
-  const userInbounds = (wzInbounds || []).filter(ib => ib.tag !== "api");
-  const cfg = {
-    log: { loglevel: document.getElementById("wzLogLevel").value },
-    api: { tag: "api", services: ["HandlerService", "LoggerService", "StatsService"] },
-    stats: {},
-    policy: { levels: { "0": { statsUserUplink: true, statsUserDownlink: true } }, system: { statsInboundUplink: true, statsInboundDownlink: true } },
-    inbounds: [apiInbound, ...userInbounds],
-    outbounds: [
-      { tag:"direct",  protocol:"freedom",  settings:{} },
-      { tag:"blocked", protocol:"blackhole", settings:{} },
-      { tag:"api", protocol:"freedom", settings:{} }
-    ],
-    routing: { rules: [{ type: "field", inboundTag: ["api"], outboundTag: "api" }] }
-  };
+}
+
+function updateFullConfigFromWizard() {
+  const cfg = wzLoadedFullConfig && typeof wzLoadedFullConfig === "object" ? JSON.parse(JSON.stringify(wzLoadedFullConfig)) : {};
+  cfg.log = cfg.log || {};
+  cfg.log.loglevel = document.getElementById("wzLogLevel")?.value || cfg.log.loglevel || "warning";
+  const existingInbounds = Array.isArray(cfg.inbounds) ? cfg.inbounds : [];
+  const apiInbound = existingInbounds.find(ib => ib && ib.tag === "api") || ensureXrayApiInbound();
+  cfg.inbounds = [apiInbound, ...(wzInbounds || []).filter(ib => ib && ib.tag !== "api")];
+  if (!cfg.api) cfg.api = { tag: "api", services: ["HandlerService", "LoggerService", "StatsService"] };
+  if (!cfg.stats) cfg.stats = {};
+  if (!cfg.policy) cfg.policy = { levels: { "0": { statsUserUplink: true, statsUserDownlink: true } }, system: { statsInboundUplink: true, statsInboundDownlink: true } };
+  if (!cfg.outbounds) cfg.outbounds = [
+    { tag:"direct", protocol:"freedom", settings:{} },
+    { tag:"blocked", protocol:"blackhole", settings:{} },
+    { tag:"api", protocol:"freedom", settings:{} }
+  ];
+  if (!cfg.routing) cfg.routing = { rules: [{ type: "field", inboundTag: ["api"], outboundTag: "api" }] };
+  wzLoadedFullConfig = cfg;
+  return cfg;
+}
+
+async function applyWizardConfig() {
+  const st = document.getElementById("wzStatus");
+  const target = selectedXrayServerLabel();
+  let cfg;
   try {
-    const res = await api("/api/xray/config", { method:"POST", body: JSON.stringify(cfg, null, 2) });
+    cfg = updateFullConfigFromWizard();
+    if (!cfg || typeof cfg !== "object") throw new Error("config is not loaded");
+  } catch(e) {
+    if (st) st.textContent = `Invalid visual config: ${e.message}`;
+    return;
+  }
+  if (st) st.textContent = `Saving config to ${target}...`;
+  try {
+    const res = await api(withServerParam("/api/xray/config", selectedXrayServer()), { method:"POST", body: JSON.stringify(cfg, null, 2) });
     if (!res.ok) throw new Error(await res.text());
-    st.textContent = "Saved. Restarting Xray…";
+    wzLoadedFullConfig = cfg;
+    if (st) st.textContent = `Saved on ${target}. Restarting Xray...`;
     await xrayCtrl("restart");
-    st.textContent = "Config saved and Xray restarted.";
+    if (st) st.textContent = `Config saved on ${target} and Xray restarted.`;
+    setTimeout(() => { loadXrayStatus(); loadInbounds({ force: true }); }, 700);
   } catch (e) {
     if (e.message==="auth") doAuthError();
-    else st.textContent = "Error: " + e.message;
+    else if (st) st.textContent = "Error: " + e.message;
   }
 }
 

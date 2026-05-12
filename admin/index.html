@@ -16,7 +16,7 @@
   setTimeout(function(){document.documentElement.classList.remove("i18n-pending");},2500);
 })();
 </script>
-<link rel="stylesheet" href="assets/app.css?v=20260511serverstatus1"/>
+<link rel="stylesheet" href="assets/app.css?v=20260511xrayfullconfig2"/>
 </head>
 <body>
 <div class="app">
@@ -310,10 +310,10 @@
         <span class="chip">master/slave</span>
       </div>
       <div class="form-grid" style="grid-template-columns:1fr auto;align-items:end;">
-        <div class="field"><label>Create/list Xray users on</label><select id="xrayServerSelect"></select></div>
+        <div class="field"><label>Manage Xray users and config on</label><select id="xrayServerSelect"></select></div>
         <button class="btn btn-ghost btn-sm" type="button" id="reloadServersBtn2">Reload servers</button>
       </div>
-      <div class="hint" id="xrayServerHint">Servers with Xray enabled are available here.</div>
+      <div class="hint hidden" id="xrayServerHint"></div>
     </div>
 
     <!-- Status -->
@@ -789,8 +789,7 @@
         </div>
       </div>
       <div class="statusbar">
-        <span id="serversStatusPageStatus">Small usage graphs for every active master/slave node.</span>
-        <span class="hint">Auto-refreshes while this page is open.</span>
+        <span id="serversStatusPageStatus">Ready.</span>
       </div>
     </div>
     <div class="servers-status-grid" id="serversStatusGrid"></div>
@@ -1116,6 +1115,6 @@
 </div><!-- /shell -->
 </div><!-- /app -->
 
-<script defer src="assets/app.js?v=20260511servers2"></script>
+<script defer src="assets/app.js?v=20260511xrayfullconfig2"></script>
 </body>
 </html>

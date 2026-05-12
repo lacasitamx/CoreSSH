@@ -591,3 +591,39 @@ body.drawer-open .drawer-backdrop,body.sidebar-open .drawer-backdrop{display:blo
   .servers-status-grid{grid-template-columns:1fr;}
   .server-mini-grid{grid-template-columns:1fr;}
 }
+
+
+/* --- Xray full config and select color fixes --- */
+.field select,
+select,
+#xrayServerSelect,
+#wzLogLevel,
+#wzProtocol,
+#wzNetwork,
+#wzXHTTPMode,
+#wzTLS,
+#wzSSMethod {
+  color:#f3f7ff !important;
+  background:#070b12 !important;
+  border-color:rgba(34,211,238,.26) !important;
+  color-scheme:dark;
+}
+.field select option,
+select option,
+.field select optgroup,
+select optgroup {
+  color:#f3f7ff !important;
+  background:#0b111a !important;
+}
+#xrayServerHint.hidden,
+#sshServerHint.hidden { display:none !important; }
+
+select option:checked,
+.field select option:checked {
+  background:#1f2a3a !important;
+  color:#f8fafc !important;
+}
+select:disabled {
+  color:#94a3b8 !important;
+  background:#070b12 !important;
+}
