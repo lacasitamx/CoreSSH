@@ -10,6 +10,9 @@ let managedTlsForwardersState = [];
 let editingXrayClientId = null;
 let wzInbounds = [];
 let wzLoadedFullConfig = null;
+let wzLoadedConfigText = "";
+let wzLoadedServerID = null;
+let wzDirty = false;
 let dashboardCache = { sshUsers: [], xrayInbounds: [], me: null };
 let currentTab = "dashboard";
 let inboundsRefreshInFlight = false;
@@ -2612,22 +2615,37 @@ function setXrayCfgMode(mode) {
   }
 }
 
-document.getElementById("wzLogLevel")?.addEventListener("change", updateFullConfigFromWizard);
+document.getElementById("wzLogLevel")?.addEventListener("change", () => { wzDirty = true; });
+
+function cloneJsonSafe(obj) {
+  return obj && typeof obj === "object" ? JSON.parse(JSON.stringify(obj)) : obj;
+}
 
 function loadWizardFromConfig() {
+  const serverID = selectedXrayServer();
   const target = selectedXrayServerLabel();
   const st = document.getElementById("wzStatus");
+  wzLoadedServerID = null;
+  wzDirty = false;
   if (st) st.textContent = `Loading config from ${target}...`;
-  api(withServerParam("/api/xray/config", selectedXrayServer())).then(async res => {
+  api(withServerParam("/api/xray/config", serverID)).then(async res => {
     if (!res.ok) throw new Error(await res.text());
     const raw = await res.text();
     const cfg = JSON.parse(raw);
-    wzLoadedFullConfig = cfg;
+    wzLoadedServerID = serverID || "local";
+    wzLoadedConfigText = raw;
+    wzLoadedFullConfig = cloneJsonSafe(cfg);
     document.getElementById("wzLogLevel").value = cfg.log?.loglevel || "warning";
-    wzInbounds = (cfg.inbounds || []).filter(ib => ib.tag !== "api");
+    wzInbounds = cloneJsonSafe((cfg.inbounds || []).filter(ib => ib && ib.tag !== "api")) || [];
     renderWzInbounds();
+    wzDirty = false;
     if (st) st.textContent = `Config loaded from ${target}.`;
   }).catch(e => {
+    wzLoadedServerID = null;
+    wzLoadedConfigText = "";
+    wzLoadedFullConfig = null;
+    wzInbounds = [];
+    renderWzInbounds();
     if (e.message === "auth") doAuthError();
     else if (st) st.textContent = "Error: " + e.message;
   });
@@ -2663,7 +2681,7 @@ function renderWzInbounds() {
     const delBtn = document.createElement("button");
     delBtn.className = "btn btn-danger btn-sm";
     delBtn.textContent = "Remove";
-    delBtn.onclick = () => { wzInbounds.splice(i,1); renderWzInbounds(); updateFullConfigFromWizard(); };
+    delBtn.onclick = () => { wzInbounds.splice(i,1); wzDirty = true; renderWzInbounds(); };
     row.appendChild(delBtn);
     list.appendChild(row);
   });
@@ -2812,61 +2830,79 @@ function wzSaveInbound() {
     ib.streamSettings = { network: "tcp" };
   }
   wzInbounds.push(ib);
+  wzDirty = true;
   renderWzInbounds();
   document.getElementById("wzAddInboundForm").classList.add("hidden");
-  updateFullConfigFromWizard();
   document.getElementById("wzPort").value = "";
   document.getElementById("wzTag").value  = "";
   document.getElementById("wzListenIP").value = "";
 }
 
 
-function ensureXrayApiInbound() {
-  return {
-    tag: "api",
-    listen: "127.0.0.1",
-    port: 10085,
-    protocol: "dokodemo-door",
-    settings: { address: "127.0.0.1" }
-  };
+function buildConfigFromVisualEditor() {
+  const selectedID = selectedXrayServer() || "local";
+  if (!wzLoadedConfigText || String(wzLoadedServerID || "") !== String(selectedID)) {
+    throw new Error("config for this server is not loaded yet");
+  }
+
+  let cfg;
+  try {
+    cfg = JSON.parse(wzLoadedConfigText);
+  } catch (_) {
+    cfg = cloneJsonSafe(wzLoadedFullConfig || {});
+  }
+  if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) {
+    throw new Error("loaded config is not an object");
+  }
+
+  // Preserve the selected server's full JSON exactly as the base.
+  // The visual tab is intentionally conservative: it only updates fields that
+  // are visible here, so pressing Save cannot wipe routing/outbounds/policy/etc.
+  cfg.log = cfg.log && typeof cfg.log === "object" ? cfg.log : {};
+  cfg.log.loglevel = document.getElementById("wzLogLevel")?.value || cfg.log.loglevel || "warning";
+
+  const existingInbounds = Array.isArray(cfg.inbounds) ? cfg.inbounds : [];
+  const hiddenApiInbounds = existingInbounds.filter(ib => ib && ib.tag === "api");
+  const visualInbounds = cloneJsonSafe((wzInbounds || []).filter(ib => ib && ib.tag !== "api")) || [];
+  cfg.inbounds = [...hiddenApiInbounds, ...visualInbounds];
+
+  return cfg;
 }
 
 function updateFullConfigFromWizard() {
-  const cfg = wzLoadedFullConfig && typeof wzLoadedFullConfig === "object" ? JSON.parse(JSON.stringify(wzLoadedFullConfig)) : {};
-  cfg.log = cfg.log || {};
-  cfg.log.loglevel = document.getElementById("wzLogLevel")?.value || cfg.log.loglevel || "warning";
-  const existingInbounds = Array.isArray(cfg.inbounds) ? cfg.inbounds : [];
-  const apiInbound = existingInbounds.find(ib => ib && ib.tag === "api") || ensureXrayApiInbound();
-  cfg.inbounds = [apiInbound, ...(wzInbounds || []).filter(ib => ib && ib.tag !== "api")];
-  if (!cfg.api) cfg.api = { tag: "api", services: ["HandlerService", "LoggerService", "StatsService"] };
-  if (!cfg.stats) cfg.stats = {};
-  if (!cfg.policy) cfg.policy = { levels: { "0": { statsUserUplink: true, statsUserDownlink: true } }, system: { statsInboundUplink: true, statsInboundDownlink: true } };
-  if (!cfg.outbounds) cfg.outbounds = [
-    { tag:"direct", protocol:"freedom", settings:{} },
-    { tag:"blocked", protocol:"blackhole", settings:{} },
-    { tag:"api", protocol:"freedom", settings:{} }
-  ];
-  if (!cfg.routing) cfg.routing = { rules: [{ type: "field", inboundTag: ["api"], outboundTag: "api" }] };
-  wzLoadedFullConfig = cfg;
+  const cfg = buildConfigFromVisualEditor();
+  wzLoadedFullConfig = cloneJsonSafe(cfg);
   return cfg;
 }
 
 async function applyWizardConfig() {
   const st = document.getElementById("wzStatus");
   const target = selectedXrayServerLabel();
+  const selectedID = selectedXrayServer() || "local";
+
+  if (String(wzLoadedServerID || "") !== String(selectedID) || !wzLoadedConfigText) {
+    if (st) st.textContent = `Reloading config from ${target} before saving...`;
+    loadWizardFromConfig();
+    return;
+  }
+
   let cfg;
   try {
-    cfg = updateFullConfigFromWizard();
-    if (!cfg || typeof cfg !== "object") throw new Error("config is not loaded");
+    cfg = buildConfigFromVisualEditor();
   } catch(e) {
     if (st) st.textContent = `Invalid visual config: ${e.message}`;
     return;
   }
+
   if (st) st.textContent = `Saving config to ${target}...`;
   try {
-    const res = await api(withServerParam("/api/xray/config", selectedXrayServer()), { method:"POST", body: JSON.stringify(cfg, null, 2) });
+    const body = JSON.stringify(cfg, null, 2);
+    const res = await api(withServerParam("/api/xray/config", selectedID), { method:"POST", body });
     if (!res.ok) throw new Error(await res.text());
-    wzLoadedFullConfig = cfg;
+    wzLoadedConfigText = body;
+    wzLoadedFullConfig = cloneJsonSafe(cfg);
+    wzLoadedServerID = selectedID;
+    wzDirty = false;
     if (st) st.textContent = `Saved on ${target}. Restarting Xray...`;
     await xrayCtrl("restart");
     if (st) st.textContent = `Config saved on ${target} and Xray restarted.`;
