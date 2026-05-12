@@ -16,7 +16,7 @@
   setTimeout(function(){document.documentElement.classList.remove("i18n-pending");},2500);
 })();
 </script>
-<link rel="stylesheet" href="assets/app.css?v=20260510black3"/>
+<link rel="stylesheet" href="assets/app.css?v=20260511serverstatus1"/>
 </head>
 <body>
 <div class="app">
@@ -53,6 +53,7 @@
         <div class="nav-group-label superadmin-only hidden">Administração</div>
         <button class="tab-btn superadmin-only hidden" data-tab="resellers"><span class="nav-icon">🏪</span><span>Revendedores</span></button>
         <button class="tab-btn superadmin-only hidden" data-tab="servers"><span class="nav-icon">▣</span><span>Servidores</span></button>
+        <button class="tab-btn superadmin-only hidden" data-tab="servers-status"><span class="nav-icon">▥</span><span>Status Servidores</span></button>
         <button class="tab-btn superadmin-only hidden" data-tab="stats"><span class="nav-icon">📊</span><span>Servidor</span></button>
         <button class="tab-btn superadmin-only hidden" data-tab="vnstat"><span class="nav-icon">⇅</span><span>Tráfego</span></button>
         <button class="tab-btn superadmin-only hidden" data-tab="logs"><span class="nav-icon">☰</span><span>Logs</span></button>
@@ -580,7 +581,7 @@
   <!-- ═══════════ Servers Tab (superadmin only) ═══════════ -->
   <div class="tab-pane" id="tab-servers">
     <div id="serversListView">
-      <div class="grid2">
+      <div class="grid2 servers-grid">
         <div class="card">
           <div class="card-hdr">
             <div class="card-title">Managed servers <span class="chip" id="serversCountChip">0</span></div>
@@ -599,14 +600,14 @@
           <div class="card-hdr"><div class="card-title" id="serverFormTitle">Add / edit server</div></div>
           <form id="serverForm">
             <input type="hidden" id="srvID"/>
-            <div class="form-grid">
+            <div class="form-grid server-form-grid">
               <div class="field"><label>Name</label><input id="srvName" placeholder="Brazil Node 01"/></div>
               <div class="field"><label>Base URL</label><input id="srvBaseURL" placeholder="https://node.example.com:8080"/></div>
               <div class="field"><label>Admin username</label><input id="srvAdminUser" placeholder="admin"/></div>
               <div class="field"><label>Admin key / password</label><input id="srvAdminKey" type="password" placeholder="leave blank to keep saved key"/></div>
-              <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;"><input type="checkbox" id="srvEnableSSH" checked/> SSH enabled</label>
-              <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;"><input type="checkbox" id="srvEnableXray" checked/> Xray enabled</label>
-              <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;"><input type="checkbox" id="srvIsActive" checked/> Active</label>
+              <label class="toggle-field"><input type="checkbox" id="srvEnableSSH" checked/> SSH enabled</label>
+              <label class="toggle-field"><input type="checkbox" id="srvEnableXray" checked/> Xray enabled</label>
+              <label class="toggle-field"><input type="checkbox" id="srvIsActive" checked/> Active</label>
             </div>
             <div class="form-actions" style="margin-top:8px;">
               <button class="btn" type="submit" id="saveServerBtn">Save server</button>
@@ -777,6 +778,23 @@
       </div>
     </div>
   </div><!-- /tab-servers -->
+
+  <!-- ═══════════ Servers Status Tab (superadmin only) ═══════════ -->
+  <div class="tab-pane" id="tab-servers-status">
+    <div class="card servers-status-toolbar">
+      <div class="card-hdr">
+        <div class="card-title">Servers Status <span class="chip" id="serversStatusCountChip">0</span></div>
+        <div class="card-actions">
+          <button class="btn btn-ghost btn-sm" id="refreshServersStatusBtn" type="button">Refresh</button>
+        </div>
+      </div>
+      <div class="statusbar">
+        <span id="serversStatusPageStatus">Small usage graphs for every active master/slave node.</span>
+        <span class="hint">Auto-refreshes while this page is open.</span>
+      </div>
+    </div>
+    <div class="servers-status-grid" id="serversStatusGrid"></div>
+  </div><!-- /tab-servers-status -->
 
   <!-- ═══════════ Stats Tab (superadmin only) ═══════════ -->
   <div class="tab-pane" id="tab-stats">

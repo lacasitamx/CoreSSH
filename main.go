@@ -1698,6 +1698,9 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+	if proxyManagedServerFromRequest(w, r, statsStore, "/api/stats", nil, "") {
+		return
+	}
 	stats := getCurrentStats()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(stats)

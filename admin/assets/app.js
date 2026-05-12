@@ -308,6 +308,9 @@ const serverConfigSubpage = document.getElementById("serverConfigSubpage");
 const cfgServerName = document.getElementById("cfgServerName");
 const managedConfigEditor = document.getElementById("managedConfigEditor");
 const managedConfigStatus = document.getElementById("managedConfigStatus");
+const serversStatusGrid = document.getElementById("serversStatusGrid");
+const serversStatusPageStatus = document.getElementById("serversStatusPageStatus");
+const serversStatusCountChip = document.getElementById("serversStatusCountChip");
 
 // Stats
 const cpuVal     = document.getElementById("cpuVal");
@@ -491,6 +494,7 @@ const tabTitles = {
   xray: ["Accounts", "Xray Users"],
   resellers: ["Administration", "Resellers"],
   servers: ["Administration", "Servers"],
+  "servers-status": ["Administration", "Servers Status"],
   stats: ["Server", "Monitoring"],
   vnstat: ["Traffic", "VnStat"],
   logs: ["System", "Logs"],
@@ -521,6 +525,7 @@ function selectTab(tab) {
     if (currentRole === "superadmin") loadWizardFromConfig();
   }
   if (tab === "stats" && currentRole === "superadmin") loadStats();
+  if (tab === "servers-status" && currentRole === "superadmin") loadServersStatus();
   if (tab === "resellers" && currentRole === "superadmin") loadResellers();
   if (tab === "servers" && currentRole === "superadmin") loadServers();
 }
@@ -612,6 +617,7 @@ function initAfterLogin() {
     statsTimer = setInterval(() => {
       loadDashboardStats();
       if (currentTab === "stats") loadStats();
+      if (currentTab === "servers-status") loadServersStatus({ silent: true });
     }, 2000);
   } else {
     loadMe();
@@ -1382,7 +1388,9 @@ xrayServerSelect?.addEventListener("change", () => {
 document.getElementById("reloadServersBtn")?.addEventListener("click", loadServers);
 document.getElementById("reloadServersBtn2")?.addEventListener("click", loadServers);
 document.getElementById("refreshServersBtn")?.addEventListener("click", loadServers);
+document.getElementById("refreshServersStatusBtn")?.addEventListener("click", () => loadServersStatus());
 document.querySelector("[data-tab='servers']")?.addEventListener("click", loadServers);
+document.querySelector("[data-tab='servers-status']")?.addEventListener("click", () => loadServersStatus());
 document.getElementById("clearServerFormBtn")?.addEventListener("click", clearServerForm);
 document.getElementById("testServerBtn")?.addEventListener("click", testServerForm);
 document.getElementById("backToServersBtn")?.addEventListener("click", () => showServerListView());
@@ -1407,6 +1415,135 @@ async function loadServers() {
   }
   renderServerSelectors();
   renderServersTable();
+}
+
+
+async function loadServersStatus(options = {}) {
+  const silent = !!options.silent;
+  if (!serversStatusGrid) return;
+  try {
+    if (!Array.isArray(serversCache) || serversCache.length === 0) await loadServers();
+    const nodes = (serversCache || []).filter(s => s && s.is_active !== false);
+    if (serversStatusCountChip) serversStatusCountChip.textContent = String(nodes.length);
+    if (!silent) {
+      serversStatusPageStatus && (serversStatusPageStatus.textContent = "Loading server usage...");
+      serversStatusGrid.innerHTML = `<div class="hint">Loading nodes...</div>`;
+    }
+    const rows = await Promise.all(nodes.map(loadSingleServerStatus));
+    renderServersStatusCards(rows);
+    if (serversStatusPageStatus) {
+      const online = rows.filter(r => r.ok).length;
+      serversStatusPageStatus.textContent = `${online}/${rows.length} nodes online - Updated ${new Date().toLocaleTimeString()}`;
+    }
+  } catch (e) {
+    if (e.message === "auth") doAuthError();
+    else {
+      serversStatusPageStatus && (serversStatusPageStatus.textContent = "Error loading server status: " + e.message);
+      if (!silent) serversStatusGrid.innerHTML = `<div class="hint">Error loading server status.</div>`;
+    }
+  }
+}
+
+async function fetchJSONForServer(path, serverID) {
+  const res = await api(withServerParam(path, serverID));
+  if (!res.ok) throw new Error((await res.text()).trim() || `HTTP ${res.status}`);
+  return await res.json();
+}
+
+async function loadSingleServerStatus(server) {
+  const id = String(server.id || "local");
+  const out = { server, ok: true, error: "", stats: null, users: [], inbounds: [], xray: null };
+  try {
+    out.stats = await fetchJSONForServer("/api/stats", id);
+  } catch (e) {
+    out.ok = false;
+    out.error = e.message || "stats failed";
+  }
+  if (server.enable_ssh || server.is_local) {
+    try { out.users = await fetchJSONForServer("/api/users", id) || []; }
+    catch (e) { out.usersError = e.message || "users failed"; }
+  }
+  if (server.enable_xray || server.is_local) {
+    try { out.xray = await fetchJSONForServer("/api/xray/status", id); }
+    catch (e) { out.xrayError = e.message || "xray status failed"; }
+    try { out.inbounds = await fetchJSONForServer("/api/xray/inbounds", id) || []; }
+    catch (e) { out.inboundsError = e.message || "xray clients failed"; }
+  }
+  return out;
+}
+
+function renderServersStatusCards(rows = []) {
+  if (!serversStatusGrid) return;
+  if (!rows.length) {
+    serversStatusGrid.innerHTML = `<div class="hint">No active servers configured.</div>`;
+    return;
+  }
+  serversStatusGrid.innerHTML = rows.map(serverStatusCardHTML).join("");
+}
+
+function serverStatusCardHTML(row) {
+  const s = row.server || {};
+  const stats = row.stats || {};
+  const ifaces = Array.isArray(stats.interfaces) ? stats.interfaces : [];
+  let rx = 0, tx = 0, rxTotal = 0, txTotal = 0;
+  ifaces.forEach(it => {
+    rx += Number(it.rx_mbps || 0);
+    tx += Number(it.tx_mbps || 0);
+    rxTotal += Number(it.rx_bytes || 0);
+    txTotal += Number(it.tx_bytes || 0);
+  });
+  const cpu = Number(stats.cpu_percent || 0);
+  const mem = stats.mem_percent == null ? 0 : Number(stats.mem_percent || 0);
+  const users = Array.isArray(row.users) ? row.users : [];
+  const now = Date.now();
+  const sshActive = users.filter(u => !u.expires_at || new Date(u.expires_at).getTime() > now).length;
+  const sshExpired = Math.max(0, users.length - sshActive);
+  const sshConns = users.reduce((sum, u) => sum + Number(u.active_conns || 0), 0);
+  const clients = [];
+  (Array.isArray(row.inbounds) ? row.inbounds : []).forEach(ib => (ib.clients || []).forEach(c => clients.push(c)));
+  const xrayOnline = clients.filter(c => !!c.online).length;
+  const xrayActive = clients.filter(c => !c.expired && (!c.expires_at || new Date(c.expires_at).getTime() > now)).length;
+  const xrayExpired = Math.max(0, clients.length - xrayActive);
+  const netNow = rx + tx;
+  const running = row.xray ? !!row.xray.running : false;
+  const nodeStatus = row.ok ? `<span class="badge-on">online</span>` : `<span class="badge-off">offline</span>`;
+  const options = `${s.enable_ssh ? "SSH" : ""}${s.enable_ssh && s.enable_xray ? " / " : ""}${s.enable_xray ? "Xray" : ""}` || "disabled";
+  const err = row.ok ? "" : `<div class="server-status-error">${escapeHTML(row.error || "connection failed")}</div>`;
+  return `
+    <article class="server-status-card ${row.ok ? "" : "server-status-offline"}">
+      <div class="server-status-head">
+        <div>
+          <div class="server-status-title">${escapeHTML(s.name || "Server")}</div>
+          <div class="server-status-url">${escapeHTML(s.base_url || "local")}</div>
+        </div>
+        <div class="server-status-badges">
+          ${nodeStatus}
+          <span class="chip">${escapeHTML(options)}</span>
+        </div>
+      </div>
+      ${err}
+      <div class="server-mini-grid">
+        ${miniMetricHTML("CPU", fmtPct(cpu), cpu, cpu >= 85 ? "High load" : cpu >= 60 ? "Moderate load" : "Normal load")}
+        ${miniMetricHTML("RAM", fmtPct(mem), mem, stats.mem_used_bytes && stats.mem_total_bytes ? `${fmtBytes(stats.mem_used_bytes)} / ${fmtBytes(stats.mem_total_bytes)}` : "Memory used")}
+        ${miniMetricHTML("Network", `${fmtMbps(netNow)} Mb/s`, Math.min(100, netNow / 20), `RX ${fmtMbps(rx)} - TX ${fmtMbps(tx)}`)}
+        ${miniMetricHTML("Accounts", String(users.length + clients.length), Math.min(100, (users.length + clients.length) * 3), `SSH ${users.length} - Xray ${clients.length}`)}
+      </div>
+      <div class="server-status-footer">
+        <span>SSH: ${sshConns} online - ${sshActive} active - ${sshExpired} expired</span>
+        <span>Xray: ${xrayOnline} online - ${xrayActive} active - ${xrayExpired} expired - Core ${running ? "running" : "stopped"}</span>
+        <span>Total traffic: ${fmtBytes(rxTotal + txTotal)}</span>
+      </div>
+    </article>`;
+}
+
+function miniMetricHTML(label, value, pct, note) {
+  const width = Math.min(100, Math.max(0, Number(pct) || 0));
+  return `<div class="server-mini-metric">
+    <div class="server-mini-label">${escapeHTML(label)}</div>
+    <div class="server-mini-value">${escapeHTML(value)}</div>
+    <div class="server-mini-note">${escapeHTML(note || "")}</div>
+    <div class="server-mini-bar"><span style="width:${width}%"></span></div>
+  </div>`;
 }
 
 function renderServerSelectors() {
