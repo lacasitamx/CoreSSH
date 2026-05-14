@@ -84,9 +84,9 @@ install_git_if_missing() {
     return 0
   fi
   warn "git is not installed. Trying to install it..."
-  if command -v apt-get >/dev/null 2>&1; then
-    apt-get update -qq
-    DEBIAN_FRONTEND=noninteractive apt-get install -y git ca-certificates
+  if command -v apt >/dev/null 2>&1; then
+    apt update -qq
+    DEBIAN_FRONTEND=noninteractive apt install -y git ca-certificates
   elif command -v dnf >/dev/null 2>&1; then
     dnf install -y git ca-certificates
   elif command -v yum >/dev/null 2>&1; then
@@ -458,9 +458,9 @@ info "[0/7] Pre-flight checks..."
 need_cmd python3
 if ! command -v rsync >/dev/null 2>&1; then
   warn "rsync is not installed. Trying to install it..."
-  if command -v apt-get >/dev/null 2>&1; then
-    apt-get update -qq
-    DEBIAN_FRONTEND=noninteractive apt-get install -y rsync
+  if command -v apt >/dev/null 2>&1; then
+    apt update -qq
+    DEBIAN_FRONTEND=noninteractive apt install -y rsync
   elif command -v dnf >/dev/null 2>&1; then
     dnf install -y rsync
   elif command -v yum >/dev/null 2>&1; then

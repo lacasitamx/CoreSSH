@@ -68,8 +68,8 @@ fi
 
 case "$OS_ID" in
   ubuntu|debian|linuxmint)
-    PKG_UPDATE="apt-get update -qq"
-    PKG_INSTALL="DEBIAN_FRONTEND=noninteractive apt-get install -y"
+    PKG_UPDATE="apt update -qq"
+    PKG_INSTALL="DEBIAN_FRONTEND=noninteractive apt install -y"
     PKG_DEPS="curl wget git rsync build-essential postgresql postgresql-contrib ca-certificates unzip openssh-client openssl iptables nftables"
     ;;
   centos|rhel|rocky|almalinux)
@@ -83,9 +83,9 @@ case "$OS_ID" in
     PKG_DEPS="curl wget git rsync gcc make postgresql-server postgresql-contrib ca-certificates unzip openssh-clients openssl iptables nftables"
     ;;
   *)
-    warn "Unknown OS '$OS_ID' — attempting apt-get…"
-    PKG_UPDATE="apt-get update -qq"
-    PKG_INSTALL="DEBIAN_FRONTEND=noninteractive apt-get install -y"
+    warn "Unknown OS '$OS_ID' — attempting apt…"
+    PKG_UPDATE="apt update -qq"
+    PKG_INSTALL="DEBIAN_FRONTEND=noninteractive apt install -y"
     PKG_DEPS="curl wget git rsync build-essential postgresql postgresql-contrib ca-certificates unzip openssh-client openssl iptables nftables"
     ;;
 esac
