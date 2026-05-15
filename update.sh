@@ -39,6 +39,103 @@ RESTART_NEEDED=false
 
 [[ $EUID -ne 0 ]] && error "Run as root: sudo bash $0"
 
+# Cross-distro helpers -------------------------------------------------------
+PKG_MANAGER=""
+UPDATE_DEPS=()
+SYSTEMCTL_BIN=""
+SH_BIN="$(command -v sh 2>/dev/null || echo /bin/sh)"
+MOUNT_BIN="$(command -v mount 2>/dev/null || echo /bin/mount)"
+MOUNTPOINT_BIN="$(command -v mountpoint 2>/dev/null || echo /usr/bin/mountpoint)"
+TOUCH_BIN="$(command -v touch 2>/dev/null || echo /usr/bin/touch)"
+CHMOD_BIN="$(command -v chmod 2>/dev/null || echo /usr/bin/chmod)"
+
+require_systemd() {
+  SYSTEMCTL_BIN="$(command -v systemctl 2>/dev/null || true)"
+  if [[ -z "$SYSTEMCTL_BIN" ]]; then
+    error "systemd was not found. This updater supports Linux distributions that use systemd for services."
+  fi
+}
+
+detect_pkg_manager() {
+  if command -v apt-get >/dev/null 2>&1; then
+    PKG_MANAGER="apt"
+  elif command -v dnf >/dev/null 2>&1; then
+    PKG_MANAGER="dnf"
+  elif command -v yum >/dev/null 2>&1; then
+    PKG_MANAGER="yum"
+  elif command -v zypper >/dev/null 2>&1; then
+    PKG_MANAGER="zypper"
+  elif command -v pacman >/dev/null 2>&1; then
+    PKG_MANAGER="pacman"
+  elif command -v apk >/dev/null 2>&1; then
+    PKG_MANAGER="apk"
+  else
+    error "No supported package manager found. Supported: apt, dnf, yum, zypper, pacman, apk."
+  fi
+}
+
+set_update_deps() {
+  case "$PKG_MANAGER" in
+    apt)
+      UPDATE_DEPS=(git rsync wget ca-certificates python3 gcc make tar gzip)
+      ;;
+    dnf|yum)
+      UPDATE_DEPS=(git rsync wget ca-certificates python3 gcc make tar gzip)
+      ;;
+    zypper)
+      UPDATE_DEPS=(git rsync wget ca-certificates python3 gcc make tar gzip)
+      ;;
+    pacman)
+      UPDATE_DEPS=(git rsync wget ca-certificates python gcc make tar gzip)
+      ;;
+    apk)
+      UPDATE_DEPS=(git rsync wget ca-certificates python3 gcc make tar gzip)
+      ;;
+  esac
+}
+
+pkg_update() {
+  case "$PKG_MANAGER" in
+    apt) apt-get update -qq ;;
+    dnf) dnf makecache -q ;;
+    yum) yum makecache -q ;;
+    zypper) zypper --non-interactive refresh ;;
+    pacman) pacman -Sy --noconfirm ;;
+    apk) apk update ;;
+  esac
+}
+
+pkg_install() {
+  case "$PKG_MANAGER" in
+    apt) DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$@" ;;
+    dnf) dnf install -y "$@" ;;
+    yum) yum install -y "$@" ;;
+    zypper) zypper --non-interactive install -y "$@" ;;
+    pacman) pacman -S --noconfirm --needed "$@" ;;
+    apk) apk add --no-cache "$@" ;;
+  esac
+}
+
+ensure_update_dependencies() {
+  local missing=false cmd
+  for cmd in git rsync wget tar gzip gcc make; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+      missing=true
+    fi
+  done
+  if ! command -v python3 >/dev/null 2>&1; then
+    missing=true
+  fi
+  if $missing; then
+    warn "One or more updater dependencies are missing. Installing them with $PKG_MANAGER..."
+    pkg_update
+    pkg_install "${UPDATE_DEPS[@]}"
+  fi
+  if ! command -v python3 >/dev/null 2>&1 && command -v python >/dev/null 2>&1; then
+    ln -sf "$(command -v python)" /usr/local/bin/python3 2>/dev/null || true
+  fi
+}
+
 echo -e "\n${GREEN}==========================================${NC}"
 echo -e "${GREEN}   DragonCoreSSH / SSH Panel Updater       ${NC}"
 echo -e "${GREEN}==========================================${NC}\n"
@@ -67,12 +164,12 @@ ensure_log_tmpfs_mount() {
     warn "  /etc/fstab not found; service startup fallback will mount $log_dir as tmpfs"
   fi
 
-  systemctl daemon-reload >/dev/null 2>&1 || true
-  if mountpoint -q "$log_dir"; then
+  "${SYSTEMCTL_BIN:-systemctl}" daemon-reload >/dev/null 2>&1 || true
+  if command -v mountpoint >/dev/null 2>&1 && mountpoint -q "$log_dir"; then
     mount -o "remount,size=${LOG_TMPFS_SIZE},mode=0755" "$log_dir" >/dev/null 2>&1 || true
   else
     mount "$log_dir" >/dev/null 2>&1 || mount -t tmpfs -o "size=${LOG_TMPFS_SIZE},mode=0755" tmpfs "$log_dir" >/dev/null 2>&1 || \
-      warn "  Could not mount $log_dir as tmpfs now; systemd service will try again on start"
+      warn "  Could not mount $log_dir as tmpfs now; service startup fallback will try again"
   fi
 
   touch "$log_dir/panel.log" >/dev/null 2>&1 || true
@@ -84,16 +181,8 @@ install_git_if_missing() {
     return 0
   fi
   warn "git is not installed. Trying to install it..."
-  if command -v apt >/dev/null 2>&1; then
-    apt update -qq
-    DEBIAN_FRONTEND=noninteractive apt install -y git ca-certificates
-  elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y git ca-certificates
-  elif command -v yum >/dev/null 2>&1; then
-    yum install -y git ca-certificates
-  else
-    error "git is required. Install git first, then run this updater again."
-  fi
+  pkg_update
+  pkg_install git ca-certificates
 }
 
 remote_default_branch() {
@@ -206,8 +295,8 @@ build_binary() {
 
 stop_service() {
   info "[4/7] Stopping service..."
-  if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
-    systemctl stop "$SERVICE_NAME"
+  if "$SYSTEMCTL_BIN" is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+    "$SYSTEMCTL_BIN" stop "$SERVICE_NAME"
     RESTART_NEEDED=true
     info "  $SERVICE_NAME stopped."
   else
@@ -323,7 +412,7 @@ dnstt_redirect_is_enabled() {
   # disabled/removed it because it can break ip6tables on some machines.
   local unit="sshpanel-dnstt-redirect.service"
 
-  if systemctl is-enabled --quiet "$unit" 2>/dev/null; then
+  if "$SYSTEMCTL_BIN" is-enabled --quiet "$unit" 2>/dev/null; then
     return 0
   fi
 
@@ -348,10 +437,10 @@ write_sshpanel_systemd_override() {
     echo "Environment=PANEL_LOG_MAX_BYTES=${PANEL_LOG_MAX_BYTES}"
     echo "ExecStartPre="
     echo "ExecStartPre=${MKDIR_BIN} -p ${INSTALL_DIR}/logs"
-    echo "ExecStartPre=/bin/sh -c '/usr/bin/mountpoint -q ${INSTALL_DIR}/logs || /usr/bin/mount -t tmpfs -o size=${LOG_TMPFS_SIZE},mode=0755 tmpfs ${INSTALL_DIR}/logs || true'"
-    echo "ExecStartPre=/bin/sh -c '/usr/bin/touch ${INSTALL_DIR}/logs/panel.log && /usr/bin/chmod 0644 ${INSTALL_DIR}/logs/panel.log || true'"
-    echo "StandardOutput=append:${INSTALL_DIR}/logs/panel.log"
-    echo "StandardError=append:${INSTALL_DIR}/logs/panel.log"
+    echo "ExecStartPre=${SH_BIN} -c '${MOUNTPOINT_BIN} -q ${INSTALL_DIR}/logs || ${MOUNT_BIN} -t tmpfs -o size=${LOG_TMPFS_SIZE},mode=0755 tmpfs ${INSTALL_DIR}/logs || true'"
+    echo "ExecStartPre=${SH_BIN} -c '${TOUCH_BIN} ${INSTALL_DIR}/logs/panel.log && ${CHMOD_BIN} 0644 ${INSTALL_DIR}/logs/panel.log || true'"
+    echo "StandardOutput=journal"
+    echo "StandardError=journal"
   } > /etc/systemd/system/sshpanel.service.d/override.conf
 }
 
@@ -359,7 +448,7 @@ ensure_dnstt_redirect() {
   if ! dnstt_redirect_is_enabled; then
     warn "  sshpanel-dnstt-redirect is disabled or removed; update will not recreate or enable it."
     write_sshpanel_systemd_override false
-    systemctl daemon-reload
+    "$SYSTEMCTL_BIN" daemon-reload
     return 0
   fi
 
@@ -422,8 +511,8 @@ EOF2
 
   write_sshpanel_systemd_override true
 
-  systemctl daemon-reload
-  systemctl enable --now sshpanel-dnstt-redirect.service || warn "DNSTT redirect service failed. Check: journalctl -u sshpanel-dnstt-redirect -e"
+  "$SYSTEMCTL_BIN" daemon-reload
+  "$SYSTEMCTL_BIN" enable --now sshpanel-dnstt-redirect.service || warn "DNSTT redirect service failed. Check: journalctl -u sshpanel-dnstt-redirect -e"
 }
 
 restart_service() {
@@ -436,9 +525,9 @@ restart_service() {
     warn "  $SERVICE_NAME was not running before update; starting it now."
   fi
 
-  systemctl start "$SERVICE_NAME"
+  "$SYSTEMCTL_BIN" start "$SERVICE_NAME"
   sleep 2
-  if systemctl is-active --quiet "$SERVICE_NAME"; then
+  if "$SYSTEMCTL_BIN" is-active --quiet "$SERVICE_NAME"; then
     info "  $SERVICE_NAME is running."
   else
     warn "  $SERVICE_NAME failed to start. Check logs:"
@@ -453,25 +542,21 @@ restart_service() {
 
 # Pre-flight
 info "[0/7] Pre-flight checks..."
+require_systemd
+detect_pkg_manager
+set_update_deps
+ensure_update_dependencies
 [[ -d "$INSTALL_DIR" ]] || error "Install dir $INSTALL_DIR not found. Run install.sh first."
 [[ -f "$INSTALL_DIR/.env" ]] || error "$INSTALL_DIR/.env not found. Run install.sh first."
 need_cmd python3
-if ! command -v rsync >/dev/null 2>&1; then
-  warn "rsync is not installed. Trying to install it..."
-  if command -v apt >/dev/null 2>&1; then
-    apt update -qq
-    DEBIAN_FRONTEND=noninteractive apt install -y rsync
-  elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y rsync
-  elif command -v yum >/dev/null 2>&1; then
-    yum install -y rsync
-  else
-    error "rsync is required. Install rsync first, then run this updater again."
-  fi
-fi
+need_cmd rsync
+need_cmd git
+need_cmd wget
 
-info "  Install dir : $INSTALL_DIR"
-info "  Cache dir   : $SOURCE_CACHE_DIR"
+info "  Install dir      : $INSTALL_DIR"
+info "  Cache dir        : $SOURCE_CACHE_DIR"
+info "  Package manager  : $PKG_MANAGER"
+info "  Service manager  : systemd"
 
 prepare_source_from_git
 install_go_if_needed

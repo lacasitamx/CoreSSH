@@ -1,5 +1,5 @@
 #!/bin/bash
-# Auto-install script for SSH Panel + Xray-core (Ubuntu/Debian/CentOS)
+# Auto-install script for SSH Panel + Xray-core (multi-distro Linux/systemd)
 # Usage:  sudo bash install.sh
 set -euo pipefail
 
@@ -21,6 +21,144 @@ MKDIR_BIN="$(command -v mkdir 2>/dev/null || true)"
 
 [[ $EUID -ne 0 ]] && error "Run as root: sudo bash $0"
 
+# Cross-distro helpers -------------------------------------------------------
+PKG_MANAGER=""
+PKG_DEPS=()
+PKG_OPTIONAL_DEPS=()
+SYSTEMCTL_BIN=""
+SH_BIN="$(command -v sh 2>/dev/null || echo /bin/sh)"
+MOUNT_BIN="$(command -v mount 2>/dev/null || echo /bin/mount)"
+MOUNTPOINT_BIN="$(command -v mountpoint 2>/dev/null || echo /usr/bin/mountpoint)"
+TOUCH_BIN="$(command -v touch 2>/dev/null || echo /usr/bin/touch)"
+CHMOD_BIN="$(command -v chmod 2>/dev/null || echo /usr/bin/chmod)"
+
+require_systemd() {
+  SYSTEMCTL_BIN="$(command -v systemctl 2>/dev/null || true)"
+  if [[ -z "$SYSTEMCTL_BIN" ]]; then
+    error "systemd was not found. This installer supports Linux distributions that use systemd for services."
+  fi
+}
+
+detect_pkg_manager() {
+  if command -v apt-get >/dev/null 2>&1; then
+    PKG_MANAGER="apt"
+  elif command -v dnf >/dev/null 2>&1; then
+    PKG_MANAGER="dnf"
+  elif command -v yum >/dev/null 2>&1; then
+    PKG_MANAGER="yum"
+  elif command -v zypper >/dev/null 2>&1; then
+    PKG_MANAGER="zypper"
+  elif command -v pacman >/dev/null 2>&1; then
+    PKG_MANAGER="pacman"
+  elif command -v apk >/dev/null 2>&1; then
+    PKG_MANAGER="apk"
+  else
+    error "No supported package manager found. Supported: apt, dnf, yum, zypper, pacman, apk."
+  fi
+}
+
+set_package_deps() {
+  case "$PKG_MANAGER" in
+    apt)
+      PKG_DEPS=(curl wget git rsync build-essential postgresql ca-certificates unzip openssh-client openssl python3 tar gzip)
+      PKG_OPTIONAL_DEPS=(postgresql-contrib iptables nftables)
+      ;;
+    dnf|yum)
+      PKG_DEPS=(curl wget git rsync gcc make postgresql-server ca-certificates unzip openssh-clients openssl python3 tar gzip)
+      PKG_OPTIONAL_DEPS=(postgresql-contrib iptables nftables)
+      ;;
+    zypper)
+      PKG_DEPS=(curl wget git rsync gcc make postgresql-server ca-certificates unzip openssh openssl python3 tar gzip)
+      PKG_OPTIONAL_DEPS=(postgresql-contrib iptables nftables)
+      ;;
+    pacman)
+      PKG_DEPS=(curl wget git rsync base-devel postgresql ca-certificates unzip openssh openssl python tar gzip)
+      PKG_OPTIONAL_DEPS=(iptables-nft nftables)
+      ;;
+    apk)
+      PKG_DEPS=(curl wget git rsync build-base postgresql ca-certificates unzip openssh-client openssl python3 tar gzip)
+      PKG_OPTIONAL_DEPS=(postgresql-contrib iptables nftables)
+      ;;
+  esac
+}
+
+pkg_update() {
+  case "$PKG_MANAGER" in
+    apt) apt-get update -qq ;;
+    dnf) dnf makecache -q ;;
+    yum) yum makecache -q ;;
+    zypper) zypper --non-interactive refresh ;;
+    pacman) pacman -Sy --noconfirm ;;
+    apk) apk update ;;
+  esac
+}
+
+pkg_install() {
+  case "$PKG_MANAGER" in
+    apt) DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$@" ;;
+    dnf) dnf install -y "$@" ;;
+    yum) yum install -y "$@" ;;
+    zypper) zypper --non-interactive install -y "$@" ;;
+    pacman) pacman -S --noconfirm --needed "$@" ;;
+    apk) apk add --no-cache "$@" ;;
+  esac
+}
+
+pkg_install_optional() {
+  local pkg
+  for pkg in "$@"; do
+    pkg_install "$pkg" >/dev/null 2>&1 || warn "  Optional package '$pkg' could not be installed; continuing."
+  done
+}
+
+postgres_data_dir() {
+  for dir in /var/lib/postgresql/data /var/lib/pgsql/data /var/lib/postgres/data; do
+    [[ -d "$dir" || -d "$(dirname "$dir")" ]] && { printf '%s\n' "$dir"; return 0; }
+  done
+  printf '%s\n' /var/lib/postgresql/data
+}
+
+init_postgresql_if_needed() {
+  case "$PKG_MANAGER" in
+    dnf|yum|zypper)
+      postgresql-setup --initdb >/dev/null 2>&1 || true
+      ;;
+    pacman)
+      local data_dir
+      data_dir="$(postgres_data_dir)"
+      if [[ ! -s "$data_dir/PG_VERSION" ]]; then
+        mkdir -p "$data_dir"
+        chown -R postgres:postgres "$(dirname "$data_dir")"
+        if command -v runuser >/dev/null 2>&1; then
+          runuser -u postgres -- initdb -D "$data_dir" >/dev/null 2>&1 || true
+        else
+          su - postgres -c "initdb -D '$data_dir'" >/dev/null 2>&1 || true
+        fi
+      fi
+      ;;
+    apk)
+      if command -v rc-service >/dev/null 2>&1; then
+        rc-service postgresql setup >/dev/null 2>&1 || true
+      fi
+      ;;
+  esac
+}
+
+start_enable_postgresql() {
+  local started=false svc
+  for svc in postgresql postgresql.service; do
+    if "$SYSTEMCTL_BIN" start "$svc" >/dev/null 2>&1; then
+      "$SYSTEMCTL_BIN" enable "$svc" >/dev/null 2>&1 || true
+      started=true
+      break
+    fi
+  done
+  if ! $started && command -v service >/dev/null 2>&1; then
+    service postgresql start >/dev/null 2>&1 && started=true || true
+  fi
+  $started || warn "  Could not start PostgreSQL automatically; continuing in case it is already running."
+}
+
 ensure_log_tmpfs_mount() {
   local log_dir="${INSTALL_DIR}/logs"
   local opts="rw,nosuid,nodev,noexec,noatime,nofail,size=${LOG_TMPFS_SIZE},mode=0755"
@@ -40,12 +178,12 @@ ensure_log_tmpfs_mount() {
     warn "  /etc/fstab not found; service startup fallback will mount $log_dir as tmpfs"
   fi
 
-  systemctl daemon-reload >/dev/null 2>&1 || true
-  if mountpoint -q "$log_dir"; then
+  "${SYSTEMCTL_BIN:-systemctl}" daemon-reload >/dev/null 2>&1 || true
+  if command -v mountpoint >/dev/null 2>&1 && mountpoint -q "$log_dir"; then
     mount -o "remount,size=${LOG_TMPFS_SIZE},mode=0755" "$log_dir" >/dev/null 2>&1 || true
   else
     mount "$log_dir" >/dev/null 2>&1 || mount -t tmpfs -o "size=${LOG_TMPFS_SIZE},mode=0755" tmpfs "$log_dir" >/dev/null 2>&1 || \
-      warn "  Could not mount $log_dir as tmpfs now; systemd service will try again on start"
+      warn "  Could not mount $log_dir as tmpfs now; service startup fallback will try again"
   fi
 
   touch "$log_dir/panel.log" >/dev/null 2>&1 || true
@@ -56,48 +194,36 @@ echo -e "\n${GREEN}════════════════════�
 echo -e "${GREEN}   SSH Panel + Xray-core  ·  Installer     ${NC}"
 echo -e "${GREEN}══════════════════════════════════════════${NC}\n"
 
-# ── 1. OS detection ──────────────────────────────────────────────────────────
-info "[1/9] Detecting OS…"
+# ── 1. OS / package-manager detection ────────────────────────────────────────
+info "[1/10] Detecting Linux distribution and package manager…"
 if [[ -f /etc/os-release ]]; then
   # shellcheck disable=SC1091
   . /etc/os-release
   OS_ID="${ID:-unknown}"
+  OS_LIKE="${ID_LIKE:-}"
+  OS_PRETTY="${PRETTY_NAME:-$OS_ID}"
 else
   OS_ID="unknown"
+  OS_LIKE=""
+  OS_PRETTY="unknown Linux"
 fi
 
-case "$OS_ID" in
-  ubuntu|debian|linuxmint)
-    PKG_UPDATE="apt update -qq"
-    PKG_INSTALL="DEBIAN_FRONTEND=noninteractive apt install -y"
-    PKG_DEPS="curl wget git rsync build-essential postgresql postgresql-contrib ca-certificates unzip openssh-client openssl iptables nftables"
-    ;;
-  centos|rhel|rocky|almalinux)
-    PKG_UPDATE="yum makecache -q"
-    PKG_INSTALL="yum install -y"
-    PKG_DEPS="curl wget git rsync gcc make postgresql-server postgresql-contrib ca-certificates unzip openssh-clients openssl iptables nftables"
-    ;;
-  fedora)
-    PKG_UPDATE="dnf makecache -q"
-    PKG_INSTALL="dnf install -y"
-    PKG_DEPS="curl wget git rsync gcc make postgresql-server postgresql-contrib ca-certificates unzip openssh-clients openssl iptables nftables"
-    ;;
-  *)
-    warn "Unknown OS '$OS_ID' — attempting apt…"
-    PKG_UPDATE="apt update -qq"
-    PKG_INSTALL="DEBIAN_FRONTEND=noninteractive apt install -y"
-    PKG_DEPS="curl wget git rsync build-essential postgresql postgresql-contrib ca-certificates unzip openssh-client openssl iptables nftables"
-    ;;
-esac
-info "  OS: $OS_ID"
+require_systemd
+detect_pkg_manager
+set_package_deps
+info "  OS             : $OS_PRETTY"
+info "  ID / ID_LIKE   : $OS_ID / ${OS_LIKE:-none}"
+info "  Package manager: $PKG_MANAGER"
+info "  Service manager: systemd"
 
 # ── 2. System dependencies ───────────────────────────────────────────────────
-info "[2/9] Installing system packages…"
-eval "$PKG_UPDATE"
-eval "$PKG_INSTALL $PKG_DEPS"
+info "[2/10] Installing system packages…"
+pkg_update
+pkg_install "${PKG_DEPS[@]}"
+pkg_install_optional "${PKG_OPTIONAL_DEPS[@]}"
 
 # ── 3. Go ────────────────────────────────────────────────────────────────────
-info "[3/9] Installing Go ${GO_VERSION}…"
+info "[3/10] Installing Go ${GO_VERSION}…"
 NEED_GO=true
 if command -v go &>/dev/null; then
   CURRENT_GO=$(go version 2>/dev/null | awk '{print $3}' | sed 's/go//')
@@ -129,12 +255,12 @@ export PATH=$PATH:/usr/local/go/bin
 go version
 
 # ── 4. Directory layout ──────────────────────────────────────────────────────
-info "[4/9] Setting up ${INSTALL_DIR}…"
+info "[4/10] Setting up ${INSTALL_DIR}…"
 mkdir -p "$INSTALL_DIR/admin" "$INSTALL_DIR/keys" "$INSTALL_DIR/logs"
 ensure_log_tmpfs_mount
 
 # ── 5. Build SSH panel binary ────────────────────────────────────────────────
-info "[5/9] Building SSH Panel binary…"
+info "[5/10] Building SSH Panel binary…"
 cd "$SCRIPT_DIR"
 export GOPATH=/tmp/gopath_sshpanel
 export GOCACHE=/tmp/gocache_sshpanel
@@ -155,7 +281,7 @@ if [[ -f "$SCRIPT_DIR/change_admin_password.sh" ]]; then
 fi
 
 # ── 6. Xray binary ──────────────────────────────────────────────────────────
-info "[6/9] Downloading Xray-core…"
+info "[6/10] Downloading Xray-core…"
 XRAY_VER=$(curl -sf "https://api.github.com/repos/XTLS/Xray-core/releases/latest" \
   | grep '"tag_name"' | head -1 | cut -d'"' -f4 || echo "v24.11.30")
 MACHINE=$(uname -m)
@@ -178,13 +304,9 @@ rm -f /tmp/xray.zip
 "$INSTALL_DIR/xray" version
 
 # ── 7. PostgreSQL ────────────────────────────────────────────────────────────
-info "[7/9] Configuring PostgreSQL…"
-case "$OS_ID" in
-  centos|rhel|rocky|almalinux|fedora)
-    postgresql-setup --initdb 2>/dev/null || true ;;
-esac
-systemctl start postgresql  2>/dev/null || service postgresql start 2>/dev/null || true
-systemctl enable postgresql 2>/dev/null || true
+info "[7/10] Configuring PostgreSQL…"
+init_postgresql_if_needed
+start_enable_postgresql
 
 DB_NAME="sshpanel"
 DB_USER="sshpanel"
@@ -441,8 +563,8 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 EOF
 
-systemctl daemon-reload
-systemctl enable --now sshpanel-dnstt-redirect.service || warn "DNSTT DNS redirect service failed; check: journalctl -u sshpanel-dnstt-redirect -e"
+"$SYSTEMCTL_BIN" daemon-reload
+"$SYSTEMCTL_BIN" enable --now sshpanel-dnstt-redirect.service || warn "DNSTT DNS redirect service failed; check: journalctl -u sshpanel-dnstt-redirect -e"
 info "  DNSTT DNS redirect installed: UDP 53 -> 5300"
 
 # ── 10. Systemd service ──────────────────────────────────────────────────────
@@ -460,23 +582,23 @@ EnvironmentFile=${INSTALL_DIR}/.env
 Environment=PANEL_LOG_FILE=${INSTALL_DIR}/logs/panel.log
 Environment=PANEL_LOG_MAX_BYTES=${PANEL_LOG_MAX_BYTES}
 ExecStartPre=${MKDIR_BIN} -p ${INSTALL_DIR}/logs
-ExecStartPre=/bin/sh -c '/usr/bin/mountpoint -q ${INSTALL_DIR}/logs || /usr/bin/mount -t tmpfs -o size=${LOG_TMPFS_SIZE},mode=0755 tmpfs ${INSTALL_DIR}/logs || true'
-ExecStartPre=/bin/sh -c '/usr/bin/touch ${INSTALL_DIR}/logs/panel.log && /usr/bin/chmod 0644 ${INSTALL_DIR}/logs/panel.log || true'
+ExecStartPre=${SH_BIN} -c '${MOUNTPOINT_BIN} -q ${INSTALL_DIR}/logs || ${MOUNT_BIN} -t tmpfs -o size=${LOG_TMPFS_SIZE},mode=0755 tmpfs ${INSTALL_DIR}/logs || true'
+ExecStartPre=${SH_BIN} -c '${TOUCH_BIN} ${INSTALL_DIR}/logs/panel.log && ${CHMOD_BIN} 0644 ${INSTALL_DIR}/logs/panel.log || true'
 ExecStart=${INSTALL_DIR}/sshpanel -config ${INSTALL_DIR}/config.json
 Restart=always
 RestartSec=5
 User=root
 LimitNOFILE=65536
-StandardOutput=append:${INSTALL_DIR}/logs/panel.log
-StandardError=append:${INSTALL_DIR}/logs/panel.log
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-systemctl daemon-reload
-systemctl enable  "$SERVICE_NAME"
-systemctl restart "$SERVICE_NAME"
+"$SYSTEMCTL_BIN" daemon-reload
+"$SYSTEMCTL_BIN" enable  "$SERVICE_NAME"
+"$SYSTEMCTL_BIN" restart "$SERVICE_NAME"
 
 sleep 2
 echo ""
@@ -501,4 +623,4 @@ echo -e "        tail -f ${INSTALL_DIR}/logs/panel.log"
 echo ""
 echo -e "${YELLOW}Save your admin login/password. The admin token is for API bearer-token access only.${NC}"
 echo ""
-systemctl status "$SERVICE_NAME" --no-pager -l || true
+"$SYSTEMCTL_BIN" status "$SERVICE_NAME" --no-pager -l || true
