@@ -376,13 +376,18 @@ func mbpsToBytesPerSec(mbps int) int64 {
 	return int64(mbps) * 1024 * 1024 / 8
 }
 
+var copyBufPool = sync.Pool{
+	New: func() interface{} { b := make([]byte, 32*1024); return &b },
+}
+
 func copyWithRateLimit(dst io.Writer, src io.Reader, lim *rate.Limiter) (written int64, err error) {
 	if lim == nil {
 		return io.Copy(dst, src)
 	}
 
-	const bufSize = 32 * 1024
-	buf := make([]byte, bufSize)
+	bufp := copyBufPool.Get().(*[]byte)
+	buf := *bufp
+	defer copyBufPool.Put(bufp)
 	ctx := context.Background()
 
 	for {
@@ -2130,7 +2135,7 @@ func handleHTTP80Conn(raw net.Conn, sshConfig *ssh.ServerConfig) {
 	_, _ = raw.Write([]byte(fmt.Sprintf("HTTP/1.1 101 %s\r\n\r\n", status)))
 
 	skip200 := false
-	br := bufio.NewReaderSize(raw, 32<<10)
+	br := bufio.NewReaderSize(raw, 4<<10)
 
 	// Drain chained HTTP header blocks with a short rolling deadline so Peek/ReadBytes never stalls.
 	cleanWindow := 30 * time.Second
