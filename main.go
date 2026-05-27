@@ -28,6 +28,7 @@ import (
 	_ "github.com/lib/pq"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/time/rate"
+	"runtime/debug"
 )
 
 const (
@@ -2614,6 +2615,12 @@ func maybeHTTPStartPrefix(b []byte) bool {
 }
 
 func main() {
+	if memTotal, _, err := readMemInfo(); err == nil && memTotal > 0 {
+		limit := int64(memTotal) * 80 / 100
+		debug.SetMemoryLimit(limit)
+		log.Printf("GOMEMLIMIT auto-set to 80%% of RAM: %d MB", limit/1024/1024)
+	}
+
 	configPath := flag.String("config", "config.json", "path to JSON config file")
 	quietFlag := flag.Bool("quiet", false, "override config and disable logs")
 	userCountFlag := flag.Bool("usercount", false, "show per-user connection counters (single line)")
