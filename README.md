@@ -151,6 +151,72 @@ systemctl status sshpanel-dnstt-redirect --no-pager -l
 sudo iptables -t nat -S PREROUTING | grep 5300
 ```
 
+### Reinício automático do DNSTT
+
+O DNSTT pode ser reiniciado automaticamente sem reiniciar a VPS e sem derrubar o painel inteiro. No painel, abra **DragonCore → DNSTT Tunnel** e configure:
+
+- **Auto Restart Interval**: intervalo como `30m`, `2h` ou `6h`; use `0s`, `off` ou deixe vazio para desativar.
+- **Restart Grace Delay**: pausa antes de reabrir a porta UDP; padrão `2s`.
+
+Também é possível editar diretamente o `config.json`:
+
+```json
+"dnstt": {
+  "domain": "t.example.com",
+  "udp_listen": "[::]:5300",
+  "privkey_file": "/opt/sshpanel/dnstt.key",
+  "auto_restart_interval": "6h",
+  "auto_restart_grace": "2s"
+}
+```
+
+### Vários domínios/NS no DNSTT
+
+O DNSTT aceita múltiplos domínios raiz no mesmo listener UDP e com a mesma chave. No painel, abra **DragonCore → DNSTT Tunnel → NS / Root Domains** e coloque um domínio por linha. Isso permite usar um domínio público e outro domínio local da sua rede no mesmo servidor.
+
+Exemplo:
+
+```json
+"dnstt": {
+  "domain": "t.example.com",
+  "domains": [
+    "t.example.com",
+    "t.local.lan"
+  ],
+  "udp_listen": "[::]:5300",
+  "privkey_file": "/opt/sshpanel/dnstt.key"
+}
+```
+
+`domain` continua existindo para compatibilidade. O primeiro item de `domains` é usado como domínio principal.
+
+Para testar com DNS local, aponte o NS/A do domínio local para o IP LAN do servidor DNSTT ou configure seu DNS local para encaminhar essa zona para o IP/porta UDP do DNSTT.
+
+### Reinício automático do proxy e UDPGW
+
+O proxy e o UDPGW também podem ser reiniciados por intervalo. Estes reinícios são **hard restart** para substituir o temporizador em `screen` que reiniciava tudo:
+
+- **Proxy Auto Restart Interval** reinicia os listeners públicos (`listen`, `extra_listen` e TLS forwarders) e fecha as sessões SSH ativas.
+- **UDPGW Auto Restart Interval** fecha o listener UDPGW e todos os clientes UDPGW conectados antes de subir novamente.
+- Use valores como `6h`, `12h` ou `24h`; `0s`, `off` ou vazio desativa.
+- **Restart Grace Delay** define a pausa antes de abrir novamente; padrão `2s`.
+
+Exemplo no `config.json`:
+
+```json
+{
+  "listen": "0.0.0.0:80",
+  "extra_listen": ["0.0.0.0:8080"],
+  "proxy_auto_restart_interval": "24h",
+  "proxy_auto_restart_grace": "2s",
+  "udpgw": {
+    "listen": "0.0.0.0:7400",
+    "auto_restart_interval": "24h",
+    "auto_restart_grace": "2s"
+  }
+}
+```
+
 ### Comandos úteis
 
 Ver status do serviço:
@@ -471,6 +537,72 @@ systemctl status sshpanel-dnstt-redirect --no-pager -l
 sudo iptables -t nat -S PREROUTING | grep 5300
 ```
 
+### DNSTT auto restart
+
+DNSTT can be restarted automatically without rebooting the VPS and without restarting the whole panel. In the panel, open **DragonCore → DNSTT Tunnel** and configure:
+
+- **Auto Restart Interval**: duration like `30m`, `2h`, or `6h`; use `0s`, `off`, or leave it empty to disable.
+- **Restart Grace Delay**: pause before reopening the UDP port; default is `2s`.
+
+You can also edit `config.json` directly:
+
+```json
+"dnstt": {
+  "domain": "t.example.com",
+  "udp_listen": "[::]:5300",
+  "privkey_file": "/opt/sshpanel/dnstt.key",
+  "auto_restart_interval": "6h",
+  "auto_restart_grace": "2s"
+}
+```
+
+### Multiple DNSTT NS/root domains
+
+DNSTT can accept multiple root domains on the same UDP listener with the same key. In the panel, open **DragonCore → DNSTT Tunnel → NS / Root Domains** and enter one domain per line. This lets you use a public domain and a local network domain on the same server.
+
+Example:
+
+```json
+"dnstt": {
+  "domain": "t.example.com",
+  "domains": [
+    "t.example.com",
+    "t.local.lan"
+  ],
+  "udp_listen": "[::]:5300",
+  "privkey_file": "/opt/sshpanel/dnstt.key"
+}
+```
+
+`domain` is kept for backward compatibility. The first item in `domains` is mirrored as the primary domain.
+
+For local DNS testing, point the local domain's NS/A record to the DNSTT server LAN IP or configure your local DNS server to forward that zone to the DNSTT UDP IP/port.
+
+### Proxy and UDPGW auto restart
+
+The proxy and UDPGW can also restart by interval. These are **hard restarts**, intended to replace a `screen` timer that restarted everything:
+
+- **Proxy Auto Restart Interval** restarts public listeners (`listen`, `extra_listen`, and TLS forwarders) and closes active SSH sessions.
+- **UDPGW Auto Restart Interval** closes the UDPGW listener and all connected UDPGW clients before starting again.
+- Use values like `6h`, `12h`, or `24h`; `0s`, `off`, or empty disables it.
+- **Restart Grace Delay** controls the pause before reopening; default is `2s`.
+
+Example `config.json`:
+
+```json
+{
+  "listen": "0.0.0.0:80",
+  "extra_listen": ["0.0.0.0:8080"],
+  "proxy_auto_restart_interval": "24h",
+  "proxy_auto_restart_grace": "2s",
+  "udpgw": {
+    "listen": "0.0.0.0:7400",
+    "auto_restart_interval": "24h",
+    "auto_restart_grace": "2s"
+  }
+}
+```
+
 ### Useful commands
 
 Check service status:
@@ -641,3 +773,92 @@ Common errors:
 ```json
 {"error":"database not configured"}
 ```
+
+### DNSTT scale guard for high-user servers
+
+The integrated DNSTT service includes overload protection so thousands of DNS tunnel users cannot exhaust RAM or crash the whole panel as easily.
+
+DNSTT config fields:
+
+```json
+{
+  "dnstt": {
+    "max_sessions": 10000,
+    "max_streams": 15000,
+    "pending_responses": 20000,
+    "stream_buffer": 262144,
+    "udp_read_buffer": 16777216,
+    "udp_write_buffer": 16777216,
+    "log_connections": false
+  }
+}
+```
+
+Values can be changed in the admin panel under **DNSTT Tunnel**. Use `0` to keep the safe default. Use `-1` only for `max_sessions` or `max_streams` if you intentionally want no hard limit.
+
+Recommended busy-server values:
+
+- `max_sessions`: `10000`
+- `max_streams`: `15000`
+- `pending_responses`: `20000`
+- `stream_buffer`: `262144`
+- `udp_read_buffer`: `16777216`
+- `udp_write_buffer`: `16777216`
+- `log_connections`: `false`
+
+DNSTT now also recovers panics inside DNSTT goroutines, rejects new sessions/streams when limits are reached, and reports these counters in `/api/dnstt`. The admin panel shows them on the main **Dashboard** when DNSTT is enabled. If `dnstt` is disabled in the config, the dashboard card is hidden completely. `/api/dnstt` also returns an `enabled` flag. The old dashboard quick-action button card was removed:
+
+- `active_sessions`
+- `active_streams`
+- `sess_rejected`
+- `stream_rejected`
+- `panic_recovered`
+- `rec_dropped`
+- `parse_err`
+- `ch_len`
+
+For very large DNSTT deployments, raise Linux socket buffer limits too, for example:
+
+```bash
+cat >/etc/sysctl.d/99-dragon-dnstt.conf <<'SYSCTL'
+net.core.rmem_max=67108864
+net.core.wmem_max=67108864
+net.core.netdev_max_backlog=250000
+net.ipv4.udp_mem=262144 524288 1048576
+SYSCTL
+sysctl --system
+```
+
+### DNSTT built-in local DNS / fake DNS over IPv6
+
+DNSTT can now open an extra internal DNS listener for local testing without a second DNS server.
+This listener feeds DNS tunnel packets directly into the same integrated DNSTT session pool and private key.
+
+Example IPv6-only config:
+
+```json
+{
+  "dnstt": {
+    "domain": "t.example.com",
+    "domains": ["t.example.com", "t.local.lan"],
+    "udp_listen": "[::]:5300",
+    "fake_dns_enabled": true,
+    "fake_dns_listen": "[2001:db8::1234]:53",
+    "fake_dns_domain": "t.local.lan",
+    "fake_dns_workers": 4,
+    "dns_response_workers": 1,
+    "privkey_file": "/opt/sshpanel/dnstt.key"
+  }
+}
+```
+
+Notes:
+
+- `fake_dns_listen` accepts IPv6 bracket syntax such as `[2001:db8::1234]:53` or `[::]:53`.
+- IPv6 listeners are opened with `udp6`, so they do not try to reserve IPv4 port 53. This lets an existing IPv4 master DNS keep using IPv4 port 53 while DNSTT uses a new IPv6 address.
+- The built-in local DNS listener only accepts `fake_dns_domain`, for example `t.local.lan`.
+- `fake_dns_workers` adds concurrent UDP read/parse workers for the local DNS listener. Use `0` for the automatic default; `4` to `8` is a good starting range for busy servers.
+- `dns_response_workers` shards DNS response sending. Keep it at `0` or `1` unless the DNSTT **Queue** grows under load; then test `2` to `4`.
+- The normal `udp_listen` listener still accepts the full `domains` list.
+- Port 53 may require root privileges or the `CAP_NET_BIND_SERVICE` capability.
+- These fields can be changed from the admin panel under **DNSTT Tunnel**.

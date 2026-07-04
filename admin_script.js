@@ -103,6 +103,14 @@ const ifaceBody  = document.getElementById("ifaceBody");
 const ifaceSummary = document.getElementById("ifaceSummary");
 const statsUpdated = document.getElementById("statsUpdated");
 const resetIfaceStatsBtn = document.getElementById("resetIfaceStatsBtn");
+const dnsttDashboardCard = document.getElementById("dnsttDashboardCard");
+const dnsttHealthUpdated = document.getElementById("dnsttHealthUpdated");
+const dnsttActiveSessions = document.getElementById("dnsttActiveSessions");
+const dnsttActiveStreams = document.getElementById("dnsttActiveStreams");
+const dnsttDNSRx = document.getElementById("dnsttDNSRx");
+const dnsttQueueLen = document.getElementById("dnsttQueueLen");
+const dnsttHealthBody = document.getElementById("dnsttHealthBody");
+const dnsttHealthSummary = document.getElementById("dnsttHealthSummary");
 
 // VnStat
 const vnstatDailyBody = document.getElementById("vnstatDailyBody");
@@ -135,6 +143,16 @@ function fmtBytes(n) {
   const k=n/1024; if(k<1024) return k.toFixed(1)+" KiB";
   const m=k/1024; if(m<1024) return m.toFixed(1)+" MiB";
   return (m/1024).toFixed(1)+" GiB";
+}
+function fmtInt(n) {
+  const v = Number(n);
+  return Number.isFinite(v) ? v.toLocaleString() : "--";
+}
+function fmtDnsttTimestamp(ts) {
+  if (!ts) return "Waiting for DNSTT stats…";
+  const d = new Date(ts);
+  if (!Number.isFinite(d.getTime()) || d.getFullYear() < 2020) return "Waiting for DNSTT stats…";
+  return "Updated: " + d.toLocaleTimeString();
 }
 function localDateKey(d = new Date()) {
   const y = d.getFullYear();
@@ -213,7 +231,6 @@ document.querySelectorAll(".tab-btn").forEach(btn => btn.addEventListener("click
 menuToggle?.addEventListener("click", () => document.body.classList.add("sidebar-open"));
 drawerBackdrop?.addEventListener("click", () => document.body.classList.remove("sidebar-open"));
 themeToggle?.addEventListener("click", () => document.body.classList.toggle("light-mode"));
-document.querySelectorAll(".quick-action[data-jump]").forEach(btn => btn.addEventListener("click", () => selectTab(btn.dataset.jump)));
 document.getElementById("quickCreateUserBtn")?.addEventListener("click", () => { selectTab("ssh"); setFormCollapsed(false); fUsername?.focus(); });
 document.getElementById("quickOpenXrayBtn")?.addEventListener("click", () => selectTab("xray"));
 
@@ -872,6 +889,76 @@ async function deleteReseller(username) {
 // ─── Stats ────────────────────────────────────────────────────────────────────
 document.querySelector("[data-tab='stats']")?.addEventListener("click", loadStats);
 
+async function loadDnsttHealth() {
+  if (!dnsttDashboardCard && !dnsttHealthBody && !dnsttActiveSessions) return;
+  if (currentRole !== "superadmin") {
+    dnsttDashboardCard?.classList.add("hidden");
+    return;
+  }
+  try {
+    const res = await api("/api/dnstt");
+    if (!res.ok) throw new Error(await res.text());
+    const d = await res.json();
+    const enabled = d.enabled !== false;
+    if (dnsttDashboardCard) dnsttDashboardCard.classList.toggle("hidden", !enabled);
+    if (!enabled) return;
+
+    if (dnsttActiveSessions) dnsttActiveSessions.textContent = fmtInt(d.active_sessions);
+    if (dnsttActiveStreams) dnsttActiveStreams.textContent = fmtInt(d.active_streams);
+    if (dnsttDNSRx) dnsttDNSRx.textContent = fmtInt(d.dns_rx);
+    if (dnsttQueueLen) dnsttQueueLen.textContent = fmtInt(d.ch_len);
+    if (dnsttHealthUpdated) dnsttHealthUpdated.textContent = d.running === false ? "DNSTT stopped" : fmtDnsttTimestamp(d.timestamp);
+
+    const rows = [
+      ["Session rejected", d.sess_rejected],
+      ["Stream rejected", d.stream_rejected],
+      ["DNS parse errors", d.parse_err],
+      ["No EDNS", d.no_edns],
+      ["EDNS limit 512", d.limit512],
+      ["Local DNS workers", d.fake_dns_workers],
+      ["Response workers", d.dns_response_workers],
+      ["Responses queued", d.rec_queued],
+      ["Responses dropped", d.rec_dropped],
+      ["Responses sent", d.resp_sent],
+      ["Response bytes", d.resp_bytes],
+      ["Empty responses", d.resp_empty],
+      ["Data responses", d.resp_data],
+      ["Oversize responses", d.resp_oversize],
+      ["KCP sessions new", d.kcp_new],
+      ["KCP sessions ended", d.kcp_end],
+      ["SMUX streams new", d.smux_new],
+      ["SMUX streams ended", d.smux_end],
+      ["Panic recovered", d.panic_recovered],
+    ];
+    if (dnsttHealthBody) {
+      dnsttHealthBody.innerHTML = "";
+      for (let i = 0; i < rows.length; i += 2) {
+        const a = rows[i];
+        const b = rows[i + 1] || ["", ""];
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td>${a[0]}</td><td>${fmtInt(a[1])}</td><td>${b[0]}</td><td>${b[0] ? fmtInt(b[1]) : ""}</td>`;
+        dnsttHealthBody.appendChild(tr);
+      }
+    }
+    const bad = Number(d.sess_rejected || 0) + Number(d.stream_rejected || 0) + Number(d.rec_dropped || 0) + Number(d.panic_recovered || 0);
+    if (dnsttHealthSummary) {
+      if (d.running === false) {
+        dnsttHealthSummary.textContent = "DNSTT is enabled but not running. Check key/domain/listen config or recent logs.";
+      } else {
+        dnsttHealthSummary.textContent = bad > 0
+          ? `Attention: ${fmtInt(bad)} overload/recovery events in the last DNSTT stats window.`
+          : "DNSTT health OK: no rejects, drops, or recovered panics in the last stats window.";
+      }
+    }
+  } catch (e) {
+    if (e.message === "auth") throw e;
+    dnsttDashboardCard?.classList.add("hidden");
+    if (dnsttHealthUpdated) dnsttHealthUpdated.textContent = "Error loading DNSTT stats.";
+    if (dnsttHealthSummary) dnsttHealthSummary.textContent = e.message || "DNSTT stats unavailable.";
+  }
+}
+
+
 async function loadStats() {
   try {
     const res = await api("/api/stats");
@@ -895,6 +982,7 @@ async function loadStats() {
     });
     ifaceSummary.textContent = `Total: ${fmtBytes(totRx)} rx / ${fmtBytes(totTx)} tx`;
     statsUpdated.textContent = "Updated: " + new Date().toLocaleTimeString();
+    await loadDnsttHealth();
   } catch (e) { if (e.message==="auth") doAuthError(); }
 }
 
@@ -1028,6 +1116,22 @@ async function clearPanelLog() {
 // ─── Server Config ────────────────────────────────────────────────────────────
 document.querySelector("[data-tab='server']")?.addEventListener("click", loadServerConfig);
 
+
+function dnsttDomainsText(d) {
+  const domains = Array.isArray(d?.domains) && d.domains.length ? d.domains : (d?.domain ? [d.domain] : []);
+  return domains.join("\n");
+}
+function readDnsttDomains(id) {
+  const el = document.getElementById(id);
+  if (!el) return [];
+  const seen = new Set();
+  return el.value.split(/\r?\n|,/).map(s => s.trim()).filter(Boolean).map(s => s.replace(/\.$/, "").toLowerCase()).filter(s => {
+    if (seen.has(s)) return false;
+    seen.add(s);
+    return true;
+  });
+}
+
 function toggleDnsttFields(on) {
   const el = document.getElementById("dnsttFields");
   el.style.opacity = on ? "1" : ".4";
@@ -1050,6 +1154,8 @@ async function loadServerConfig() {
     // Network
     document.getElementById("cfgListen").value       = c.listen || "";
     document.getElementById("cfgExtraListen").value  = (c.extra_listen || []).join("\n");
+    if (document.getElementById("cfgProxyAutoRestart")) document.getElementById("cfgProxyAutoRestart").value = c.proxy_auto_restart_interval || "";
+    if (document.getElementById("cfgProxyRestartGrace")) document.getElementById("cfgProxyRestartGrace").value = c.proxy_auto_restart_grace || "";
 
     // SSH / general
     document.getElementById("cfgLimitUp").value      = c.default_limit_mbps_up || 0;
@@ -1065,11 +1171,25 @@ async function loadServerConfig() {
     document.getElementById("cfgDnsttEnabled").checked = hasDnstt;
     toggleDnsttFields(hasDnstt);
     const d = c.dnstt || {};
-    document.getElementById("cfgDnsttDomain").value    = d.domain || "";
+    document.getElementById("cfgDnsttDomains").value = dnsttDomainsText(d);
     document.getElementById("cfgDnsttUDP").value       = d.udp_listen || "";
+    if (document.getElementById("cfgDnsttFakeEnabled")) document.getElementById("cfgDnsttFakeEnabled").checked = !!d.fake_dns_enabled;
+    if (document.getElementById("cfgDnsttFakeListen")) document.getElementById("cfgDnsttFakeListen").value = d.fake_dns_listen || "";
+    if (document.getElementById("cfgDnsttFakeDomain")) document.getElementById("cfgDnsttFakeDomain").value = d.fake_dns_domain || "t.local.lan";
+    if (document.getElementById("cfgDnsttFakeWorkers")) document.getElementById("cfgDnsttFakeWorkers").value = d.fake_dns_workers || 0;
+    if (document.getElementById("cfgDnsttRespWorkers")) document.getElementById("cfgDnsttRespWorkers").value = d.dns_response_workers || 0;
+    document.getElementById("cfgDnsttAutoRestart").value = d.auto_restart_interval || "";
+    document.getElementById("cfgDnsttRestartGrace").value = d.auto_restart_grace || "";
+    if (document.getElementById("cfgDnsttMaxSessions")) document.getElementById("cfgDnsttMaxSessions").value = d.max_sessions || 0;
+    if (document.getElementById("cfgDnsttMaxStreams")) document.getElementById("cfgDnsttMaxStreams").value = d.max_streams || 0;
+    if (document.getElementById("cfgDnsttPendingResponses")) document.getElementById("cfgDnsttPendingResponses").value = d.pending_responses || 0;
+    if (document.getElementById("cfgDnsttStreamBuffer")) document.getElementById("cfgDnsttStreamBuffer").value = d.stream_buffer || 0;
+    if (document.getElementById("cfgDnsttUDPReadBuffer")) document.getElementById("cfgDnsttUDPReadBuffer").value = d.udp_read_buffer || 0;
+    if (document.getElementById("cfgDnsttUDPWriteBuffer")) document.getElementById("cfgDnsttUDPWriteBuffer").value = d.udp_write_buffer || 0;
     document.getElementById("cfgDnsttKey").value       = d.privkey_file || "/opt/sshpanel/dnstt.key";
     document.getElementById("cfgDnsttNoStats").checked = !!d.disable_stats_log;
     document.getElementById("cfgDnsttNoConsole").checked = !!d.disable_console_log;
+    if (document.getElementById("cfgDnsttLogConnections")) document.getElementById("cfgDnsttLogConnections").checked = !!d.log_connections;
 
     // UDPGW
     const hasUdpgw = !!c.udpgw;
@@ -1080,6 +1200,8 @@ async function loadServerConfig() {
     document.getElementById("cfgUdpgwMaxConns").value  = u.max_client_conns || 0;
     document.getElementById("cfgUdpgwIdle").value      = u.idle_timeout || "";
     document.getElementById("cfgUdpgwMapTTL").value    = u.map_ttl || "";
+    if (document.getElementById("cfgUdpgwAutoRestart")) document.getElementById("cfgUdpgwAutoRestart").value = u.auto_restart_interval || "";
+    if (document.getElementById("cfgUdpgwRestartGrace")) document.getElementById("cfgUdpgwRestartGrace").value = u.auto_restart_grace || "";
     document.getElementById("cfgUdpgwDebug").checked   = !!u.debug;
 
     // TLS forwarders
@@ -1105,10 +1227,13 @@ async function saveServerConfig() {
 
   const extraLines = document.getElementById("cfgExtraListen").value
     .split("\n").map(s => s.trim()).filter(Boolean);
+  const dnsttDomains = readDnsttDomains("cfgDnsttDomains");
 
   const cfg = {
     listen:               document.getElementById("cfgListen").value.trim(),
     extra_listen:         extraLines,
+    proxy_auto_restart_interval: document.getElementById("cfgProxyAutoRestart") ? document.getElementById("cfgProxyAutoRestart").value.trim() : "",
+    proxy_auto_restart_grace:    document.getElementById("cfgProxyRestartGrace") ? document.getElementById("cfgProxyRestartGrace").value.trim() : "",
     host_key_file:        "/opt/sshpanel/ssh_host_rsa_key",
     admin_dir:            "/opt/sshpanel/admin",
     default_limit_mbps_up:   parseInt(document.getElementById("cfgLimitUp").value  || "0", 10),
@@ -1118,17 +1243,34 @@ async function saveServerConfig() {
     banner:      document.getElementById("cfgBanner").value,
     banner_file: "/opt/sshpanel/banner.txt",
     dnstt: document.getElementById("cfgDnsttEnabled").checked ? {
-      domain:              document.getElementById("cfgDnsttDomain").value.trim(),
+      domain:              dnsttDomains[0] || "",
+      domains:             dnsttDomains,
       udp_listen:          document.getElementById("cfgDnsttUDP").value.trim(),
+      fake_dns_enabled: document.getElementById("cfgDnsttFakeEnabled") ? document.getElementById("cfgDnsttFakeEnabled").checked : false,
+      fake_dns_listen: document.getElementById("cfgDnsttFakeListen") ? document.getElementById("cfgDnsttFakeListen").value.trim() : "",
+      fake_dns_domain: document.getElementById("cfgDnsttFakeDomain") ? document.getElementById("cfgDnsttFakeDomain").value.trim() : "",
+      fake_dns_workers: parseInt(document.getElementById("cfgDnsttFakeWorkers") ? document.getElementById("cfgDnsttFakeWorkers").value || "0" : "0", 10),
+      dns_response_workers: parseInt(document.getElementById("cfgDnsttRespWorkers") ? document.getElementById("cfgDnsttRespWorkers").value || "0" : "0", 10),
+      auto_restart_interval: document.getElementById("cfgDnsttAutoRestart").value.trim(),
+      auto_restart_grace:  document.getElementById("cfgDnsttRestartGrace").value.trim(),
+      max_sessions: parseInt(document.getElementById("cfgDnsttMaxSessions") ? document.getElementById("cfgDnsttMaxSessions").value || "0" : "0", 10),
+      max_streams: parseInt(document.getElementById("cfgDnsttMaxStreams") ? document.getElementById("cfgDnsttMaxStreams").value || "0" : "0", 10),
+      pending_responses: parseInt(document.getElementById("cfgDnsttPendingResponses") ? document.getElementById("cfgDnsttPendingResponses").value || "0" : "0", 10),
+      stream_buffer: parseInt(document.getElementById("cfgDnsttStreamBuffer") ? document.getElementById("cfgDnsttStreamBuffer").value || "0" : "0", 10),
+      udp_read_buffer: parseInt(document.getElementById("cfgDnsttUDPReadBuffer") ? document.getElementById("cfgDnsttUDPReadBuffer").value || "0" : "0", 10),
+      udp_write_buffer: parseInt(document.getElementById("cfgDnsttUDPWriteBuffer") ? document.getElementById("cfgDnsttUDPWriteBuffer").value || "0" : "0", 10),
       privkey_file:        document.getElementById("cfgDnsttKey").value.trim(),
       disable_stats_log:   document.getElementById("cfgDnsttNoStats").checked,
       disable_console_log: document.getElementById("cfgDnsttNoConsole").checked,
+      log_connections: document.getElementById("cfgDnsttLogConnections") ? document.getElementById("cfgDnsttLogConnections").checked : false,
     } : null,
     udpgw: document.getElementById("cfgUdpgwEnabled").checked ? {
       listen:          document.getElementById("cfgUdpgwListen").value.trim(),
       max_client_conns: parseInt(document.getElementById("cfgUdpgwMaxConns").value || "0", 10),
       idle_timeout:    document.getElementById("cfgUdpgwIdle").value.trim(),
       map_ttl:         document.getElementById("cfgUdpgwMapTTL").value.trim(),
+      auto_restart_interval: document.getElementById("cfgUdpgwAutoRestart") ? document.getElementById("cfgUdpgwAutoRestart").value.trim() : "",
+      auto_restart_grace:    document.getElementById("cfgUdpgwRestartGrace") ? document.getElementById("cfgUdpgwRestartGrace").value.trim() : "",
       debug:           document.getElementById("cfgUdpgwDebug").checked,
     } : null,
     tls_forwarders: tlsArr,

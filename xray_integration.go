@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,9 +21,21 @@ import (
 
 // XrayConfig holds Xray process management settings embedded in the main Config.
 type XrayConfig struct {
-	Enabled    bool   `json:"enabled"`
-	BinPath    string `json:"bin_path"`    // e.g. /opt/sshpanel/xray
-	ConfigFile string `json:"config_file"` // e.g. /opt/sshpanel/xray_config.json
+	Enabled          bool   `json:"enabled"`
+	BinPath          string `json:"bin_path"`                     // external mode only, e.g. /opt/sshpanel/xray
+	ConfigFile       string `json:"config_file"`                  // external runtime config, e.g. /opt/sshpanel/xray_config.json
+	NativeConfigFile string `json:"native_config_file,omitempty"` // native emulator config, independent from external xray
+
+	// Mode selects the runtime implementation. Supported values:
+	//   native   = run the in-process emulator implemented in this binary
+	//   external = spawn the external /opt/sshpanel/xray binary
+	// Empty/unknown is normalized to native so older configs do not silently
+	// keep using the external binary after this build is installed.
+	Mode string `json:"mode,omitempty"`
+
+	// Native is kept for backward compatibility with older configs/UI payloads.
+	// New writes should set both Mode and Native. Runtime decisions use UseNative().
+	Native bool `json:"native,omitempty"`
 
 	// Optional Xray API endpoint used for online client counters. If empty,
 	// the panel auto-detects a local inbound tagged "api" from the Xray config.
@@ -30,6 +43,109 @@ type XrayConfig struct {
 	// A client is considered online when its Xray stats traffic changed recently.
 	OnlineWindowSeconds int `json:"online_window_seconds,omitempty"` // default 90
 	StatsPollSeconds    int `json:"stats_poll_seconds,omitempty"`    // default 15
+
+	// NativeIPStrategy controls native outbound address selection. The native
+	// runtime defaults to auto dual-stack behavior so IPv6 destinations from
+	// clients are preserved when the server has IPv6 connectivity. force_ipv4 is
+	// only kept as an explicit legacy override.
+	NativeIPStrategy string `json:"native_ip_strategy,omitempty"` // auto | force_ipv4
+}
+
+const (
+	xrayModeNative              = "native"
+	xrayModeExternal            = "external"
+	defaultXrayBinPath          = "/opt/sshpanel/xray"
+	defaultXrayConfigFile       = "/opt/sshpanel/xray_config.json"
+	defaultXrayNativeConfigFile = "/opt/sshpanel/xray_native_config.json"
+	xrayNativeIPStrategyAuto    = "auto"
+	xrayNativeIPStrategyForce4  = "force_ipv4"
+)
+
+func (c *XrayConfig) NormalizeDefaults() {
+	if c == nil {
+		return
+	}
+	mode := strings.ToLower(strings.TrimSpace(c.Mode))
+	switch mode {
+	case xrayModeExternal:
+		c.Mode = xrayModeExternal
+		c.Native = false
+	case xrayModeNative:
+		c.Mode = xrayModeNative
+		c.Native = true
+	default:
+		// Old configs did not have mode/native and used the external binary by
+		// accident. For the emulator build, make internal/native the safe default.
+		c.Mode = xrayModeNative
+		c.Native = true
+	}
+	if strings.TrimSpace(c.ConfigFile) == "" {
+		c.ConfigFile = defaultXrayConfigFile
+	}
+	if strings.TrimSpace(c.NativeConfigFile) == "" {
+		c.NativeConfigFile = defaultXrayNativeConfigFile
+	}
+	if strings.TrimSpace(c.BinPath) == "" {
+		c.BinPath = defaultXrayBinPath
+	}
+	switch strings.ToLower(strings.TrimSpace(c.NativeIPStrategy)) {
+	case "ipv4", "useipv4", "use_ipv4", xrayNativeIPStrategyForce4:
+		c.NativeIPStrategy = xrayNativeIPStrategyForce4
+	default:
+		c.NativeIPStrategy = xrayNativeIPStrategyAuto
+	}
+}
+
+func (c *XrayConfig) NativeForceIPv4() bool {
+	if c == nil {
+		return false
+	}
+	mode := strings.ToLower(strings.TrimSpace(c.NativeIPStrategy))
+	return mode == xrayNativeIPStrategyForce4 || mode == "ipv4" || mode == "useipv4" || mode == "use_ipv4"
+}
+
+func (c *XrayConfig) ModeName() string {
+	if c == nil {
+		return "disabled"
+	}
+	mode := strings.ToLower(strings.TrimSpace(c.Mode))
+	if mode == xrayModeExternal {
+		return xrayModeExternal
+	}
+	if mode == xrayModeNative || c.Native {
+		return xrayModeNative
+	}
+	return xrayModeNative
+}
+
+func (c *XrayConfig) UseNative() bool {
+	return c != nil && c.ModeName() != xrayModeExternal
+}
+
+func (c *XrayConfig) ActiveConfigFile() string {
+	if c == nil {
+		return ""
+	}
+	if c.UseNative() {
+		if strings.TrimSpace(c.NativeConfigFile) != "" {
+			return strings.TrimSpace(c.NativeConfigFile)
+		}
+		return defaultXrayNativeConfigFile
+	}
+	if strings.TrimSpace(c.ConfigFile) != "" {
+		return strings.TrimSpace(c.ConfigFile)
+	}
+	return defaultXrayConfigFile
+}
+
+func (c *XrayConfig) ExternalConfigFile() string {
+	if c == nil {
+		return ""
+	}
+	if strings.TrimSpace(c.ConfigFile) != "" {
+		return strings.TrimSpace(c.ConfigFile)
+	}
+	return defaultXrayConfigFile
 }
 
 // xrayLogRing is a fixed-capacity circular buffer for captured log lines.
@@ -98,6 +214,10 @@ type XrayManager struct {
 	lastStatsErr  string
 	lastStatsPoll time.Time
 	pollStarted   bool
+
+	nativeDBMu              sync.Mutex
+	nativeTrafficPending    map[string]xrayPendingTraffic
+	nativeStatsFlushStarted bool
 }
 
 type xrayTrafficCounters struct {
@@ -106,10 +226,17 @@ type xrayTrafficCounters struct {
 }
 
 type xrayRuntimeStat struct {
-	Email      string
-	Uplink     int64
-	Downlink   int64
-	LastActive time.Time
+	Email             string
+	Uplink            int64
+	Downlink          int64
+	LastActive        time.Time
+	ActiveConnections int
+}
+
+type xrayPendingTraffic struct {
+	Email    string
+	Uplink   int64
+	Downlink int64
 }
 
 var xrayMgr = &XrayManager{}
@@ -121,8 +248,18 @@ func initXrayManager(cfg *XrayConfig) {
 	}
 	xrayMgr.mu.Lock()
 	xrayMgr.cfg = cfg
+	if err := xrayMgr.bootstrapConfigStoreLocked(); err != nil {
+		log.Printf("xray: database config bootstrap failed: %v", err)
+	}
 	xrayMgr.mu.Unlock()
-	xrayMgr.startStatsPoller()
+
+	// In native mode the in-process emulator records traffic directly, so the
+	// external `xray api statsquery` poller is not started (it would overwrite
+	// the native counters with errors from a non-existent CLI endpoint).
+	xrayMgr.startNativeStatsFlusher()
+	if !cfg.UseNative() {
+		xrayMgr.startStatsPoller()
+	}
 
 	if cfg.Enabled {
 		if err := xrayMgr.Start(); err != nil {
@@ -150,11 +287,31 @@ func (m *XrayManager) Start() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if m.isRunning() {
-		return fmt.Errorf("xray already running (pid %d)", m.cmd.Process.Pid)
-	}
 	if m.cfg == nil {
 		return fmt.Errorf("xray not configured")
+	}
+	if err := m.syncConfigFileFromStoreLocked(); err != nil {
+		m.lastErr = err.Error()
+		return err
+	}
+	configFile := m.activeConfigFileLocked()
+
+	// Native mode: run the in-process emulator instead of the subprocess.
+	if m.cfg.UseNative() {
+		if nativeXray.nativeRunning() {
+			return fmt.Errorf("native xray already running")
+		}
+		if err := nativeXray.start(configFile); err != nil {
+			m.lastErr = err.Error()
+			return err
+		}
+		m.startTime = time.Now()
+		m.lastErr = ""
+		return nil
+	}
+
+	if m.isRunning() {
+		return fmt.Errorf("xray already running (pid %d)", m.cmd.Process.Pid)
 	}
 	if _, err := os.Stat(m.cfg.BinPath); err != nil {
 		return fmt.Errorf("xray binary not found at %s", m.cfg.BinPath)
@@ -166,8 +323,8 @@ func (m *XrayManager) Start() error {
 	}
 
 	args := []string{"run"}
-	if m.cfg.ConfigFile != "" {
-		args = append(args, "-c", m.cfg.ConfigFile)
+	if configFile != "" {
+		args = append(args, "-c", configFile)
 	}
 
 	cmd := exec.Command(m.cfg.BinPath, args...)
@@ -202,6 +359,13 @@ func (m *XrayManager) Start() error {
 
 // Stop sends SIGTERM and waits up to 5 s before forcing SIGKILL.
 func (m *XrayManager) Stop() error {
+	// Stop both implementations defensively. Mode can change at runtime; relying
+	// only on the new cfg.Native value can leak the old external subprocess when
+	// switching external -> native, or leave native listeners bound when switching
+	// native -> external.
+	nativeXray.stop()
+	m.flushNativeStatsToDB()
+
 	m.mu.Lock()
 	if !m.isRunning() {
 		m.mu.Unlock()
@@ -234,10 +398,167 @@ func (m *XrayManager) Restart() error {
 	return m.Start()
 }
 
+// recordNativeConnect marks a native client stream as online immediately. This
+// is more accurate than external Xray's Stats API polling because it knows when
+// the decoded VMess/VLESS stream is authenticated and opened.
+func (m *XrayManager) recordNativeConnect(uuid, email string) {
+	uuid = strings.TrimSpace(uuid)
+	email = strings.TrimSpace(email)
+	if email == "" {
+		email = uuid
+	}
+	if uuid == "" && email == "" {
+		return
+	}
+	now := time.Now()
+	m.statsMu.Lock()
+	if m.statsByEmail == nil {
+		m.statsByEmail = make(map[string]xrayRuntimeStat)
+	}
+	st := m.statsByEmail[email]
+	st.Email = email
+	st.LastActive = now
+	st.ActiveConnections++
+	m.statsByEmail[email] = st
+	m.statsMu.Unlock()
+
+	if statsStore != nil && uuid != "" {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			if err := statsStore.UpdateXrayClientActive(ctx, uuid, email, 1); err != nil {
+				log.Printf("xray native stats: active +1 for %s failed: %v", uuid, err)
+			}
+		}()
+	}
+}
+
+func (m *XrayManager) recordNativeDisconnect(uuid, email string) {
+	uuid = strings.TrimSpace(uuid)
+	email = strings.TrimSpace(email)
+	if email == "" {
+		email = uuid
+	}
+	if uuid == "" && email == "" {
+		return
+	}
+	m.statsMu.Lock()
+	if m.statsByEmail != nil {
+		st := m.statsByEmail[email]
+		if st.ActiveConnections > 0 {
+			st.ActiveConnections--
+		}
+		m.statsByEmail[email] = st
+	}
+	m.statsMu.Unlock()
+
+	if statsStore != nil && uuid != "" {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			if err := statsStore.UpdateXrayClientActive(ctx, uuid, email, -1); err != nil {
+				log.Printf("xray native stats: active -1 for %s failed: %v", uuid, err)
+			}
+		}()
+	}
+}
+
+// recordNativeTraffic accumulates in-process byte counters for a client and
+// queues DB persistence. Used by the native emulator instead of external
+// `xray api statsquery` polling.
+func (m *XrayManager) recordNativeTraffic(uuid, email string, up, down int64) {
+	uuid = strings.TrimSpace(uuid)
+	email = strings.TrimSpace(email)
+	if email == "" {
+		email = uuid
+	}
+	if email == "" || (up == 0 && down == 0) {
+		return
+	}
+	now := time.Now()
+	m.statsMu.Lock()
+	if m.statsByEmail == nil {
+		m.statsByEmail = make(map[string]xrayRuntimeStat)
+	}
+	st := m.statsByEmail[email]
+	st.Email = email
+	st.Uplink += up
+	st.Downlink += down
+	st.LastActive = now
+	m.statsByEmail[email] = st
+	m.statsMu.Unlock()
+
+	if statsStore != nil && uuid != "" {
+		m.nativeDBMu.Lock()
+		if m.nativeTrafficPending == nil {
+			m.nativeTrafficPending = make(map[string]xrayPendingTraffic)
+		}
+		p := m.nativeTrafficPending[uuid]
+		p.Email = email
+		p.Uplink += up
+		p.Downlink += down
+		m.nativeTrafficPending[uuid] = p
+		m.nativeDBMu.Unlock()
+	}
+}
+
+func (m *XrayManager) startNativeStatsFlusher() {
+	m.nativeDBMu.Lock()
+	if m.nativeStatsFlushStarted {
+		m.nativeDBMu.Unlock()
+		return
+	}
+	m.nativeStatsFlushStarted = true
+	m.nativeDBMu.Unlock()
+
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			m.flushNativeStatsToDB()
+		}
+	}()
+}
+
+func (m *XrayManager) flushNativeStatsToDB() {
+	if statsStore == nil {
+		return
+	}
+	m.nativeDBMu.Lock()
+	pending := m.nativeTrafficPending
+	m.nativeTrafficPending = nil
+	m.nativeDBMu.Unlock()
+	if len(pending) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := statsStore.AddXrayClientTrafficBatch(ctx, pending); err != nil {
+		log.Printf("xray native stats: db traffic flush failed: %v", err)
+		// Put deltas back so a transient DB failure does not lose accounting.
+		m.nativeDBMu.Lock()
+		if m.nativeTrafficPending == nil {
+			m.nativeTrafficPending = make(map[string]xrayPendingTraffic)
+		}
+		for uuid, d := range pending {
+			p := m.nativeTrafficPending[uuid]
+			if p.Email == "" {
+				p.Email = d.Email
+			}
+			p.Uplink += d.Uplink
+			p.Downlink += d.Downlink
+			m.nativeTrafficPending[uuid] = p
+		}
+		m.nativeDBMu.Unlock()
+	}
+}
+
 // XrayStatusDTO is returned by /api/xray/status.
 type XrayStatusDTO struct {
 	Enabled         bool       `json:"enabled"`
 	Running         bool       `json:"running"`
+	Mode            string     `json:"mode"`
+	Native          bool       `json:"native"`
 	PID             int        `json:"pid,omitempty"`
 	Uptime          string     `json:"uptime,omitempty"`
 	Error           string     `json:"error,omitempty"`
@@ -252,11 +573,36 @@ type XrayStatusDTO struct {
 
 // Status returns a snapshot of the current xray process state.
 func (m *XrayManager) Status() XrayStatusDTO {
+	m.mu.Lock()
+	native := m.cfg != nil && m.cfg.UseNative()
+	m.mu.Unlock()
+
+	// Native mode: report the in-process emulator's state. Traffic counters are
+	// recorded live so there is no CLI poll and no Stats API config to check.
+	if native {
+		m.mu.Lock()
+		s := XrayStatusDTO{Enabled: m.cfg.Enabled, Mode: m.cfg.ModeName(), Native: m.cfg.UseNative()}
+		if nativeXray.nativeRunning() {
+			s.Running = true
+			s.Uptime = time.Since(m.startTime).Round(time.Second).String()
+		}
+		if m.lastErr != "" {
+			s.Error = m.lastErr
+		}
+		m.mu.Unlock()
+		s.OnlineUsers = m.CountOnlineUsers()
+		s.OnlineWindowSec = int(m.onlineWindow().Seconds())
+		s.StatsConfigured = true // in-process metering is always available
+		return s
+	}
+
 	m.refreshRuntimeStatsIfStale(3 * time.Second)
 	m.mu.Lock()
 	s := XrayStatusDTO{}
 	if m.cfg != nil {
 		s.Enabled = m.cfg.Enabled
+		s.Mode = m.cfg.ModeName()
+		s.Native = m.cfg.UseNative()
 	}
 	if m.isRunning() && m.cmd != nil && m.cmd.Process != nil {
 		s.Running = true
@@ -337,6 +683,12 @@ func (m *XrayManager) startStatsPoller() {
 
 func (m *XrayManager) isRunningSnapshot() bool {
 	m.mu.Lock()
+	native := m.cfg != nil && m.cfg.UseNative()
+	m.mu.Unlock()
+	if native {
+		return nativeXray.nativeRunning()
+	}
+	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.isRunning()
 }
@@ -344,7 +696,7 @@ func (m *XrayManager) isRunningSnapshot() bool {
 func (m *XrayManager) apiCommandConfig() (binPath, apiServer string, ok bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.cfg == nil || m.cfg.BinPath == "" || m.cfg.ConfigFile == "" {
+	if m.cfg == nil || m.cfg.BinPath == "" || m.cfg.ExternalConfigFile() == "" {
 		return "", "", false
 	}
 	binPath = m.cfg.BinPath
@@ -356,10 +708,10 @@ func (m *XrayManager) apiCommandConfig() (binPath, apiServer string, ok bool) {
 }
 
 func (m *XrayManager) discoverAPIServerLocked() string {
-	if m.cfg == nil || m.cfg.ConfigFile == "" {
+	if m.cfg == nil || m.cfg.ExternalConfigFile() == "" {
 		return ""
 	}
-	data, err := os.ReadFile(m.cfg.ConfigFile)
+	data, err := os.ReadFile(m.cfg.ExternalConfigFile())
 	if err != nil {
 		return ""
 	}
@@ -412,7 +764,7 @@ func (m *XrayManager) refreshRuntimeStats() {
 	for email, counters := range traffic {
 		seen[email] = true
 		prev := m.statsByEmail[email]
-		st := xrayRuntimeStat{Email: email, Uplink: counters.Uplink, Downlink: counters.Downlink, LastActive: prev.LastActive}
+		st := xrayRuntimeStat{Email: email, Uplink: counters.Uplink, Downlink: counters.Downlink, LastActive: prev.LastActive, ActiveConnections: prev.ActiveConnections}
 		changed := counters.Uplink != prev.Uplink || counters.Downlink != prev.Downlink
 		// First successful poll with non-zero traffic means the client has been
 		// active since Xray started. Later polls refresh LastActive only when bytes
@@ -578,30 +930,237 @@ func (m *XrayManager) CountOnlineUsers() int {
 	defer m.statsMu.RUnlock()
 	n := 0
 	for _, st := range m.statsByEmail {
-		if !st.LastActive.IsZero() && now.Sub(st.LastActive) <= window {
+		if st.ActiveConnections > 0 || (!st.LastActive.IsZero() && now.Sub(st.LastActive) <= window) {
 			n++
 		}
 	}
 	return n
 }
 
-// GetConfig reads the current xray JSON config file.
+func (m *XrayManager) activeConfigFileLocked() string {
+	if m.cfg == nil {
+		return ""
+	}
+	return m.cfg.ActiveConfigFile()
+}
+
+func (m *XrayManager) configStoreKeyLocked() string {
+	if m.cfg == nil {
+		return "default"
+	}
+	mode := m.cfg.ModeName()
+	path := strings.TrimSpace(m.activeConfigFileLocked())
+	if path == "" {
+		path = "default"
+	}
+	return mode + ":" + path
+}
+
+func normalizeJSONIndent(data []byte) ([]byte, error) {
+	var raw interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+	return json.MarshalIndent(raw, "", "  ")
+}
+
+func (m *XrayManager) readConfigLocked() ([]byte, error) {
+	configFile := m.activeConfigFileLocked()
+	if m.cfg == nil || configFile == "" {
+		return nil, fmt.Errorf("xray config file not configured")
+	}
+	if statsStore != nil {
+		if data, ok, err := statsStore.GetXrayConfig(context.Background(), m.configStoreKeyLocked()); err != nil {
+			log.Printf("xray: database config read failed, falling back to file: %v", err)
+		} else if ok {
+			pretty, err := normalizeJSONIndent(data)
+			if err != nil {
+				return nil, err
+			}
+			_ = os.WriteFile(configFile, pretty, 0o600)
+			return pretty, nil
+		}
+	}
+	return os.ReadFile(configFile)
+}
+
+func (m *XrayManager) writeConfigLocked(data []byte) error {
+	configFile := m.activeConfigFileLocked()
+	if m.cfg == nil || configFile == "" {
+		return fmt.Errorf("xray config file not configured")
+	}
+	pretty, err := normalizeJSONIndent(data)
+	if err != nil {
+		return err
+	}
+	if statsStore != nil {
+		if err := statsStore.UpsertXrayConfig(context.Background(), m.configStoreKeyLocked(), pretty); err != nil {
+			return fmt.Errorf("save Xray config to database: %w", err)
+		}
+	}
+	if err := os.WriteFile(configFile, pretty, 0o600); err != nil {
+		return err
+	}
+	m.importConfigClientsLocked(pretty, "saved xray config")
+	return nil
+}
+
+func (m *XrayManager) importConfigClientsLocked(data []byte, source string) {
+	if statsStore == nil || len(data) == 0 {
+		return
+	}
+	n, err := statsStore.ImportXrayClientsFromConfig(context.Background(), data)
+	if err != nil {
+		log.Printf("xray: import clients from %s failed: %v", source, err)
+		return
+	}
+	if n > 0 {
+		log.Printf("xray: imported/synced %d client UUIDs from %s into database", n, source)
+	}
+}
+
+func (m *XrayManager) importRuntimeConfigFileClientsLocked(source string) {
+	configFile := m.activeConfigFileLocked()
+	if m.cfg == nil || strings.TrimSpace(configFile) == "" || statsStore == nil {
+		return
+	}
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("xray: read %s for client import failed: %v", configFile, err)
+		}
+		return
+	}
+	pretty, err := normalizeJSONIndent(data)
+	if err != nil {
+		log.Printf("xray: cannot import clients from %s: invalid JSON: %v", configFile, err)
+		return
+	}
+	m.importConfigClientsLocked(pretty, source)
+}
+
+func (m *XrayManager) restartIfExternalRunning() {
+	m.mu.Lock()
+	external := m.cfg != nil && !m.cfg.UseNative()
+	running := external && m.isRunning()
+	m.mu.Unlock()
+	if !running {
+		return
+	}
+	if err := m.Restart(); err != nil {
+		log.Printf("xray: external restart after client/config change failed: %v", err)
+	}
+}
+
+func (m *XrayManager) useNativeMode() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cfg != nil && m.cfg.UseNative()
+}
+
+func (m *XrayManager) bootstrapConfigStoreLocked() error {
+	configFile := m.activeConfigFileLocked()
+	if m.cfg == nil || configFile == "" || statsStore == nil {
+		return nil
+	}
+	ctx := context.Background()
+	key := m.configStoreKeyLocked()
+
+	if data, ok, err := statsStore.GetXrayConfig(ctx, key); err != nil {
+		return err
+	} else if ok {
+		pretty, err := normalizeJSONIndent(data)
+		if err != nil {
+			return err
+		}
+		m.importConfigClientsLocked(pretty, "database xray config")
+		return os.WriteFile(configFile, pretty, 0o600)
+	}
+
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		if os.IsNotExist(err) && m.cfg.UseNative() {
+			// One-time migration only: if this node already has an old external
+			// config and no native config exists yet, clone it into the native path.
+			// After this point native mode reads/writes only its own DB row/file.
+			if migrated, migErr := m.seedNativeConfigFromExternalLocked(configFile); migErr != nil {
+				return migErr
+			} else if len(migrated) > 0 {
+				pretty, err := normalizeJSONIndent(migrated)
+				if err != nil {
+					return err
+				}
+				m.importConfigClientsLocked(pretty, "one-time external-to-native migration")
+				if err := statsStore.UpsertXrayConfig(ctx, key, pretty); err != nil {
+					return err
+				}
+				return os.WriteFile(configFile, pretty, 0o600)
+			}
+		}
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	pretty, err := normalizeJSONIndent(data)
+	if err != nil {
+		return err
+	}
+	m.importConfigClientsLocked(pretty, "runtime xray config")
+	return statsStore.UpsertXrayConfig(ctx, key, pretty)
+}
+
+func (m *XrayManager) seedNativeConfigFromExternalLocked(nativeConfigFile string) ([]byte, error) {
+	if m.cfg == nil || !m.cfg.UseNative() {
+		return nil, nil
+	}
+	ext := strings.TrimSpace(m.cfg.ExternalConfigFile())
+	if ext == "" || ext == nativeConfigFile {
+		return nil, nil
+	}
+	data, err := os.ReadFile(ext)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if _, err := normalizeJSONIndent(data); err != nil {
+		return nil, err
+	}
+	log.Printf("xray native: cloned %s to independent native config %s once", ext, nativeConfigFile)
+	return data, nil
+}
+
+func (m *XrayManager) syncConfigFileFromStoreLocked() error {
+	configFile := m.activeConfigFileLocked()
+	if m.cfg == nil || configFile == "" || statsStore == nil {
+		return nil
+	}
+	data, ok, err := statsStore.GetXrayConfig(context.Background(), m.configStoreKeyLocked())
+	if err != nil || !ok {
+		return err
+	}
+	pretty, err := normalizeJSONIndent(data)
+	if err != nil {
+		return err
+	}
+	m.importConfigClientsLocked(pretty, "database xray config")
+	return os.WriteFile(configFile, pretty, 0o600)
+}
+
+// GetConfig reads the current Xray JSON config. With PostgreSQL enabled, the
+// database row is canonical and the file is only a synchronized runtime copy.
 func (m *XrayManager) GetConfig() ([]byte, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.cfg == nil || m.cfg.ConfigFile == "" {
-		return nil, fmt.Errorf("xray config file not configured")
-	}
-	return os.ReadFile(m.cfg.ConfigFile)
+	return m.readConfigLocked()
 }
 
-// SetConfig validates and atomically writes a new xray JSON config file.
+// SetConfig validates and writes a new Xray JSON config to DB and to the runtime file.
 func (m *XrayManager) SetConfig(data []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.cfg == nil || m.cfg.ConfigFile == "" {
-		return fmt.Errorf("xray config file not configured")
-	}
 	patched, changed, err := patchXrayStatsAPIBytes(data)
 	if err != nil {
 		return err
@@ -609,7 +1168,7 @@ func (m *XrayManager) SetConfig(data []byte) error {
 	if changed {
 		log.Printf("xray: added/repaired Stats API support while saving config")
 	}
-	return os.WriteFile(m.cfg.ConfigFile, patched, 0o600)
+	return m.writeConfigLocked(patched)
 }
 
 type xrayStatsConfigCheck struct {
@@ -625,10 +1184,7 @@ func (m *XrayManager) CheckStatsAPIConfig() (xrayStatsConfigCheck, error) {
 }
 
 func (m *XrayManager) checkStatsAPIConfigLocked() (xrayStatsConfigCheck, error) {
-	if m.cfg == nil || m.cfg.ConfigFile == "" {
-		return xrayStatsConfigCheck{}, fmt.Errorf("xray config file not configured")
-	}
-	data, err := os.ReadFile(m.cfg.ConfigFile)
+	data, err := m.readConfigLocked()
 	if err != nil {
 		return xrayStatsConfigCheck{}, err
 	}
@@ -653,10 +1209,7 @@ func (m *XrayManager) EnsureStatsAPIConfig() (bool, error) {
 }
 
 func (m *XrayManager) ensureStatsAPIConfigLocked() (bool, error) {
-	if m.cfg == nil || m.cfg.ConfigFile == "" {
-		return false, fmt.Errorf("xray config file not configured")
-	}
-	data, err := os.ReadFile(m.cfg.ConfigFile)
+	data, err := m.readConfigLocked()
 	if err != nil {
 		if os.IsNotExist(err) {
 			return false, nil
@@ -670,7 +1223,7 @@ func (m *XrayManager) ensureStatsAPIConfigLocked() (bool, error) {
 	if !changed {
 		return false, nil
 	}
-	return true, os.WriteFile(m.cfg.ConfigFile, patched, 0o600)
+	return true, m.writeConfigLocked(patched)
 }
 
 func patchXrayStatsAPIBytes(data []byte) ([]byte, bool, error) {
@@ -1108,11 +1661,13 @@ func handleXrayStatus(w http.ResponseWriter, r *http.Request) {
 	// pieces or missing per-client stat labels, repair once automatically. This
 	// avoids a dashboard that says "OK" but continues to show zero Xray online
 	// users until a technical admin manually edits JSON.
-	if check, err := xrayMgr.CheckStatsAPIConfig(); err == nil && !check.Configured {
-		wasRunning := xrayMgr.isRunningSnapshot()
-		if changed, err := xrayMgr.EnsureStatsAPIConfig(); err == nil && changed && wasRunning {
-			if err := xrayMgr.Restart(); err != nil {
-				log.Printf("xray: auto stats repair restart failed: %v", err)
+	if !xrayMgr.useNativeMode() {
+		if check, err := xrayMgr.CheckStatsAPIConfig(); err == nil && !check.Configured {
+			wasRunning := xrayMgr.isRunningSnapshot()
+			if changed, err := xrayMgr.EnsureStatsAPIConfig(); err == nil && changed && wasRunning {
+				if err := xrayMgr.Restart(); err != nil {
+					log.Printf("xray: auto stats repair restart failed: %v", err)
+				}
 			}
 		}
 	}
@@ -1124,8 +1679,11 @@ func handleXrayStatus(w http.ResponseWriter, r *http.Request) {
 			window := xrayMgr.onlineWindow()
 			now := time.Now()
 			for _, m := range metas {
-				st, ok := xrayMgr.RuntimeStatsForKeys(m.Email, m.UUID, m.Name)
-				if ok && !st.LastActive.IsZero() && now.Sub(st.LastActive) <= window {
+				online := m.ActiveConnections > 0 || (m.LastActive != nil && now.Sub(*m.LastActive) <= window)
+				if st, ok := xrayMgr.RuntimeStatsForKeys(m.Email, m.UUID, m.Name); ok {
+					online = online || st.ActiveConnections > 0 || (!st.LastActive.IsZero() && now.Sub(st.LastActive) <= window)
+				}
+				if online {
 					status.OnlineUsers++
 				}
 			}
@@ -1281,11 +1839,12 @@ type XrayClientInfo struct {
 	Level    int    `json:"level,omitempty"`
 	// Runtime counters from the Xray stats API. Online means this user's
 	// traffic counters changed inside the configured online window.
-	Online        bool       `json:"online"`
-	LastActive    *time.Time `json:"last_active,omitempty"`
-	UplinkBytes   int64      `json:"uplink_bytes,omitempty"`
-	DownlinkBytes int64      `json:"downlink_bytes,omitempty"`
-	TotalBytes    int64      `json:"total_bytes,omitempty"`
+	Online            bool       `json:"online"`
+	LastActive        *time.Time `json:"last_active,omitempty"`
+	UplinkBytes       int64      `json:"uplink_bytes,omitempty"`
+	DownlinkBytes     int64      `json:"downlink_bytes,omitempty"`
+	TotalBytes        int64      `json:"total_bytes,omitempty"`
+	ActiveConnections int        `json:"active_connections,omitempty"`
 	// Metadata from PostgreSQL (enriched by handleXrayInbounds)
 	Name           string     `json:"name,omitempty"`
 	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
@@ -1313,10 +1872,7 @@ var xrayClientProtos = map[string]bool{
 func (m *XrayManager) ListInbounds() ([]XrayInboundInfo, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.cfg == nil || m.cfg.ConfigFile == "" {
-		return nil, fmt.Errorf("xray config file not configured")
-	}
-	data, err := os.ReadFile(m.cfg.ConfigFile)
+	data, err := m.readConfigLocked()
 	if err != nil {
 		return nil, err
 	}
@@ -1369,10 +1925,7 @@ func (m *XrayManager) ListInbounds() ([]XrayInboundInfo, error) {
 // modifyRawConfig reads the config as a generic map, calls fn to mutate it, then writes it back.
 // Caller must hold m.mu.
 func (m *XrayManager) modifyRawConfig(fn func(cfg map[string]interface{}) error) error {
-	if m.cfg == nil || m.cfg.ConfigFile == "" {
-		return fmt.Errorf("xray config file not configured")
-	}
-	data, err := os.ReadFile(m.cfg.ConfigFile)
+	data, err := m.readConfigLocked()
 	if err != nil {
 		return err
 	}
@@ -1390,14 +1943,14 @@ func (m *XrayManager) modifyRawConfig(fn func(cfg map[string]interface{}) error)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(m.cfg.ConfigFile, out, 0o600)
+	return m.writeConfigLocked(out)
 }
 
 // AddXrayClient adds a client to the named inbound and saves the config.
 func (m *XrayManager) AddXrayClient(inboundTag, uuid, email string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.modifyRawConfig(func(raw map[string]interface{}) error {
+	err := m.modifyRawConfig(func(raw map[string]interface{}) error {
 		_, _ = ensureXrayStatsAPIConfig(raw)
 		inbounds, _ := raw["inbounds"].([]interface{})
 		for _, ib := range inbounds {
@@ -1416,7 +1969,11 @@ func (m *XrayManager) AddXrayClient(inboundTag, uuid, email string) error {
 			clients, _ := settings["clients"].([]interface{})
 			for _, c := range clients {
 				if cm, ok := c.(map[string]interface{}); ok {
-					if id, _ := cm["id"].(string); id == uuid {
+					id, _ := cm["id"].(string)
+					if id == "" {
+						id, _ = cm["password"].(string)
+					}
+					if id == uuid {
 						return fmt.Errorf("UUID %s already exists in inbound %s", uuid, inboundTag)
 					}
 				}
@@ -1433,13 +1990,19 @@ func (m *XrayManager) AddXrayClient(inboundTag, uuid, email string) error {
 		}
 		return fmt.Errorf("inbound %q not found", inboundTag)
 	})
+	if err == nil && m.cfg != nil && m.cfg.UseNative() {
+		if hotErr := nativeXray.addClient(inboundTag, uuid, email); hotErr != nil {
+			log.Printf("native xray: hot-add client %s to %s failed: %v", uuid, inboundTag, hotErr)
+		}
+	}
+	return err
 }
 
 // RemoveXrayClient removes a client by UUID from the named inbound and saves the config.
 func (m *XrayManager) RemoveXrayClient(inboundTag, uuid string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.modifyRawConfig(func(raw map[string]interface{}) error {
+	err := m.modifyRawConfig(func(raw map[string]interface{}) error {
 		inbounds, _ := raw["inbounds"].([]interface{})
 		for _, ib := range inbounds {
 			ibMap, ok := ib.(map[string]interface{})
@@ -1458,7 +2021,11 @@ func (m *XrayManager) RemoveXrayClient(inboundTag, uuid string) error {
 			removed := false
 			for _, c := range clients {
 				if cm, ok := c.(map[string]interface{}); ok {
-					if id, _ := cm["id"].(string); id == uuid {
+					id, _ := cm["id"].(string)
+					if id == "" {
+						id, _ = cm["password"].(string)
+					}
+					if id == uuid {
 						removed = true
 						continue
 					}
@@ -1466,13 +2033,67 @@ func (m *XrayManager) RemoveXrayClient(inboundTag, uuid string) error {
 				kept = append(kept, c)
 			}
 			if !removed {
-				return fmt.Errorf("UUID %s not found in inbound %s", uuid, inboundTag)
+				// DB-backed native users may exist only in xray_clients. The inbound
+				// exists, so let the caller delete the database row too.
+				return nil
 			}
 			settings["clients"] = kept
 			return nil
 		}
 		return fmt.Errorf("inbound %q not found", inboundTag)
 	})
+	if err == nil && m.cfg != nil && m.cfg.UseNative() {
+		if hotErr := nativeXray.removeClient(inboundTag, uuid); hotErr != nil {
+			log.Printf("native xray: hot-remove client %s from %s failed: %v", uuid, inboundTag, hotErr)
+		}
+	}
+	return err
+}
+
+// UpdateXrayClientEmail updates the client's email/stats label inside the Xray JSON config.
+// UUID remains immutable; metadata such as display name/expiry stays in PostgreSQL.
+func (m *XrayManager) UpdateXrayClientEmail(uuid, email string) error {
+	if strings.TrimSpace(uuid) == "" || strings.TrimSpace(email) == "" {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	err := m.modifyRawConfig(func(raw map[string]interface{}) error {
+		changed := false
+		inbounds, _ := raw["inbounds"].([]interface{})
+		for _, ib := range inbounds {
+			ibMap, ok := ib.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			settings, _ := ibMap["settings"].(map[string]interface{})
+			clients, _ := settings["clients"].([]interface{})
+			for _, c := range clients {
+				cm, ok := c.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				id, _ := cm["id"].(string)
+				if id == "" {
+					id, _ = cm["password"].(string)
+				}
+				if id == uuid {
+					cm["email"] = email
+					changed = true
+				}
+			}
+		}
+		if !changed {
+			return nil
+		}
+		return nil
+	})
+	if err == nil && m.cfg != nil && m.cfg.UseNative() {
+		if hotErr := nativeXray.updateClientEmail(uuid, email); hotErr != nil {
+			log.Printf("native xray: hot-update client %s email failed: %v", uuid, hotErr)
+		}
+	}
+	return err
 }
 
 // ---- HTTP handlers for inbound/client management ----
@@ -1517,28 +2138,40 @@ func handleXrayInbounds(w http.ResponseWriter, r *http.Request) {
 			}
 		} else {
 			metaMap := make(map[string]*XrayClientMeta, len(metas))
+			metasByInbound := make(map[string][]*XrayClientMeta)
 			for _, m := range metas {
 				metaMap[m.UUID] = m
+				metasByInbound[m.InboundTag] = append(metasByInbound[m.InboundTag], m)
 			}
 			now := time.Now()
 			for i := range inbounds {
-				filtered := make([]XrayClientInfo, 0, len(inbounds[i].Clients))
-				for j := range inbounds[i].Clients {
-					c := inbounds[i].Clients[j]
-					applyXrayRuntimeStats(&c)
-					m, ok := metaMap[c.UUID]
-					if isReseller && (!ok || m.OwnerUsername != sess.Username) {
-						continue
+				seen := make(map[string]bool)
+				filtered := make([]XrayClientInfo, 0, len(inbounds[i].Clients)+len(metasByInbound[inbounds[i].Tag]))
+				appendMetaClient := func(m *XrayClientMeta) {
+					if m == nil || m.UUID == "" || seen[m.UUID] {
+						return
 					}
-					if !ok {
-						c.ExpirationDays = -1
-						filtered = append(filtered, c)
-						continue
+					c := XrayClientInfo{
+						UUID:              m.UUID,
+						Email:             m.Email,
+						Name:              m.Name,
+						ExpiresAt:         m.ExpiresAt,
+						MaxConns:          m.MaxConns,
+						OwnerUsername:     m.OwnerUsername,
+						UplinkBytes:       m.TotalUplinkBytes,
+						DownlinkBytes:     m.TotalDownlinkBytes,
+						TotalBytes:        m.TotalUplinkBytes + m.TotalDownlinkBytes,
+						LastActive:        m.LastActive,
+						ActiveConnections: m.ActiveConnections,
 					}
-					c.Name = m.Name
-					c.ExpiresAt = m.ExpiresAt
-					c.MaxConns = m.MaxConns
-					c.OwnerUsername = m.OwnerUsername
+					if c.Email == "" {
+						c.Email = m.UUID
+					}
+					if c.ActiveConnections > 0 {
+						c.Online = true
+					} else if c.LastActive != nil && now.Sub(*c.LastActive) <= xrayMgr.onlineWindow() {
+						c.Online = true
+					}
 					applyXrayRuntimeStats(&c)
 					if m.ExpiresAt == nil {
 						c.ExpirationDays = -1
@@ -1548,7 +2181,29 @@ func handleXrayInbounds(w http.ResponseWriter, r *http.Request) {
 					} else {
 						c.ExpirationDays = int(m.ExpiresAt.Sub(now).Hours() / 24)
 					}
+					seen[m.UUID] = true
 					filtered = append(filtered, c)
+				}
+				for j := range inbounds[i].Clients {
+					c := inbounds[i].Clients[j]
+					applyXrayRuntimeStats(&c)
+					m, ok := metaMap[c.UUID]
+					if isReseller && (!ok || m.OwnerUsername != sess.Username) {
+						continue
+					}
+					if !ok {
+						c.ExpirationDays = -1
+						seen[c.UUID] = true
+						filtered = append(filtered, c)
+						continue
+					}
+					appendMetaClient(m)
+				}
+				for _, m := range metasByInbound[inbounds[i].Tag] {
+					if isReseller && m.OwnerUsername != sess.Username {
+						continue
+					}
+					appendMetaClient(m)
 				}
 				inbounds[i].Clients = filtered
 			}
@@ -1578,14 +2233,21 @@ func applyXrayRuntimeStats(c *XrayClientInfo) {
 	}
 	window := xrayMgr.onlineWindow()
 	now := time.Now()
-	c.UplinkBytes = st.Uplink
-	c.DownlinkBytes = st.Downlink
-	c.TotalBytes = st.Uplink + st.Downlink
+	if st.Uplink > c.UplinkBytes {
+		c.UplinkBytes = st.Uplink
+	}
+	if st.Downlink > c.DownlinkBytes {
+		c.DownlinkBytes = st.Downlink
+	}
+	c.TotalBytes = c.UplinkBytes + c.DownlinkBytes
+	if st.ActiveConnections > c.ActiveConnections {
+		c.ActiveConnections = st.ActiveConnections
+	}
 	if !st.LastActive.IsZero() {
 		t := st.LastActive
 		c.LastActive = &t
-		c.Online = now.Sub(st.LastActive) <= window
 	}
+	c.Online = c.ActiveConnections > 0 || (c.LastActive != nil && now.Sub(*c.LastActive) <= window)
 }
 
 func handleXrayClientAdd(w http.ResponseWriter, r *http.Request) {
@@ -1661,6 +2323,15 @@ func handleXrayClientAdd(w http.ResponseWriter, r *http.Request) {
 		ownerUsername = strings.TrimSpace(req.OwnerUsername)
 	}
 
+	if statsStore != nil {
+		if _, err := statsStore.GetXrayClientMeta(r.Context(), req.UUID); err == nil {
+			http.Error(w, "UUID already exists in database", http.StatusBadRequest)
+			return
+		} else if err != sql.ErrNoRows {
+			http.Error(w, "database error: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
 	if err := xrayMgr.AddXrayClient(req.InboundTag, req.UUID, req.Email); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -1691,12 +2362,12 @@ func handleXrayClientAdd(w http.ResponseWriter, r *http.Request) {
 			log.Printf("xray: save meta for %s: %v", req.UUID, err)
 		}
 	}
-	_ = xrayMgr.Restart()
+	xrayMgr.restartIfExternalRunning()
 	w.WriteHeader(http.StatusCreated)
 }
 
-// handleXrayClientUpdate updates the metadata (name, email, expiry, max_conns)
-// of an existing Xray client in PostgreSQL without touching the config file.
+// handleXrayClientUpdate updates DB metadata and mirrors the email/stats label
+// into the Xray JSON config when the client also exists there.
 func handleXrayClientUpdate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -1772,6 +2443,13 @@ func handleXrayClientUpdate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "update failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if req.Email != "" {
+		if err := xrayMgr.UpdateXrayClientEmail(req.UUID, req.Email); err != nil {
+			log.Printf("xray: update config email for %s: %v", req.UUID, err)
+		} else {
+			xrayMgr.restartIfExternalRunning()
+		}
+	}
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -1827,6 +2505,6 @@ func handleXrayClientRemove(w http.ResponseWriter, r *http.Request) {
 	if statsStore != nil {
 		_ = statsStore.DeleteXrayClientMeta(r.Context(), uuid)
 	}
-	_ = xrayMgr.Restart()
+	xrayMgr.restartIfExternalRunning()
 	w.WriteHeader(http.StatusNoContent)
 }

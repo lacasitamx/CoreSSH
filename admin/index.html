@@ -159,17 +159,24 @@
     </div>
 
     <div class="grid2 dashboard-lower">
-      <div class="card">
+      <div class="card hidden" id="dnsttDashboardCard">
         <div class="card-hdr">
-          <div class="card-title">Ações rápidas</div>
-          <span class="chip green">simples</span>
+          <div class="card-title">DNSTT Health <span class="chip">5s window</span></div>
+          <span class="hint" id="dnsttHealthUpdated">--</span>
         </div>
-        <div class="quick-actions">
-          <button class="quick-action" type="button" data-jump="ssh"><strong>Criar SSH</strong><span>Usuário, senha, validade e limite.</span></button>
-          <button class="quick-action" type="button" data-jump="xray"><strong>Criar Xray</strong><span>UUID, label, validade e conexões.</span></button>
-          <button class="quick-action superadmin-only hidden" type="button" data-jump="resellers"><strong>Novo revendedor</strong><span>Plano, validade e limite de contas.</span></button>
-          <button class="quick-action superadmin-only hidden" type="button" data-jump="server"><strong>Configurar serviços</strong><span>Portas, DNSTT, UDPGW e TLS.</span></button>
+        <div class="metrics">
+          <div class="metric"><div class="m-label">Active Sessions</div><div class="m-val" id="dnsttActiveSessions">--</div></div>
+          <div class="metric"><div class="m-label">Active Streams</div><div class="m-val" id="dnsttActiveStreams">--</div></div>
+          <div class="metric"><div class="m-label">DNS RX / 5s</div><div class="m-val" id="dnsttDNSRx">--</div></div>
+          <div class="metric"><div class="m-label">Queue</div><div class="m-val" id="dnsttQueueLen">--</div></div>
         </div>
+        <div class="tbl-wrap" style="margin-top:10px;">
+          <table>
+            <thead><tr><th>Counter</th><th>Value</th><th>Counter</th><th>Value</th></tr></thead>
+            <tbody id="dnsttHealthBody"></tbody>
+          </table>
+        </div>
+        <div class="statusbar"><span id="dnsttHealthSummary">DNSTT counters are loaded from /api/dnstt.</span><span class="hint">Reject/drop/panic counters should normally stay at 0.</span></div>
       </div>
       <div class="card" id="dashboardQuotaCard">
         <div class="card-hdr"><div class="card-title">Minha cota</div><span class="chip" id="dashQuotaChip">--</span></div>
@@ -321,6 +328,11 @@
       <div class="card-hdr">
         <div class="card-title">Xray Core <span class="chip" id="xrayChip">--</span></div>
         <div class="card-actions xray-admin-only">
+          <select id="xCoreMode" class="input-sm" title="Xray runtime mode">
+            <option value="native">Internal native emulator</option>
+            <option value="external">External xray binary</option>
+          </select>
+          <button class="btn btn-ghost btn-sm" id="xSaveModeBtn">Save mode</button>
           <button class="btn btn-ghost btn-sm" id="xStartBtn">Start</button>
           <button class="btn btn-danger btn-sm" id="xStopBtn">Stop</button>
           <button class="btn btn-ghost btn-sm" id="xRestartBtn">Restart</button>
@@ -410,7 +422,7 @@
               <!-- WebSocket -->
               <div class="field" id="wzWSPathField" style="display:none;"><label>Path</label><input type="text" id="wzWSPath" placeholder="/ws"/></div>
               <!-- XHTTP -->
-              <div class="field" id="wzXHTTPPathField" style="display:none;"><label>Path</label><input type="text" id="wzXHTTPPath" placeholder="/xhttp"/></div>
+              <div class="field" id="wzXHTTPPathField" style="display:none;"><label>Path</label><input type="text" id="wzXHTTPPath" placeholder="/xhttp" value="/xhttp"/></div>
               <div class="field" id="wzXHTTPHostField" style="display:none;"><label>Host <span class="hint">(SNI)</span></label><input type="text" id="wzXHTTPHost" placeholder="example.com"/></div>
               <div class="field" id="wzXHTTPModeField" style="display:none;">
                 <label>Mode</label>
@@ -645,6 +657,11 @@
               <label>Extra Listen Addresses <span class="hint">(one per line, e.g. 0.0.0.0:8080)</span></label>
               <textarea id="managedCfgExtraListen" rows="4" style="width:100%;box-sizing:border-box;background:var(--input-bg);border:1px solid var(--border);border-radius:8px;color:inherit;padding:10px;resize:vertical;"></textarea>
             </div>
+            <div class="form-grid" style="margin-top:8px;">
+              <div class="field"><label>Proxy Auto Restart Interval <span class="hint">0s/off disables</span></label><input type="text" id="managedCfgProxyAutoRestart" placeholder="24h"/></div>
+              <div class="field"><label>Proxy Restart Grace Delay</label><input type="text" id="managedCfgProxyRestartGrace" placeholder="2s"/></div>
+              <div class="hint" style="grid-column:1/-1;margin-top:-4px;">Hard restart: closes public proxy listeners and active SSH sessions, then starts the listeners again. Use duration values like 6h, 12h, or 24h.</div>
+            </div>
           </div>
 
           <div class="card" style="margin-top:12px;">
@@ -677,8 +694,23 @@
               </label>
             </div>
             <div id="managedDnsttFields" class="form-grid" style="opacity:.4;pointer-events:none;">
-              <div class="field"><label>Domain</label><input type="text" id="managedCfgDnsttDomain" placeholder="t.example.com"/></div>
+              <div class="field" style="grid-column:1/-1"><label>NS / Root Domains <span class="hint">one per line</span></label><textarea id="managedCfgDnsttDomains" rows="3" placeholder="t.example.com&#10;t.local.lan"></textarea></div>
               <div class="field"><label>UDP Listen</label><input type="text" id="managedCfgDnsttUDP" placeholder="[::]:5300"/></div>
+              <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;grid-column:1/-1"><input type="checkbox" id="managedCfgDnsttFakeEnabled"/> Built-in Local DNS / Fake DNS</label>
+              <div class="field"><label>Local DNS Listen <span class="hint">IPv6 ok</span></label><input type="text" id="managedCfgDnsttFakeListen" placeholder="[2001:db8::1234]:53"/></div>
+              <div class="field"><label>Local DNS Domain</label><input type="text" id="managedCfgDnsttFakeDomain" placeholder="t.local.lan"/></div>
+              <div class="field"><label>Local DNS Workers <span class="hint">0=auto</span></label><input type="number" id="managedCfgDnsttFakeWorkers" min="0" placeholder="4"/></div>
+              <div class="field"><label>Response Workers <span class="hint">0=safe</span></label><input type="number" id="managedCfgDnsttRespWorkers" min="0" placeholder="1"/></div>
+              <div class="field"><label>Auto Restart Interval <span class="hint">0s/off disables</span></label><input type="text" id="managedCfgDnsttAutoRestart" placeholder="6h"/></div>
+              <div class="field"><label>Restart Grace Delay</label><input type="text" id="managedCfgDnsttRestartGrace" placeholder="2s"/></div>
+              <div class="hint" style="grid-column:1/-1;margin-top:-4px;">Restarts only the DNSTT UDP listener, not the VPS or the full panel. Use duration values like 30m, 2h, or 6h.</div>
+              <div class="field"><label>Max Sessions <span class="hint">0=default, -1=unlimited</span></label><input type="number" id="managedCfgDnsttMaxSessions" placeholder="10000"/></div>
+              <div class="field"><label>Max Streams <span class="hint">0=default, -1=unlimited</span></label><input type="number" id="managedCfgDnsttMaxStreams" placeholder="15000"/></div>
+              <div class="field"><label>Pending DNS Responses</label><input type="number" id="managedCfgDnsttPendingResponses" placeholder="20000"/></div>
+              <div class="field"><label>Stream Buffer Bytes</label><input type="number" id="managedCfgDnsttStreamBuffer" placeholder="262144"/></div>
+              <div class="field"><label>UDP Read Buffer Bytes</label><input type="number" id="managedCfgDnsttUDPReadBuffer" placeholder="16777216"/></div>
+              <div class="field"><label>UDP Write Buffer Bytes</label><input type="number" id="managedCfgDnsttUDPWriteBuffer" placeholder="16777216"/></div>
+              <div class="hint" style="grid-column:1/-1;margin-top:-4px;">Scale guard: bounded sessions/streams stop RAM explosions under thousands of DNSTT users. Keep verbose connection logs disabled on busy servers.</div>
               <div class="field" style="grid-column:1/-1">
                 <label>Private Key <span class="hint">auto-saved to /opt/sshpanel/dnstt.key</span></label>
                 <div class="field-row">
@@ -697,6 +729,7 @@
               </div>
               <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;grid-column:1/-1"><input type="checkbox" id="managedCfgDnsttNoStats"/> Disable Stats Log</label>
               <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;grid-column:1/-1"><input type="checkbox" id="managedCfgDnsttNoConsole"/> Disable Console Log</label>
+              <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;grid-column:1/-1"><input type="checkbox" id="managedCfgDnsttLogConnections"/> Verbose Connection Logs</label>
             </div>
           </div>
 
@@ -713,6 +746,9 @@
               <div class="field"><label>Max UDP Sessions Per Client <span class="hint">(not total server users)</span></label><input type="number" id="managedCfgUdpgwMaxConns" min="0" placeholder="10"/></div>
               <div class="field"><label>Idle Timeout</label><input type="text" id="managedCfgUdpgwIdle" placeholder="2m"/></div>
               <div class="field"><label>Map TTL</label><input type="text" id="managedCfgUdpgwMapTTL" placeholder="90s"/></div>
+              <div class="field"><label>Auto Restart Interval <span class="hint">0s/off disables</span></label><input type="text" id="managedCfgUdpgwAutoRestart" placeholder="24h"/></div>
+              <div class="field"><label>Restart Grace Delay</label><input type="text" id="managedCfgUdpgwRestartGrace" placeholder="2s"/></div>
+              <div class="hint" style="grid-column:1/-1;margin-top:-4px;">Hard restart: closes the UDPGW listener and every connected UDPGW client, then starts UDPGW again.</div>
               <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;grid-column:1/-1"><input type="checkbox" id="managedCfgUdpgwDebug"/> Debug Logging</label>
             </div>
           </div>
@@ -764,7 +800,8 @@
           <div class="card" style="margin-top:12px">
             <div class="card-hdr"><div class="card-title">Xray Core</div><span class="chip green">live</span></div>
             <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;margin-top:4px;"><input type="checkbox" id="managedCfgXrayEnabled"/> Enabled</label>
-            <div class="hint" style="margin-top:6px;color:var(--muted);">Binary: /opt/sshpanel/xray &nbsp;·&nbsp; Config: /opt/sshpanel/xray_config.json &nbsp;·&nbsp; Online counters use Xray Stats API on 127.0.0.1:10085</div>
+            <div class="field" style="margin-top:8px;"><label>Runtime mode</label><select id="managedCfgXrayMode"><option value="native">Internal native emulator</option><option value="external">External xray binary</option></select></div>
+            <div class="hint" style="margin-top:6px;color:var(--muted);">Native runs inside DragonCoreSSH. External uses /opt/sshpanel/xray with DB-backed /opt/sshpanel/xray_config.json and Stats API on 127.0.0.1:10085.</div>
           </div>
         </div>
       </div>
@@ -912,6 +949,17 @@
             <label>Extra Listen Addresses <span class="hint">(one per line, e.g. 0.0.0.0:8080)</span></label>
             <textarea id="cfgExtraListen" rows="3" style="resize:vertical"></textarea>
           </div>
+          <div class="form-grid" style="margin-top:8px;">
+            <div class="field">
+              <label>Proxy Auto Restart Interval <span class="hint">0s/off disables</span></label>
+              <input type="text" id="cfgProxyAutoRestart" placeholder="24h"/>
+            </div>
+            <div class="field">
+              <label>Proxy Restart Grace Delay</label>
+              <input type="text" id="cfgProxyRestartGrace" placeholder="2s"/>
+            </div>
+            <div class="hint" style="grid-column:1/-1;margin-top:-4px;">Hard restart: closes public proxy listeners and active SSH sessions, then starts the listeners again. Use duration values like 6h, 12h, or 24h.</div>
+          </div>
         </div>
 
         <!-- SSH & general -->
@@ -967,14 +1015,49 @@
             </label>
           </div>
           <div id="dnsttFields" class="form-grid" style="opacity:.4;pointer-events:none;">
-            <div class="field">
-              <label>Domain</label>
-              <input type="text" id="cfgDnsttDomain" placeholder="t.example.com"/>
+            <div class="field" style="grid-column:1/-1">
+              <label>NS / Root Domains <span class="hint">one per line</span></label>
+              <textarea id="cfgDnsttDomains" rows="3" placeholder="t.example.com&#10;t.local.lan"></textarea>
             </div>
             <div class="field">
               <label>UDP Listen</label>
               <input type="text" id="cfgDnsttUDP" placeholder="[::]:5300"/>
             </div>
+            <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;grid-column:1/-1">
+              <input type="checkbox" id="cfgDnsttFakeEnabled"/> Built-in Local DNS / Fake DNS
+            </label>
+            <div class="field">
+              <label>Local DNS Listen <span class="hint">IPv6 ok</span></label>
+              <input type="text" id="cfgDnsttFakeListen" placeholder="[2001:db8::1234]:53"/>
+            </div>
+            <div class="field">
+              <label>Local DNS Domain</label>
+              <input type="text" id="cfgDnsttFakeDomain" placeholder="t.local.lan"/>
+            </div>
+            <div class="field">
+              <label>Local DNS Workers <span class="hint">0=auto</span></label>
+              <input type="number" id="cfgDnsttFakeWorkers" min="0" placeholder="4"/>
+            </div>
+            <div class="field">
+              <label>Response Workers <span class="hint">0=safe</span></label>
+              <input type="number" id="cfgDnsttRespWorkers" min="0" placeholder="1"/>
+            </div>
+            <div class="field">
+              <label>Auto Restart Interval <span class="hint">0s/off disables</span></label>
+              <input type="text" id="cfgDnsttAutoRestart" placeholder="6h"/>
+            </div>
+            <div class="field">
+              <label>Restart Grace Delay</label>
+              <input type="text" id="cfgDnsttRestartGrace" placeholder="2s"/>
+            </div>
+            <div class="hint" style="grid-column:1/-1;margin-top:-4px;">Restarts only the DNSTT UDP listener, not the VPS or the full panel. Use duration values like 30m, 2h, or 6h.</div>
+            <div class="field"><label>Max Sessions <span class="hint">0=default, -1=unlimited</span></label><input type="number" id="cfgDnsttMaxSessions" placeholder="10000"/></div>
+            <div class="field"><label>Max Streams <span class="hint">0=default, -1=unlimited</span></label><input type="number" id="cfgDnsttMaxStreams" placeholder="15000"/></div>
+            <div class="field"><label>Pending DNS Responses</label><input type="number" id="cfgDnsttPendingResponses" placeholder="20000"/></div>
+            <div class="field"><label>Stream Buffer Bytes</label><input type="number" id="cfgDnsttStreamBuffer" placeholder="262144"/></div>
+            <div class="field"><label>UDP Read Buffer Bytes</label><input type="number" id="cfgDnsttUDPReadBuffer" placeholder="16777216"/></div>
+            <div class="field"><label>UDP Write Buffer Bytes</label><input type="number" id="cfgDnsttUDPWriteBuffer" placeholder="16777216"/></div>
+            <div class="hint" style="grid-column:1/-1;margin-top:-4px;">Scale guard: bounded sessions/streams stop RAM explosions under thousands of DNSTT users. Keep verbose connection logs disabled on busy servers.</div>
             <div class="field" style="grid-column:1/-1">
               <label>Private Key <span class="hint">auto-saved to /opt/sshpanel/dnstt.key</span></label>
               <div class="field-row">
@@ -996,6 +1079,9 @@
             </label>
             <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;grid-column:1/-1">
               <input type="checkbox" id="cfgDnsttNoConsole"/> Disable Console Log
+            </label>
+            <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;grid-column:1/-1">
+              <input type="checkbox" id="cfgDnsttLogConnections"/> Verbose Connection Logs
             </label>
           </div>
         </div>
@@ -1026,6 +1112,15 @@
               <label>Map TTL</label>
               <input type="text" id="cfgUdpgwMapTTL" placeholder="90s"/>
             </div>
+            <div class="field">
+              <label>Auto Restart Interval <span class="hint">0s/off disables</span></label>
+              <input type="text" id="cfgUdpgwAutoRestart" placeholder="24h"/>
+            </div>
+            <div class="field">
+              <label>Restart Grace Delay</label>
+              <input type="text" id="cfgUdpgwRestartGrace" placeholder="2s"/>
+            </div>
+            <div class="hint" style="grid-column:1/-1;margin-top:-4px;">Hard restart: closes the UDPGW listener and every connected UDPGW client, then starts UDPGW again.</div>
             <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;grid-column:1/-1">
               <input type="checkbox" id="cfgUdpgwDebug"/> Debug Logging
             </label>
@@ -1091,7 +1186,8 @@
           <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;margin-top:4px;">
             <input type="checkbox" id="cfgXrayEnabled"/> Enabled
           </label>
-          <div class="hint" style="margin-top:6px;color:var(--muted);">Binary: /opt/sshpanel/xray &nbsp;·&nbsp; Config: /opt/sshpanel/xray_config.json &nbsp;·&nbsp; Online counters use Xray Stats API on 127.0.0.1:10085</div>
+          <div class="field" style="margin-top:8px;"><label>Runtime mode</label><select id="cfgXrayMode"><option value="native">Internal native emulator</option><option value="external">External xray binary</option></select></div>
+          <div class="hint" style="margin-top:6px;color:var(--muted);">Native runs inside DragonCoreSSH. External uses /opt/sshpanel/xray with DB-backed /opt/sshpanel/xray_config.json and Stats API on 127.0.0.1:10085.</div>
         </div>
 
       </div><!-- /right -->
@@ -1115,6 +1211,6 @@
 </div><!-- /shell -->
 </div><!-- /app -->
 
-<script defer src="assets/app.js?v=20260511visualsafesave1"></script>
+<script defer src="assets/app.js?v=20260622dnsttfakednsfast"></script>
 </body>
 </html>

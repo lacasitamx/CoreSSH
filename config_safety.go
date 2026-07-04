@@ -5,6 +5,7 @@ import (
 	"log"
 	"net"
 	"strings"
+	"time"
 )
 
 const (
@@ -64,7 +65,50 @@ func normalizeRuntimePorts(cfg *Config) []string {
 	// DragonCore no longer uses an internal local SSH listener.
 	cfg.LocalSSHListen = ""
 
+	cfg.ProxyAutoRestartInterval = strings.TrimSpace(cfg.ProxyAutoRestartInterval)
+	if cfg.ProxyAutoRestartInterval != "" && cfg.ProxyAutoRestartInterval != "0" && cfg.ProxyAutoRestartInterval != "0s" && !strings.EqualFold(cfg.ProxyAutoRestartInterval, "off") && !strings.EqualFold(cfg.ProxyAutoRestartInterval, "disabled") {
+		if d, err := time.ParseDuration(cfg.ProxyAutoRestartInterval); err != nil {
+			warn("proxy auto restart interval %q is invalid; disabling auto restart", cfg.ProxyAutoRestartInterval)
+			cfg.ProxyAutoRestartInterval = ""
+		} else if d < time.Minute {
+			warn("proxy auto restart interval %q is below 1m; disabling auto restart", cfg.ProxyAutoRestartInterval)
+			cfg.ProxyAutoRestartInterval = ""
+		}
+	}
+	cfg.ProxyAutoRestartGrace = strings.TrimSpace(cfg.ProxyAutoRestartGrace)
+	if cfg.ProxyAutoRestartGrace != "" {
+		if d, err := time.ParseDuration(cfg.ProxyAutoRestartGrace); err != nil || d < 0 {
+			warn("proxy auto restart grace %q is invalid; using default 2s", cfg.ProxyAutoRestartGrace)
+			cfg.ProxyAutoRestartGrace = ""
+		} else if d > time.Minute {
+			warn("proxy auto restart grace %q is above 1m; clamping to 1m", cfg.ProxyAutoRestartGrace)
+			cfg.ProxyAutoRestartGrace = "1m"
+		}
+	}
+
 	if cfg.DNSTT != nil {
+		cfg.DNSTT.FakeDNSDomain = strings.TrimSpace(cfg.DNSTT.FakeDNSDomain)
+		if cfg.DNSTT.FakeDNSEnabled {
+			if cfg.DNSTT.FakeDNSDomain == "" {
+				cfg.DNSTT.FakeDNSDomain = "t.local.lan"
+			}
+			// Automatically add the local/fake test zone to the accepted DNSTT
+			// domains so the tunnel handler can decode traffic for it.
+			cfg.DNSTT.Domains = append(cfg.DNSTT.Domains, cfg.DNSTT.FakeDNSDomain)
+		}
+		cfg.DNSTT.Domains = normalizeDNSTTDomainList(cfg.DNSTT.Domain, cfg.DNSTT.Domains)
+		if len(cfg.DNSTT.Domains) > 0 {
+			cfg.DNSTT.Domain = cfg.DNSTT.Domains[0]
+		} else {
+			cfg.DNSTT.Domain = strings.TrimSpace(cfg.DNSTT.Domain)
+		}
+		if cfg.DNSTT.FakeDNSEnabled {
+			localDomains := normalizeDNSTTDomainList(cfg.DNSTT.FakeDNSDomain, nil)
+			if len(localDomains) > 0 {
+				cfg.DNSTT.FakeDNSDomain = localDomains[0]
+			}
+		}
+
 		cfg.DNSTT.UDPListen = strings.TrimSpace(cfg.DNSTT.UDPListen)
 		if cfg.DNSTT.UDPListen == "" {
 			cfg.DNSTT.UDPListen = defaultDNSTTListen
@@ -76,6 +120,88 @@ func normalizeRuntimePorts(cfg *Config) []string {
 			if err2 := udpAddrAvailableForDNSTT(cfg.DNSTT.UDPListen); err2 != nil {
 				warn("default DNSTT UDP listener %s is also unavailable: %v", cfg.DNSTT.UDPListen, err2)
 			}
+		}
+
+		if cfg.DNSTT.FakeDNSEnabled {
+			cfg.DNSTT.FakeDNSListen = strings.TrimSpace(cfg.DNSTT.FakeDNSListen)
+			if cfg.DNSTT.FakeDNSListen == "" {
+				cfg.DNSTT.FakeDNSListen = "[::]:53"
+			}
+			if !sameUDPListenAddress(cfg.DNSTT.FakeDNSListen, cfg.DNSTT.UDPListen) {
+				if err := udpAddrAvailableForDNSTT(cfg.DNSTT.FakeDNSListen); err != nil {
+					warn("built-in DNSTT local DNS listener %s is unavailable: %v", cfg.DNSTT.FakeDNSListen, err)
+				}
+			}
+		}
+
+		cfg.DNSTT.AutoRestartInterval = strings.TrimSpace(cfg.DNSTT.AutoRestartInterval)
+		if cfg.DNSTT.AutoRestartInterval != "" && cfg.DNSTT.AutoRestartInterval != "0" && cfg.DNSTT.AutoRestartInterval != "0s" && !strings.EqualFold(cfg.DNSTT.AutoRestartInterval, "off") && !strings.EqualFold(cfg.DNSTT.AutoRestartInterval, "disabled") {
+			if d, err := time.ParseDuration(cfg.DNSTT.AutoRestartInterval); err != nil {
+				warn("DNSTT auto restart interval %q is invalid; disabling auto restart", cfg.DNSTT.AutoRestartInterval)
+				cfg.DNSTT.AutoRestartInterval = ""
+			} else if d < time.Minute {
+				warn("DNSTT auto restart interval %q is below 1m; disabling auto restart", cfg.DNSTT.AutoRestartInterval)
+				cfg.DNSTT.AutoRestartInterval = ""
+			}
+		}
+		cfg.DNSTT.AutoRestartGrace = strings.TrimSpace(cfg.DNSTT.AutoRestartGrace)
+		if cfg.DNSTT.AutoRestartGrace != "" {
+			if d, err := time.ParseDuration(cfg.DNSTT.AutoRestartGrace); err != nil || d < 0 {
+				warn("DNSTT auto restart grace %q is invalid; using default 2s", cfg.DNSTT.AutoRestartGrace)
+				cfg.DNSTT.AutoRestartGrace = ""
+			} else if d > time.Minute {
+				warn("DNSTT auto restart grace %q is above 1m; clamping to 1m", cfg.DNSTT.AutoRestartGrace)
+				cfg.DNSTT.AutoRestartGrace = "1m"
+			}
+		}
+
+		if cfg.DNSTT.MaxSessions < -1 {
+			warn("DNSTT max_sessions %d is invalid; using unlimited (-1)", cfg.DNSTT.MaxSessions)
+			cfg.DNSTT.MaxSessions = -1
+		}
+		if cfg.DNSTT.MaxStreams < -1 {
+			warn("DNSTT max_streams %d is invalid; using unlimited (-1)", cfg.DNSTT.MaxStreams)
+			cfg.DNSTT.MaxStreams = -1
+		}
+		if cfg.DNSTT.PendingResponses > 0 {
+			if cfg.DNSTT.PendingResponses < minDNSTTPendingResponses {
+				warn("DNSTT pending_responses %d is too low; clamping to %d", cfg.DNSTT.PendingResponses, minDNSTTPendingResponses)
+				cfg.DNSTT.PendingResponses = minDNSTTPendingResponses
+			} else if cfg.DNSTT.PendingResponses > maxDNSTTPendingResponses {
+				warn("DNSTT pending_responses %d is too high; clamping to %d", cfg.DNSTT.PendingResponses, maxDNSTTPendingResponses)
+				cfg.DNSTT.PendingResponses = maxDNSTTPendingResponses
+			}
+		}
+		if cfg.DNSTT.StreamBuffer > 0 {
+			if cfg.DNSTT.StreamBuffer < minDNSTTStreamBuffer {
+				warn("DNSTT stream_buffer %d is too low; clamping to %d", cfg.DNSTT.StreamBuffer, minDNSTTStreamBuffer)
+				cfg.DNSTT.StreamBuffer = minDNSTTStreamBuffer
+			} else if cfg.DNSTT.StreamBuffer > maxDNSTTStreamBuffer {
+				warn("DNSTT stream_buffer %d is too high; clamping to %d", cfg.DNSTT.StreamBuffer, maxDNSTTStreamBuffer)
+				cfg.DNSTT.StreamBuffer = maxDNSTTStreamBuffer
+			}
+		}
+		if cfg.DNSTT.UDPReadBuffer < 0 {
+			warn("DNSTT udp_read_buffer %d is invalid; using default", cfg.DNSTT.UDPReadBuffer)
+			cfg.DNSTT.UDPReadBuffer = 0
+		}
+		if cfg.DNSTT.UDPWriteBuffer < 0 {
+			warn("DNSTT udp_write_buffer %d is invalid; using default", cfg.DNSTT.UDPWriteBuffer)
+			cfg.DNSTT.UDPWriteBuffer = 0
+		}
+		if cfg.DNSTT.FakeDNSWorkers < 0 {
+			warn("DNSTT fake_dns_workers %d is invalid; using automatic default", cfg.DNSTT.FakeDNSWorkers)
+			cfg.DNSTT.FakeDNSWorkers = 0
+		} else if cfg.DNSTT.FakeDNSWorkers > maxDNSTTFakeDNSWorkers {
+			warn("DNSTT fake_dns_workers %d is too high; clamping to %d", cfg.DNSTT.FakeDNSWorkers, maxDNSTTFakeDNSWorkers)
+			cfg.DNSTT.FakeDNSWorkers = maxDNSTTFakeDNSWorkers
+		}
+		if cfg.DNSTT.DNSResponseWorkers < 0 {
+			warn("DNSTT dns_response_workers %d is invalid; using default", cfg.DNSTT.DNSResponseWorkers)
+			cfg.DNSTT.DNSResponseWorkers = 0
+		} else if cfg.DNSTT.DNSResponseWorkers > maxDNSTTResponseWorkers {
+			warn("DNSTT dns_response_workers %d is too high; clamping to %d", cfg.DNSTT.DNSResponseWorkers, maxDNSTTResponseWorkers)
+			cfg.DNSTT.DNSResponseWorkers = maxDNSTTResponseWorkers
 		}
 	}
 
@@ -90,6 +216,27 @@ func normalizeRuntimePorts(cfg *Config) []string {
 			warn("UDPGW listener %s is unavailable (%v); using default %s", old, err, cfg.UDPGW.Listen)
 			if err2 := tcpAddrAvailableForUDPGW(cfg.UDPGW.Listen); err2 != nil {
 				warn("default UDPGW listener %s is also unavailable: %v", cfg.UDPGW.Listen, err2)
+			}
+		}
+
+		cfg.UDPGW.AutoRestartInterval = strings.TrimSpace(cfg.UDPGW.AutoRestartInterval)
+		if cfg.UDPGW.AutoRestartInterval != "" && cfg.UDPGW.AutoRestartInterval != "0" && cfg.UDPGW.AutoRestartInterval != "0s" && !strings.EqualFold(cfg.UDPGW.AutoRestartInterval, "off") && !strings.EqualFold(cfg.UDPGW.AutoRestartInterval, "disabled") {
+			if d, err := time.ParseDuration(cfg.UDPGW.AutoRestartInterval); err != nil {
+				warn("UDPGW auto restart interval %q is invalid; disabling auto restart", cfg.UDPGW.AutoRestartInterval)
+				cfg.UDPGW.AutoRestartInterval = ""
+			} else if d < time.Minute {
+				warn("UDPGW auto restart interval %q is below 1m; disabling auto restart", cfg.UDPGW.AutoRestartInterval)
+				cfg.UDPGW.AutoRestartInterval = ""
+			}
+		}
+		cfg.UDPGW.AutoRestartGrace = strings.TrimSpace(cfg.UDPGW.AutoRestartGrace)
+		if cfg.UDPGW.AutoRestartGrace != "" {
+			if d, err := time.ParseDuration(cfg.UDPGW.AutoRestartGrace); err != nil || d < 0 {
+				warn("UDPGW auto restart grace %q is invalid; using default 2s", cfg.UDPGW.AutoRestartGrace)
+				cfg.UDPGW.AutoRestartGrace = ""
+			} else if d > time.Minute {
+				warn("UDPGW auto restart grace %q is above 1m; clamping to 1m", cfg.UDPGW.AutoRestartGrace)
+				cfg.UDPGW.AutoRestartGrace = "1m"
 			}
 		}
 	}
@@ -128,17 +275,40 @@ func tcpAddrAvailableForUDPGW(addr string) error {
 	return ln.Close()
 }
 
+func normalizeDNSTTDomainList(primary string, domains []string) []string {
+	seen := make(map[string]bool, len(domains)+1)
+	out := make([]string, 0, len(domains)+1)
+	add := func(v string) {
+		v = strings.TrimSpace(v)
+		v = strings.TrimSuffix(v, ".")
+		v = strings.ToLower(v)
+		if v == "" || seen[v] {
+			return
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	add(primary)
+	for _, d := range domains {
+		add(d)
+	}
+	return out
+}
+
 func udpAddrAvailableForDNSTT(addr string) error {
 	if addr == "" {
 		return nil
 	}
 	globalCfgMu.RLock()
-	current := globalCfg != nil && globalCfg.DNSTT != nil && globalCfg.DNSTT.UDPListen == addr && dnsttRunning()
+	current := false
+	if globalCfg != nil && globalCfg.DNSTT != nil && dnsttRunning() {
+		current = sameUDPListenAddress(globalCfg.DNSTT.UDPListen, addr) || sameUDPListenAddress(globalCfg.DNSTT.FakeDNSListen, addr)
+	}
 	globalCfgMu.RUnlock()
 	if current {
 		return nil
 	}
-	pc, err := net.ListenPacket("udp", addr)
+	pc, err := listenDNSTTPacket(addr)
 	if err != nil {
 		return err
 	}

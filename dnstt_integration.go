@@ -11,6 +11,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base32"
 	"encoding/binary"
 	"encoding/json"
@@ -21,6 +22,8 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -38,17 +41,40 @@ import (
 
 var (
 	dnsttConnMu sync.Mutex
-	dnsttConn   net.PacketConn // active UDP socket; closing it stops runDNSTT
+	// active UDP sockets; closing them stops every DNSTT DNS listener. There may
+	// be more than one when the built-in local/fake DNS listener is enabled.
+	dnsttConns []net.PacketConn
+
+	dnsttAutoMu     sync.Mutex
+	dnsttAutoCancel context.CancelFunc
 )
 
-// stopDNSTT closes the active DNSTT UDP listener, causing runDNSTT to exit.
-// It is a no-op if DNSTT is not running.
+// stopDNSTT closes the active DNSTT UDP listener and stops the optional
+// auto-restart watchdog. It is a no-op if DNSTT is not running.
 func stopDNSTT() {
+	stopDNSTTAutoRestart()
+	stopDNSTTListener()
+}
+
+// stopDNSTTListener closes only the UDP listener. The auto-restart watchdog
+// uses this helper so it can cycle DNSTT without disabling itself.
+func stopDNSTTListener() {
 	dnsttConnMu.Lock()
 	defer dnsttConnMu.Unlock()
-	if dnsttConn != nil {
-		_ = dnsttConn.Close()
-		dnsttConn = nil
+	for _, c := range dnsttConns {
+		if c != nil {
+			_ = c.Close()
+		}
+	}
+	dnsttConns = nil
+}
+
+func stopDNSTTAutoRestart() {
+	dnsttAutoMu.Lock()
+	defer dnsttAutoMu.Unlock()
+	if dnsttAutoCancel != nil {
+		dnsttAutoCancel()
+		dnsttAutoCancel = nil
 	}
 }
 
@@ -87,6 +113,32 @@ var maxUDPPayload = 1280 - 40 - 8
 // If you want strict RFC behaviour, set this to 512.
 const noEDNSFallbackPayload = 932
 
+const (
+	defaultDNSTTMaxSessions      = 10000
+	defaultDNSTTMaxStreams       = 15000
+	defaultDNSTTPendingResponses = 20000
+	defaultDNSTTStreamBuffer     = 256 * 1024
+	defaultDNSTTUDPBuffer        = 16 * 1024 * 1024
+	defaultDNSTTResponseWorkers  = 1
+	maxDNSTTFakeDNSWorkers       = 64
+	maxDNSTTResponseWorkers      = 16
+	minDNSTTStreamBuffer         = 64 * 1024
+	maxDNSTTStreamBuffer         = 2 * 1024 * 1024
+	minDNSTTPendingResponses     = 1024
+	maxDNSTTPendingResponses     = 200000
+)
+
+type dnsttRuntimeLimits struct {
+	MaxSessions        int
+	MaxStreams         int
+	PendingResponses   int
+	StreamBuffer       int
+	UDPReadBuffer      int
+	UDPWriteBuffer     int
+	FakeDNSWorkers     int
+	DNSResponseWorkers int
+}
+
 // dnsttPrintStats controls whether periodic statistics are printed to stderr.
 // It is set based on the DNSTT configuration provided by the main program.
 // When false, the periodic stats will still be collected and made available
@@ -94,29 +146,43 @@ const noEDNSFallbackPayload = 932
 // true to preserve existing behaviour.
 var dnsttPrintStats = true
 
+// dnsttLogConnections controls high-volume per-session/per-stream logs. It is
+// intentionally false by default because thousands of users can turn logging
+// into the bottleneck and make the process unstable.
+var dnsttLogConnections atomic.Bool
+
 // DnsttStatsSnapshot holds a recent snapshot of DNSTT counters over the
 // previous 5‑second window.  It is updated every 5 seconds by the
 // runDNSTT goroutine.  The Timestamp field records when the snapshot was
 // taken.  These values are surfaced via the admin API so that the web
 // panel can display tunnel health without reading stderr logs.
 type DnsttStatsSnapshot struct {
-	Timestamp    time.Time `json:"timestamp"`
-	DNSRx        uint64    `json:"dns_rx"`
-	ParseErr     uint64    `json:"parse_err"`
-	NoEDNS       uint64    `json:"no_edns"`
-	Limit512     uint64    `json:"limit512"`
-	RecQueued    uint64    `json:"rec_queued"`
-	RecDropped   uint64    `json:"rec_dropped"`
-	RespSent     uint64    `json:"resp_sent"`
-	RespBytes    uint64    `json:"resp_bytes"`
-	RespEmpty    uint64    `json:"resp_empty"`
-	RespData     uint64    `json:"resp_data"`
-	RespOversize uint64    `json:"resp_oversize"`
-	KCPNew       uint64    `json:"kcp_new"`
-	KCPEnd       uint64    `json:"kcp_end"`
-	SmuxNew      uint64    `json:"smux_new"`
-	SmuxEnd      uint64    `json:"smux_end"`
-	ChLen        int       `json:"ch_len"`
+	Timestamp          time.Time `json:"timestamp"`
+	Enabled            bool      `json:"enabled"`
+	Running            bool      `json:"running"`
+	DNSRx              uint64    `json:"dns_rx"`
+	ParseErr           uint64    `json:"parse_err"`
+	NoEDNS             uint64    `json:"no_edns"`
+	Limit512           uint64    `json:"limit512"`
+	RecQueued          uint64    `json:"rec_queued"`
+	RecDropped         uint64    `json:"rec_dropped"`
+	RespSent           uint64    `json:"resp_sent"`
+	RespBytes          uint64    `json:"resp_bytes"`
+	RespEmpty          uint64    `json:"resp_empty"`
+	RespData           uint64    `json:"resp_data"`
+	RespOversize       uint64    `json:"resp_oversize"`
+	KCPNew             uint64    `json:"kcp_new"`
+	KCPEnd             uint64    `json:"kcp_end"`
+	SmuxNew            uint64    `json:"smux_new"`
+	SmuxEnd            uint64    `json:"smux_end"`
+	SessRejected       uint64    `json:"sess_rejected"`
+	StreamRejected     uint64    `json:"stream_rejected"`
+	PanicRecovered     uint64    `json:"panic_recovered"`
+	ActiveSessions     int64     `json:"active_sessions"`
+	ActiveStreams      int64     `json:"active_streams"`
+	ChLen              int       `json:"ch_len"`
+	FakeDNSWorkers     int       `json:"fake_dns_workers,omitempty"`
+	DNSResponseWorkers int       `json:"dns_response_workers,omitempty"`
 }
 
 var (
@@ -129,8 +195,111 @@ var (
 // defensive copy of the snapshot.
 func GetDNSTTStatsSnapshot() DnsttStatsSnapshot {
 	dnsttStatsMu.Lock()
-	defer dnsttStatsMu.Unlock()
-	return lastDnsttStats
+	snap := lastDnsttStats
+	dnsttStatsMu.Unlock()
+	snap.Enabled = dnsttEnabledInCurrentConfig()
+	snap.Running = dnsttRunning()
+	snap.ActiveSessions = atomic.LoadInt64(&dnsttActiveSessions)
+	snap.ActiveStreams = atomic.LoadInt64(&dnsttActiveStreams)
+	return snap
+}
+
+func dnsttEnabledInCurrentConfig() bool {
+	globalCfgMu.RLock()
+	defer globalCfgMu.RUnlock()
+	return globalCfg != nil && globalCfg.DNSTT != nil
+}
+
+func defaultDNSTTFakeDNSWorkers() int {
+	n := runtime.GOMAXPROCS(0)
+	if n < 2 {
+		return 2
+	}
+	if n > 8 {
+		return 8
+	}
+	return n
+}
+
+func dnsttLimitsFromConfig(cfg *DNSTTConfig) dnsttRuntimeLimits {
+	limits := dnsttRuntimeLimits{
+		MaxSessions:        defaultDNSTTMaxSessions,
+		MaxStreams:         defaultDNSTTMaxStreams,
+		PendingResponses:   defaultDNSTTPendingResponses,
+		StreamBuffer:       defaultDNSTTStreamBuffer,
+		UDPReadBuffer:      defaultDNSTTUDPBuffer,
+		UDPWriteBuffer:     defaultDNSTTUDPBuffer,
+		FakeDNSWorkers:     defaultDNSTTFakeDNSWorkers(),
+		DNSResponseWorkers: defaultDNSTTResponseWorkers,
+	}
+	if cfg == nil {
+		return limits
+	}
+	if cfg.MaxSessions != 0 {
+		limits.MaxSessions = cfg.MaxSessions
+	}
+	if cfg.MaxStreams != 0 {
+		limits.MaxStreams = cfg.MaxStreams
+	}
+	if cfg.PendingResponses > 0 {
+		limits.PendingResponses = cfg.PendingResponses
+	}
+	if limits.PendingResponses < minDNSTTPendingResponses {
+		limits.PendingResponses = minDNSTTPendingResponses
+	}
+	if limits.PendingResponses > maxDNSTTPendingResponses {
+		limits.PendingResponses = maxDNSTTPendingResponses
+	}
+	if cfg.StreamBuffer > 0 {
+		limits.StreamBuffer = cfg.StreamBuffer
+	}
+	if limits.StreamBuffer < minDNSTTStreamBuffer {
+		limits.StreamBuffer = minDNSTTStreamBuffer
+	}
+	if limits.StreamBuffer > maxDNSTTStreamBuffer {
+		limits.StreamBuffer = maxDNSTTStreamBuffer
+	}
+	if cfg.UDPReadBuffer > 0 {
+		limits.UDPReadBuffer = cfg.UDPReadBuffer
+	}
+	if cfg.UDPWriteBuffer > 0 {
+		limits.UDPWriteBuffer = cfg.UDPWriteBuffer
+	}
+	if cfg.FakeDNSWorkers > 0 {
+		limits.FakeDNSWorkers = cfg.FakeDNSWorkers
+	}
+	if limits.FakeDNSWorkers < 1 {
+		limits.FakeDNSWorkers = 1
+	}
+	if limits.FakeDNSWorkers > maxDNSTTFakeDNSWorkers {
+		limits.FakeDNSWorkers = maxDNSTTFakeDNSWorkers
+	}
+	if cfg.DNSResponseWorkers > 0 {
+		limits.DNSResponseWorkers = cfg.DNSResponseWorkers
+	}
+	if limits.DNSResponseWorkers < 1 {
+		limits.DNSResponseWorkers = 1
+	}
+	if limits.DNSResponseWorkers > maxDNSTTResponseWorkers {
+		limits.DNSResponseWorkers = maxDNSTTResponseWorkers
+	}
+	if limits.DNSResponseWorkers > limits.PendingResponses {
+		limits.DNSResponseWorkers = limits.PendingResponses
+	}
+	return limits
+}
+
+func dnsttRecover(where string) {
+	if r := recover(); r != nil {
+		atomic.AddUint64(&dnsttStats.PanicRecovered, 1)
+		dnsttLog.Printf("panic recovered in %s: %v", where, r)
+	}
+}
+
+func dnsttLogDropEvery(counter uint64, format string, args ...interface{}) {
+	if counter == 1 || counter%1000 == 0 {
+		dnsttLog.Printf(format, args...)
+	}
 }
 
 // dnsttCounters holds aggregated counters used to debug tunnel instability.
@@ -160,9 +329,17 @@ type dnsttCounters struct {
 	KCPSessionsEnd uint64
 	SmuxStreamsNew uint64
 	SmuxStreamsEnd uint64
+	SessRejected   uint64
+	StreamRejected uint64
+	PanicRecovered uint64
 }
 
 var dnsttStats dnsttCounters
+
+var (
+	dnsttActiveSessions int64
+	dnsttActiveStreams  int64
+)
 
 var maxEncodedPayloadCache sync.Map // map[int]int
 
@@ -329,11 +506,24 @@ func getDNSTTLogLines() []string {
 	return dnsttLogBuf.GetLines()
 }
 
-// startDNSTT starts the integrated dnstt server if cfg is non-nil.  It reads
-// the Noise private key from cfg.PrivKeyFile, parses cfg.Domain into a dns.Name,
-// and then launches runDNSTT in a goroutine.  Any errors during start are
-// logged.  The SSH server configuration is used when handling streams.
+// startDNSTT starts the integrated dnstt server if cfg is non-nil. It reads
+// the Noise private key from cfg.PrivKeyFile, parses the configured DNSTT root
+// domains into dns.Name values, and then launches runDNSTT in a goroutine. Any
+// errors during start are logged. The SSH server configuration is used when
+// handling streams.
 func startDNSTT(cfg *DNSTTConfig, sshConf *ssh.ServerConfig) error {
+	if cfg == nil {
+		return nil
+	}
+	stopDNSTTAutoRestart()
+	if err := startDNSTTInstance(cfg, sshConf); err != nil {
+		return err
+	}
+	startDNSTTAutoRestart(cfg, sshConf)
+	return nil
+}
+
+func startDNSTTInstance(cfg *DNSTTConfig, sshConf *ssh.ServerConfig) error {
 	if cfg == nil {
 		return nil
 	}
@@ -342,6 +532,8 @@ func startDNSTT(cfg *DNSTTConfig, sshConf *ssh.ServerConfig) error {
 	// Configure whether periodic DNSTT statistics should be emitted to stderr.
 	// When DisableStatsLog is true, stats will be collected but log lines are suppressed.
 	dnsttPrintStats = !cfg.DisableStatsLog
+	dnsttLogConnections.Store(cfg.LogConnections)
+	limits := dnsttLimitsFromConfig(cfg)
 	// Initialise the log buffer once. Use a capacity of 100 lines (~few KB).
 	if dnsttLogBuf == nil {
 		dnsttLogBuf = newDNSTTLogBuffer(100)
@@ -368,44 +560,248 @@ func startDNSTT(cfg *DNSTTConfig, sshConf *ssh.ServerConfig) error {
 		dnsttLog.Print(msg.Error())
 		return msg
 	}
-	// Parse the domain name. dns.ParseName accepts a domain with a trailing
-	// dot or without. Any error here will abort the dnstt server.
-	domain, err := dns.ParseName(cfg.Domain)
-	if err != nil {
-		msg := fmt.Errorf("invalid domain %q: %w", cfg.Domain, err)
+	// Parse the accepted DNS root domains. dns.ParseName accepts a domain with a
+	// trailing dot or without. Any invalid value aborts the dnstt server so a bad
+	// local/test domain does not silently create a broken listener.
+	domainStrings := normalizeDNSTTDomainList(cfg.Domain, cfg.Domains)
+	if cfg.FakeDNSEnabled {
+		cfg.FakeDNSListen = strings.TrimSpace(cfg.FakeDNSListen)
+		if cfg.FakeDNSListen == "" {
+			cfg.FakeDNSListen = "[::]:53"
+		}
+		cfg.FakeDNSDomain = strings.TrimSpace(cfg.FakeDNSDomain)
+		if cfg.FakeDNSDomain == "" {
+			cfg.FakeDNSDomain = "t.local.lan"
+		}
+		// Include the local/fake zone in the normal domain list too, so the same
+		// server accepts that test domain from either listener if needed.
+		domainStrings = normalizeDNSTTDomainList(cfg.Domain, append(cfg.Domains, cfg.FakeDNSDomain))
+	}
+	if len(domainStrings) == 0 {
+		msg := fmt.Errorf("dnstt: at least one domain is required")
 		dnsttLog.Print(msg.Error())
 		return msg
 	}
+	cfg.Domain = domainStrings[0]
+	cfg.Domains = domainStrings
+	domains, err := parseDNSTTDomains(domainStrings)
+	if err != nil {
+		dnsttLog.Print(err.Error())
+		return err
+	}
+
 	udpListen := cfg.UDPListen
 	if udpListen == "" {
 		udpListen = defaultDNSTTListen
 		cfg.UDPListen = udpListen
 	}
 
+	fakeDomains := domains
+	if cfg.FakeDNSEnabled {
+		localDomains := normalizeDNSTTDomainList(cfg.FakeDNSDomain, nil)
+		if len(localDomains) == 0 {
+			localDomains = []string{"t.local.lan"}
+			cfg.FakeDNSDomain = localDomains[0]
+		}
+		fakeDomains, err = parseDNSTTDomains(localDomains)
+		if err != nil {
+			dnsttLog.Print(err.Error())
+			return err
+		}
+	}
+
 	// Bind synchronously so the admin panel can immediately know whether DNSTT
 	// really started or failed because of a bad address/locked port.
-	dnsConn, err := net.ListenPacket("udp", udpListen)
+	listeners := []dnsttListenerSpec{}
+	mainConn, err := listenDNSTTPacket(udpListen)
 	if err != nil {
 		msg := fmt.Errorf("dnstt: opening UDP listener on %s: %w", udpListen, err)
 		dnsttLog.Print(msg.Error())
 		return msg
 	}
+	listeners = append(listeners, dnsttListenerSpec{Label: "dnstt", Listen: udpListen, Conn: mainConn, Domains: domains})
+	if cfg.FakeDNSEnabled {
+		if sameUDPListenAddress(cfg.FakeDNSListen, udpListen) {
+			dnsttLog.Printf("built-in local DNS listener shares main DNSTT address %q; using main listener", udpListen)
+		} else {
+			fakeConn, err := listenDNSTTPacket(cfg.FakeDNSListen)
+			if err != nil {
+				_ = closeDNSTTListenerSpecs(listeners)
+				msg := fmt.Errorf("dnstt: opening built-in local DNS listener on %s: %w", cfg.FakeDNSListen, err)
+				dnsttLog.Print(msg.Error())
+				return msg
+			}
+			listeners = append(listeners, dnsttListenerSpec{Label: "local-dns", Listen: cfg.FakeDNSListen, Conn: fakeConn, Domains: fakeDomains})
+		}
+	}
 
 	// Log initialisation parameters so DNSTT startup is visible even when
 	// quiet logging is enabled. This helps with debugging.
-	dnsttLog.Printf("starting: domain=%q udp_listen=%q privkey=%q", cfg.Domain, udpListen, cfg.PrivKeyFile)
+	dnsttLog.Printf("starting: domains=%q udp_listen=%q fake_dns_enabled=%v fake_dns_listen=%q fake_dns_domain=%q privkey=%q max_sessions=%d max_streams=%d pending_responses=%d stream_buffer=%d udp_rbuf=%d udp_wbuf=%d fake_dns_workers=%d dns_response_workers=%d log_connections=%v", domainStrings, udpListen, cfg.FakeDNSEnabled, cfg.FakeDNSListen, cfg.FakeDNSDomain, cfg.PrivKeyFile, limits.MaxSessions, limits.MaxStreams, limits.PendingResponses, limits.StreamBuffer, limits.UDPReadBuffer, limits.UDPWriteBuffer, limits.FakeDNSWorkers, limits.DNSResponseWorkers, dnsttLogConnections.Load())
 	go func() {
-		if err := runDNSTTOnConn(privkey, domain, udpListen, dnsConn); err != nil && !errors.Is(err, net.ErrClosed) {
+		defer dnsttRecover("runDNSTTOnListeners")
+		if err := runDNSTTOnListeners(privkey, listeners, limits); err != nil && !errors.Is(err, net.ErrClosed) {
 			dnsttLog.Printf("server exited with error: %v", err)
 		}
 	}()
 	return nil
 }
 
+func parseDNSTTDomains(domainStrings []string) ([]dns.Name, error) {
+	domains := make([]dns.Name, 0, len(domainStrings))
+	for _, raw := range domainStrings {
+		domain, err := dns.ParseName(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid DNSTT domain %q: %w", raw, err)
+		}
+		domains = append(domains, domain)
+	}
+	// Match the most specific suffix first. This prevents a broad root like
+	// example.com from stealing queries that should be handled by t.example.com.
+	sort.SliceStable(domains, func(i, j int) bool {
+		return len(domains[i]) > len(domains[j])
+	})
+	return domains, nil
+}
+
+// dnsttListenerSpec describes one UDP DNS socket feeding the same DNSTT/KCP
+// session pool. The normal listener may accept all configured domains, while
+// the built-in local/fake DNS listener can be restricted to one test zone such
+// as t.local.lan.
+type dnsttListenerSpec struct {
+	Label   string
+	Listen  string
+	Conn    net.PacketConn
+	Domains []dns.Name
+}
+
+func closeDNSTTListenerSpecs(listeners []dnsttListenerSpec) error {
+	var first error
+	for _, l := range listeners {
+		if l.Conn == nil {
+			continue
+		}
+		if err := l.Conn.Close(); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
+}
+
+func listenDNSTTPacket(addr string) (net.PacketConn, error) {
+	network := "udp"
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		host = strings.Trim(host, "[]")
+		if ip := net.ParseIP(host); ip != nil {
+			if ip.To4() == nil {
+				// Important for the user's IPv6-only test case: udp6 avoids trying to
+				// reserve IPv4 port 53 when another DNS server already owns IPv4.
+				network = "udp6"
+			} else {
+				network = "udp4"
+			}
+		}
+	}
+	return net.ListenPacket(network, addr)
+}
+
+func sameUDPListenAddress(a, b string) bool {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	if a == "" || b == "" {
+		return false
+	}
+	return strings.EqualFold(a, b)
+}
+
+func startDNSTTAutoRestart(cfg *DNSTTConfig, sshConf *ssh.ServerConfig) {
+	interval := dnsttAutoRestartInterval(cfg)
+	if interval <= 0 {
+		return
+	}
+	grace := dnsttAutoRestartGrace(cfg)
+	cfgCopy := *cfg
+	ctx, cancel := context.WithCancel(context.Background())
+	dnsttAutoMu.Lock()
+	if dnsttAutoCancel != nil {
+		dnsttAutoCancel()
+	}
+	dnsttAutoCancel = cancel
+	dnsttAutoMu.Unlock()
+
+	go func() {
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		dnsttLog.Printf("auto restart enabled: interval=%s grace=%s", interval, grace)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				dnsttLog.Printf("auto restart: cycling DNSTT listener")
+				stopDNSTTListener()
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(grace):
+				}
+				for attempt := 1; ; attempt++ {
+					if err := startDNSTTInstance(&cfgCopy, sshConf); err != nil {
+						dnsttLog.Printf("auto restart: start attempt %d failed: %v", attempt, err)
+						select {
+						case <-ctx.Done():
+							return
+						case <-time.After(10 * time.Second):
+						}
+						continue
+					}
+					dnsttLog.Printf("auto restart: DNSTT listener restarted")
+					break
+				}
+			}
+		}
+	}()
+}
+
+func dnsttAutoRestartInterval(cfg *DNSTTConfig) time.Duration {
+	if cfg == nil {
+		return 0
+	}
+	raw := strings.TrimSpace(cfg.AutoRestartInterval)
+	if raw == "" || raw == "0" || raw == "0s" || strings.EqualFold(raw, "off") || strings.EqualFold(raw, "disabled") {
+		return 0
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		dnsttLog.Printf("auto restart disabled: invalid interval %q: %v", raw, err)
+		return 0
+	}
+	if d < time.Minute {
+		dnsttLog.Printf("auto restart disabled: interval %q is below minimum 1m", raw)
+		return 0
+	}
+	return d
+}
+
+func dnsttAutoRestartGrace(cfg *DNSTTConfig) time.Duration {
+	if cfg == nil || strings.TrimSpace(cfg.AutoRestartGrace) == "" {
+		return 2 * time.Second
+	}
+	d, err := time.ParseDuration(strings.TrimSpace(cfg.AutoRestartGrace))
+	if err != nil || d < 0 {
+		dnsttLog.Printf("auto restart: invalid grace %q, using 2s", cfg.AutoRestartGrace)
+		return 2 * time.Second
+	}
+	if d > time.Minute {
+		return time.Minute
+	}
+	return d
+}
+
 func dnsttRunning() bool {
 	dnsttConnMu.Lock()
 	defer dnsttConnMu.Unlock()
-	return dnsttConn != nil
+	return len(dnsttConns) > 0
 }
 
 // handleDNSTTStream accepts a smux.Stream from a client and hands it off to
@@ -417,13 +813,17 @@ func handleDNSTTStream(stream *smux.Stream, conv uint32) error {
 	// Assign a per-stream sequence number to help correlate open/close events.
 	sid := atomic.AddUint64(&dnsttStats.StreamSeq, 1)
 	start := time.Now()
-	dnsttLog.Printf("ssh stream begin: conv=%d sid=%d", conv, sid)
+	if dnsttLogConnections.Load() {
+		dnsttLog.Printf("ssh stream begin: conv=%d sid=%d", conv, sid)
+	}
 	sc := &streamConn{Stream: stream}
 	// Delegate to the existing SSH connection handler.  This call blocks
 	// until the SSH connection terminates.  The smux stream will be closed
 	// by handleConn when it returns.
 	handleConn(sc, dnsttSSHConfig)
-	dnsttLog.Printf("ssh stream end: conv=%d sid=%d duration=%s", conv, sid, time.Since(start))
+	if dnsttLogConnections.Load() {
+		dnsttLog.Printf("ssh stream end: conv=%d sid=%d duration=%s", conv, sid, time.Since(start))
+	}
 	return nil
 }
 
@@ -453,7 +853,7 @@ func (d dummyAddr) String() string  { return "dnstt" }
 // acceptDNSTTStreams wraps a KCP session in a Noise channel and an smux
 // Session, then waits for smux streams.  Each stream is passed to
 // handleDNSTTStream.  Any errors from the Noise or smux layers are returned.
-func acceptDNSTTStreams(conn *kcp.UDPSession, privkey []byte) error {
+func acceptDNSTTStreams(conn *kcp.UDPSession, privkey []byte, limits dnsttRuntimeLimits) error {
 	// Put a Noise channel on top of the KCP conn.
 	rw, err := noise.NewServer(conn, privkey)
 	if err != nil {
@@ -464,7 +864,9 @@ func acceptDNSTTStreams(conn *kcp.UDPSession, privkey []byte) error {
 	smuxConfig := smux.DefaultConfig()
 	smuxConfig.Version = 2
 	smuxConfig.KeepAliveTimeout = idleTimeout
-	smuxConfig.MaxStreamBuffer = 1 * 1024 * 1024
+	if limits.StreamBuffer > 0 {
+		smuxConfig.MaxStreamBuffer = limits.StreamBuffer
+	}
 	sess, err := smux.Server(rw, smuxConfig)
 	if err != nil {
 		return err
@@ -479,16 +881,27 @@ func acceptDNSTTStreams(conn *kcp.UDPSession, privkey []byte) error {
 			}
 			return err
 		}
-		// Log the creation of each new smux stream.  Reporting the conv helps
-		// to correlate streams with their parent KCP session.
+		if limits.MaxStreams > 0 && atomic.LoadInt64(&dnsttActiveStreams) >= int64(limits.MaxStreams) {
+			rej := atomic.AddUint64(&dnsttStats.StreamRejected, 1)
+			dnsttLogDropEvery(rej, "rejecting DNSTT stream: active_streams=%d max_streams=%d rejected=%d", atomic.LoadInt64(&dnsttActiveStreams), limits.MaxStreams, rej)
+			_ = stream.Close()
+			continue
+		}
+		atomic.AddInt64(&dnsttActiveStreams, 1)
 		atomic.AddUint64(&dnsttStats.SmuxStreamsNew, 1)
-		dnsttLog.Printf("new smux stream: conv=%d", conn.GetConv())
+		if dnsttLogConnections.Load() {
+			dnsttLog.Printf("new smux stream: conv=%d", conn.GetConv())
+		}
 		// For each new smux stream, hand it off to our SSH handler.
 		go func(s *smux.Stream, conv uint32) {
+			defer dnsttRecover("smux stream")
+			defer atomic.AddInt64(&dnsttActiveStreams, -1)
+			defer atomic.AddUint64(&dnsttStats.SmuxStreamsEnd, 1)
 			defer s.Close()
 			_ = handleDNSTTStream(s, conv)
-			atomic.AddUint64(&dnsttStats.SmuxStreamsEnd, 1)
-			dnsttLog.Printf("smux stream closed: conv=%d", conv)
+			if dnsttLogConnections.Load() {
+				dnsttLog.Printf("smux stream closed: conv=%d", conv)
+			}
 		}(stream, conn.GetConv())
 	}
 }
@@ -496,7 +909,7 @@ func acceptDNSTTStreams(conn *kcp.UDPSession, privkey []byte) error {
 // acceptDNSTTSessions listens for incoming KCP connections and passes them to
 // acceptDNSTTStreams.  It configures window sizes and MTU on each accepted
 // session as in the original dnstt-server.
-func acceptDNSTTSessions(ln *kcp.Listener, privkey []byte, mtu int) error {
+func acceptDNSTTSessions(ln *kcp.Listener, privkey []byte, mtu int, limits dnsttRuntimeLimits) error {
 	for {
 		conn, err := ln.AcceptKCP()
 		if err != nil {
@@ -527,10 +940,17 @@ func acceptDNSTTSessions(ln *kcp.Listener, privkey []byte, mtu int) error {
 				mtuSession = m
 			}
 		}
-		// Log each newly accepted KCP session. Include conversation ID, remote address
-		// (ClientID), and the chosen MTU.
+		if limits.MaxSessions > 0 && atomic.LoadInt64(&dnsttActiveSessions) >= int64(limits.MaxSessions) {
+			rej := atomic.AddUint64(&dnsttStats.SessRejected, 1)
+			dnsttLogDropEvery(rej, "rejecting DNSTT session: active_sessions=%d max_sessions=%d rejected=%d", atomic.LoadInt64(&dnsttActiveSessions), limits.MaxSessions, rej)
+			_ = conn.Close()
+			continue
+		}
+		atomic.AddInt64(&dnsttActiveSessions, 1)
 		atomic.AddUint64(&dnsttStats.KCPSessionsNew, 1)
-		dnsttLog.Printf("new KCP session: conv=%d from=%s mtu=%d limit=%d", conn.GetConv(), from, mtuSession, effectiveLimit)
+		if dnsttLogConnections.Load() {
+			dnsttLog.Printf("new KCP session: conv=%d from=%s mtu=%d limit=%d", conn.GetConv(), from, mtuSession, effectiveLimit)
+		}
 		// Permit coalescing the payloads of consecutive sends.
 		conn.SetStreamMode(true)
 		// Disable the dynamic congestion window (limit only by the maximum of
@@ -538,16 +958,23 @@ func acceptDNSTTSessions(ln *kcp.Listener, privkey []byte, mtu int) error {
 		conn.SetNoDelay(0, 0, 0, 1)
 		conn.SetWindowSize(turbotunnel.QueueSize/2, turbotunnel.QueueSize/2)
 		if rc := conn.SetMtu(mtuSession); !rc {
-			panic(rc)
+			dnsttLog.Printf("rejecting DNSTT session: invalid mtu=%d conv=%d from=%s", mtuSession, conn.GetConv(), from)
+			atomic.AddInt64(&dnsttActiveSessions, -1)
+			_ = conn.Close()
+			continue
 		}
 		go func(c *kcp.UDPSession, conv uint32, from string) {
+			defer dnsttRecover("kcp session")
+			defer atomic.AddInt64(&dnsttActiveSessions, -1)
+			defer atomic.AddUint64(&dnsttStats.KCPSessionsEnd, 1)
 			defer c.Close()
-			err := acceptDNSTTStreams(c, privkey)
-			atomic.AddUint64(&dnsttStats.KCPSessionsEnd, 1)
-			if err != nil && err != io.ErrClosedPipe {
-				dnsttLog.Printf("kcp session closed: conv=%d from=%s err=%v", conv, from, err)
-			} else {
-				dnsttLog.Printf("kcp session closed: conv=%d from=%s", conv, from)
+			err := acceptDNSTTStreams(c, privkey, limits)
+			if dnsttLogConnections.Load() {
+				if err != nil && err != io.ErrClosedPipe {
+					dnsttLog.Printf("kcp session closed: conv=%d from=%s err=%v", conv, from, err)
+				} else {
+					dnsttLog.Printf("kcp session closed: conv=%d from=%s", conv, from)
+				}
 			}
 		}(conn, conn.GetConv(), conn.RemoteAddr().String())
 	}
@@ -560,14 +987,132 @@ func acceptDNSTTSessions(ln *kcp.Listener, privkey []byte, mtu int) error {
 // before sending it.
 type record struct {
 	Resp     *dns.Message
+	Conn     net.PacketConn
 	Addr     net.Addr
+	Listener string
 	ClientID turbotunnel.ClientID
 	// PayloadLimit holds the maximum UDP payload size advertised by the
 	// client via EDNS(0).  sendLoop uses this to clamp outgoing DNS
 	// responses so they never exceed what the client claims it will
-	// accept.  A zero value means no per‑client limit and defaults to
+	// accept.  A zero value means no per-client limit and defaults to
 	// maxUDPPayload.
 	PayloadLimit int
+}
+
+type recordSink interface {
+	Enqueue(*record) bool
+	Len() int
+	Cap() int
+	ShardCount() int
+	Shard(int) <-chan *record
+	Close()
+}
+
+type shardedRecordSink struct {
+	chans []chan *record
+}
+
+func newShardedRecordSink(totalCapacity, shards int) *shardedRecordSink {
+	if shards < 1 {
+		shards = 1
+	}
+	if totalCapacity < shards {
+		totalCapacity = shards
+	}
+	perShard := totalCapacity / shards
+	if perShard < 1 {
+		perShard = 1
+	}
+	extra := totalCapacity % shards
+	s := &shardedRecordSink{chans: make([]chan *record, shards)}
+	for i := range s.chans {
+		capForShard := perShard
+		if i < extra {
+			capForShard++
+		}
+		s.chans[i] = make(chan *record, capForShard)
+	}
+	return s
+}
+
+func (s *shardedRecordSink) Enqueue(rec *record) bool {
+	if s == nil || len(s.chans) == 0 {
+		return false
+	}
+	ch := s.chans[recordShardIndex(rec, len(s.chans))]
+	select {
+	case ch <- rec:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *shardedRecordSink) Len() int {
+	if s == nil {
+		return 0
+	}
+	n := 0
+	for _, ch := range s.chans {
+		n += len(ch)
+	}
+	return n
+}
+
+func (s *shardedRecordSink) Cap() int {
+	if s == nil {
+		return 0
+	}
+	n := 0
+	for _, ch := range s.chans {
+		n += cap(ch)
+	}
+	return n
+}
+
+func (s *shardedRecordSink) ShardCount() int {
+	if s == nil {
+		return 0
+	}
+	return len(s.chans)
+}
+
+func (s *shardedRecordSink) Shard(i int) <-chan *record {
+	return s.chans[i]
+}
+
+func (s *shardedRecordSink) Close() {
+	if s == nil {
+		return
+	}
+	for _, ch := range s.chans {
+		close(ch)
+	}
+}
+
+func recordShardIndex(rec *record, shards int) int {
+	if shards <= 1 || rec == nil {
+		return 0
+	}
+	var h uint32 = 2166136261
+	allZeroClient := true
+	for _, b := range rec.ClientID {
+		if b != 0 {
+			allZeroClient = false
+		}
+		h ^= uint32(b)
+		h *= 16777619
+	}
+	// Invalid/error responses often have an all-zero ClientID. Mix in the remote
+	// address so NXDOMAIN/FORMERR traffic is not forced onto one shard.
+	if allZeroClient && rec.Addr != nil {
+		addr := rec.Addr.String()
+		for i := 0; i < len(addr); i++ {
+			h ^= uint32(addr[i])
+			h *= 16777619
+		}
+	}
+	return int(h % uint32(shards))
 }
 
 // nextPacket reads the next length‑prefixed packet from r, ignoring padding.
@@ -683,11 +1228,34 @@ func responseFor(query *dns.Message, domain dns.Name) (*dns.Message, []byte) {
 	return resp, payload
 }
 
+// responseForDomains is like responseFor, but it accepts a query under any of
+// the configured DNSTT root domains. This lets one UDP listener serve public
+// and local/test NS domains at the same time while using the same KCP/noise
+// session pool and private key.
+func responseForDomains(query *dns.Message, domains []dns.Name) (*dns.Message, []byte) {
+	for i, domain := range domains {
+		resp, payload := responseFor(query, domain)
+		if resp == nil {
+			return nil, nil
+		}
+		if resp.Rcode() != dns.RcodeNameError || len(payload) > 0 {
+			return resp, payload
+		}
+		// Try the next configured domain only when this one did not match. Other
+		// NAMEERROR conditions (bad QTYPE, bad base32 payload, etc.) are terminal
+		// after the final domain.
+		if i == len(domains)-1 {
+			return resp, payload
+		}
+	}
+	return responseFor(query, dns.Name([][]byte{}))
+}
+
 // recvLoop repeatedly calls dnsConn.ReadFrom, extracts the packets contained in
 // the incoming DNS queries, and puts them on ttConn's incoming queue.
 // Whenever a query calls for a response, constructs a partial response and
 // passes it to sendLoop over ch.
-func recvLoop(domain dns.Name, dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch chan<- *record) error {
+func recvLoop(label string, domains []dns.Name, dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, sink recordSink) error {
 	for {
 		var buf [4096]byte
 		n, addr, err := dnsConn.ReadFrom(buf[:])
@@ -702,8 +1270,8 @@ func recvLoop(domain dns.Name, dnsConn net.PacketConn, ttConn *turbotunnel.Queue
 		// Parse DNS query.
 		query, err := dns.MessageFromWireFormat(buf[:n])
 		if err != nil {
-			atomic.AddUint64(&dnsttStats.DNSParseErr, 1)
-			dnsttLog.Printf("cannot parse DNS query: %v", err)
+			pe := atomic.AddUint64(&dnsttStats.DNSParseErr, 1)
+			dnsttLogDropEvery(pe, "cannot parse DNS query: %v", err)
 			continue
 		}
 		// Determine an effective UDP payload limit for this query.
@@ -758,7 +1326,7 @@ func recvLoop(domain dns.Name, dnsConn net.PacketConn, ttConn *turbotunnel.Queue
 		if payloadLimit == 512 {
 			atomic.AddUint64(&dnsttStats.SmallEDNS, 1)
 		}
-		resp, payload := responseFor(&query, domain)
+		resp, payload := responseForDomains(&query, domains)
 		// Extract ClientID
 		var clientID turbotunnel.ClientID
 		n = copy(clientID[:], payload)
@@ -785,18 +1353,19 @@ func recvLoop(domain dns.Name, dnsConn net.PacketConn, ttConn *turbotunnel.Queue
 			// Push this record along with the per‑client payload limit to the sender.
 			rec := &record{
 				Resp:         resp,
+				Conn:         dnsConn,
 				Addr:         addr,
+				Listener:     label,
 				ClientID:     clientID,
 				PayloadLimit: payloadLimit,
 			}
-			select {
-			case ch <- rec:
+			if sink.Enqueue(rec) {
 				atomic.AddUint64(&dnsttStats.RecQueued, 1)
-			default:
+			} else {
 				d := atomic.AddUint64(&dnsttStats.RecDropped, 1)
 				// Log occasionally to avoid flooding logs under sustained overload.
 				if d == 1 || d%1000 == 0 {
-					dnsttLog.Printf("dropping response record: ch_len=%d ch_cap=%d dropped=%d", len(ch), cap(ch), d)
+					dnsttLog.Printf("dropping response record: ch_len=%d ch_cap=%d dropped=%d", sink.Len(), sink.Cap(), d)
 				}
 			}
 		}
@@ -807,16 +1376,20 @@ func recvLoop(domain dns.Name, dnsConn net.PacketConn, ttConn *turbotunnel.Queue
 // error response are sent immediately.  Those that represent a response
 // capable of carrying data are packed full of as many packets as will fit
 // while keeping the total size under maxEncodedPayload, then sent.
-func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-chan *record, maxEncodedPayload int) error {
+func sendLoop(ttConn *turbotunnel.QueuePacketConn, ch <-chan *record, maxEncodedPayload int, done <-chan struct{}) error {
 	var nextRec *record
 	for {
 		rec := nextRec
 		nextRec = nil
 		if rec == nil {
 			var ok bool
-			rec, ok = <-ch
-			if !ok {
-				break
+			select {
+			case <-done:
+				return nil
+			case rec, ok = <-ch:
+				if !ok {
+					return nil
+				}
 			}
 		}
 		// Determine the effective per-query UDP payload limit.
@@ -877,6 +1450,9 @@ func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-
 						case p = <-outgoing:
 						case <-timer.C:
 						case nextRec = <-ch:
+						case <-done:
+							timer.Stop()
+							return nil
 						}
 					}
 				}
@@ -925,7 +1501,11 @@ func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-
 			// After promotion, allow this response to be sent.
 			effectivePayloadLimit = promoteTo
 		}
-		_, err = dnsConn.WriteTo(buf, rec.Addr)
+		if rec.Conn == nil {
+			dnsttLog.Printf("cannot send DNS response: missing listener for %s", rec.Listener)
+			continue
+		}
+		_, err = rec.Conn.WriteTo(buf, rec.Addr)
 		if err != nil {
 			if err, ok := err.(net.Error); ok && err.Temporary() {
 				dnsttLog.Printf("WriteTo temporary error: %v", err)
@@ -1012,35 +1592,67 @@ func computeMaxEncodedPayload(limit int) int {
 // MTU based on the configured maxUDPPayload, then accepts KCP sessions and
 // handles DNS queries.  Errors are returned only for fatal conditions.
 func runDNSTT(privkey []byte, domain dns.Name, udpListen string) error {
-	dnsConn, err := net.ListenPacket("udp", udpListen)
+	dnsConn, err := listenDNSTTPacket(udpListen)
 	if err != nil {
 		return fmt.Errorf("dnstt: opening UDP listener on %s: %v", udpListen, err)
 	}
-	return runDNSTTOnConn(privkey, domain, udpListen, dnsConn)
+	return runDNSTTOnListeners(privkey, []dnsttListenerSpec{{Label: "dnstt", Listen: udpListen, Conn: dnsConn, Domains: []dns.Name{domain}}}, dnsttLimitsFromConfig(nil))
 }
 
-func runDNSTTOnConn(privkey []byte, domain dns.Name, udpListen string, dnsConn net.PacketConn) error {
-	if udp, ok := dnsConn.(*net.UDPConn); ok {
-		_ = udp.SetReadBuffer(4 * 1024 * 1024)
-		_ = udp.SetWriteBuffer(4 * 1024 * 1024)
+func runDNSTTOnListeners(privkey []byte, listeners []dnsttListenerSpec, limits dnsttRuntimeLimits) error {
+	if len(listeners) == 0 {
+		return fmt.Errorf("dnstt: no UDP listeners configured")
+	}
+	done := make(chan struct{})
+	defer close(done)
+	defer closeDNSTTListenerSpecs(listeners)
+
+	registered := make([]net.PacketConn, 0, len(listeners))
+	for _, l := range listeners {
+		if l.Conn == nil {
+			continue
+		}
+		if udp, ok := l.Conn.(*net.UDPConn); ok {
+			if limits.UDPReadBuffer > 0 {
+				_ = udp.SetReadBuffer(limits.UDPReadBuffer)
+			}
+			if limits.UDPWriteBuffer > 0 {
+				_ = udp.SetWriteBuffer(limits.UDPWriteBuffer)
+			}
+		}
+		registered = append(registered, l.Conn)
 	}
 
-	// Register so stopDNSTT() can close this socket and unblock the read loop.
+	// Register so stopDNSTT() can close every socket and unblock all read loops.
 	dnsttConnMu.Lock()
-	if dnsttConn != nil && dnsttConn != dnsConn {
-		_ = dnsttConn.Close()
+	for _, c := range dnsttConns {
+		if c != nil {
+			_ = c.Close()
+		}
 	}
-	dnsttConn = dnsConn
+	dnsttConns = registered
 	dnsttConnMu.Unlock()
 	defer func() {
 		dnsttConnMu.Lock()
-		if dnsttConn == dnsConn {
-			dnsttConn = nil
+		// Only clear the global list if it still points at this generation.
+		if len(dnsttConns) == len(registered) {
+			same := true
+			for i := range registered {
+				if dnsttConns[i] != registered[i] {
+					same = false
+					break
+				}
+			}
+			if same {
+				dnsttConns = nil
+			}
 		}
 		dnsttConnMu.Unlock()
 	}()
-	// Log readiness of the UDP listener.
-	dnsttLog.Printf("udp listener ready on %s", udpListen)
+
+	for _, l := range listeners {
+		dnsttLog.Printf("udp listener ready on %s (%s, domains=%q)", l.Listen, l.Label, dnsNamesForLog(l.Domains))
+	}
 	// compute maximum encoded payload and resulting MTU
 	maxEncodedPayload := computeMaxEncodedPayload(maxUDPPayload)
 	mtu := maxEncodedPayload - 2
@@ -1056,16 +1668,22 @@ func runDNSTTOnConn(privkey []byte, domain dns.Name, udpListen string, dnsConn n
 	if err != nil {
 		return fmt.Errorf("dnstt: opening KCP listener: %v", err)
 	}
+	defer ln.Close()
 	go func() {
-		if err := acceptDNSTTSessions(ln, privkey, mtu); err != nil {
+		defer dnsttRecover("acceptDNSTTSessions")
+		if err := acceptDNSTTSessions(ln, privkey, mtu, limits); err != nil {
 			dnsttLog.Printf("acceptSessions error: %v", err)
 		}
 	}()
 	// NOTE: This channel buffers pending DNS response records. Keeping this
 	// extremely large can look like a "memory leak" under bursty load because
 	// records (and their associated allocations) are retained until drained.
-	// A moderate size provides smoothing while still applying backpressure.
-	ch := make(chan *record, 20000)
+	// Keep it bounded so overload drops DNS responses instead of exhausting RAM.
+	pendingResponses := limits.PendingResponses
+	if pendingResponses <= 0 {
+		pendingResponses = defaultDNSTTPendingResponses
+	}
+	sink := newShardedRecordSink(pendingResponses, limits.DNSResponseWorkers)
 	// Periodically aggregate DNSTT counters.  This goroutine runs every 5 seconds,
 	// resetting the atomic counters, storing them in lastDnsttStats and optionally
 	// emitting a log line.  Even when dnsttPrintStats is false, statistics will
@@ -1073,7 +1691,13 @@ func runDNSTTOnConn(privkey []byte, domain dns.Name, udpListen string, dnsConn n
 	go func() {
 		t := time.NewTicker(5 * time.Second)
 		defer t.Stop()
-		for range t.C {
+		for {
+			select {
+			case <-done:
+				return
+			case <-t.C:
+			}
+
 			dnsRx := atomic.SwapUint64(&dnsttStats.DNSRx, 0)
 			parseErr := atomic.SwapUint64(&dnsttStats.DNSParseErr, 0)
 			noEDNS := atomic.SwapUint64(&dnsttStats.NoEDNS, 0)
@@ -1089,43 +1713,102 @@ func runDNSTTOnConn(privkey []byte, domain dns.Name, udpListen string, dnsConn n
 			kcpEnd := atomic.SwapUint64(&dnsttStats.KCPSessionsEnd, 0)
 			smuxNew := atomic.SwapUint64(&dnsttStats.SmuxStreamsNew, 0)
 			smuxEnd := atomic.SwapUint64(&dnsttStats.SmuxStreamsEnd, 0)
+			sessRejected := atomic.SwapUint64(&dnsttStats.SessRejected, 0)
+			streamRejected := atomic.SwapUint64(&dnsttStats.StreamRejected, 0)
+			panicRecovered := atomic.SwapUint64(&dnsttStats.PanicRecovered, 0)
 			// Update the snapshot
 			dnsttStatsMu.Lock()
 			lastDnsttStats = DnsttStatsSnapshot{
-				Timestamp:    time.Now(),
-				DNSRx:        dnsRx,
-				ParseErr:     parseErr,
-				NoEDNS:       noEDNS,
-				Limit512:     limit512,
-				RecQueued:    queued,
-				RecDropped:   dropped,
-				RespSent:     respSent,
-				RespBytes:    respBytes,
-				RespEmpty:    respEmpty,
-				RespData:     respData,
-				RespOversize: over,
-				KCPNew:       kcpNew,
-				KCPEnd:       kcpEnd,
-				SmuxNew:      smuxNew,
-				SmuxEnd:      smuxEnd,
-				ChLen:        len(ch),
+				Timestamp:          time.Now(),
+				Running:            dnsttRunning(),
+				DNSRx:              dnsRx,
+				ParseErr:           parseErr,
+				NoEDNS:             noEDNS,
+				Limit512:           limit512,
+				RecQueued:          queued,
+				RecDropped:         dropped,
+				RespSent:           respSent,
+				RespBytes:          respBytes,
+				RespEmpty:          respEmpty,
+				RespData:           respData,
+				RespOversize:       over,
+				KCPNew:             kcpNew,
+				KCPEnd:             kcpEnd,
+				SmuxNew:            smuxNew,
+				SmuxEnd:            smuxEnd,
+				SessRejected:       sessRejected,
+				StreamRejected:     streamRejected,
+				PanicRecovered:     panicRecovered,
+				ActiveSessions:     atomic.LoadInt64(&dnsttActiveSessions),
+				ActiveStreams:      atomic.LoadInt64(&dnsttActiveStreams),
+				ChLen:              sink.Len(),
+				FakeDNSWorkers:     limits.FakeDNSWorkers,
+				DNSResponseWorkers: limits.DNSResponseWorkers,
 			}
 			dnsttStatsMu.Unlock()
 			// Optionally log the snapshot to stderr
 			if dnsttPrintStats {
 				dnsttLog.Printf(
-					"stats 5s: dns_rx=%d parse_err=%d no_edns=%d limit512=%d rec_queued=%d rec_dropped=%d resp_sent=%d resp_bytes=%d resp_empty=%d resp_data=%d resp_oversize=%d kcp_new=%d kcp_end=%d smux_new=%d smux_end=%d ch_len=%d",
-					dnsRx, parseErr, noEDNS, limit512, queued, dropped, respSent, respBytes, respEmpty, respData, over, kcpNew, kcpEnd, smuxNew, smuxEnd, len(ch),
+					"stats 5s: dns_rx=%d parse_err=%d no_edns=%d limit512=%d rec_queued=%d rec_dropped=%d resp_sent=%d resp_bytes=%d resp_empty=%d resp_data=%d resp_oversize=%d kcp_new=%d kcp_end=%d smux_new=%d smux_end=%d sess_rejected=%d stream_rejected=%d panic_recovered=%d active_sessions=%d active_streams=%d ch_len=%d fake_dns_workers=%d response_workers=%d",
+					dnsRx, parseErr, noEDNS, limit512, queued, dropped, respSent, respBytes, respEmpty, respData, over, kcpNew, kcpEnd, smuxNew, smuxEnd, sessRejected, streamRejected, panicRecovered, atomic.LoadInt64(&dnsttActiveSessions), atomic.LoadInt64(&dnsttActiveStreams), sink.Len(), limits.FakeDNSWorkers, limits.DNSResponseWorkers,
 				)
 			}
 		}
 	}()
-	go func() {
-		if err := sendLoop(dnsConn, ttConn, ch, maxEncodedPayload); err != nil {
-			dnsttLog.Printf("sendLoop error: %v", err)
+	for i := 0; i < sink.ShardCount(); i++ {
+		shard := i
+		go func() {
+			defer dnsttRecover(fmt.Sprintf("sendLoop-%d", shard+1))
+			if err := sendLoop(ttConn, sink.Shard(shard), maxEncodedPayload, done); err != nil {
+				dnsttLog.Printf("sendLoop-%d error: %v", shard+1, err)
+				closeDNSTTListenerSpecs(listeners)
+			}
+		}()
+	}
+
+	readWorkers := 0
+	for _, l := range listeners {
+		if l.Label == "local-dns" && limits.FakeDNSWorkers > 1 {
+			readWorkers += limits.FakeDNSWorkers
+		} else {
+			readWorkers++
 		}
-	}()
-	return recvLoop(domain, dnsConn, ttConn, ch)
+	}
+	errCh := make(chan error, readWorkers)
+	for _, l := range listeners {
+		listener := l
+		workers := 1
+		if listener.Label == "local-dns" && limits.FakeDNSWorkers > 1 {
+			workers = limits.FakeDNSWorkers
+		}
+		for worker := 0; worker < workers; worker++ {
+			workerLabel := listener.Label
+			if workers > 1 {
+				workerLabel = fmt.Sprintf("%s-%d", listener.Label, worker+1)
+			}
+			domains := listener.Domains
+			conn := listener.Conn
+			go func(label string, domains []dns.Name, conn net.PacketConn) {
+				defer dnsttRecover("recvLoop " + label)
+				errCh <- recvLoop(label, domains, conn, ttConn, sink)
+			}(workerLabel, domains, conn)
+		}
+	}
+	err = <-errCh
+	closeDNSTTListenerSpecs(listeners)
+	return err
+}
+
+func dnsNamesForLog(domains []dns.Name) []string {
+	out := make([]string, 0, len(domains))
+	for _, d := range domains {
+		parts := make([]string, 0, len(d))
+		for _, label := range d {
+			parts = append(parts, string(label))
+		}
+		out = append(out, strings.Join(parts, "."))
+	}
+	return out
 }
 
 // ---- Key management API handlers ----

@@ -627,3 +627,14 @@ select:disabled {
   color:#94a3b8 !important;
   background:#070b12 !important;
 }
+
+/* Xray runtime mode selector */
+.input-sm{
+  min-height:30px;
+  padding:4px 8px;
+  border-radius:10px;
+  border:1px solid rgba(34,211,238,.26);
+  background:#070b12;
+  color:#f3f7ff;
+  font-size:.78rem;
+}

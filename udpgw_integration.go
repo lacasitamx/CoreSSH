@@ -20,24 +20,65 @@ import (
 	"io"
 	"log"
 	"net"
+	"strings"
 	"sync"
 	"time"
 )
 
 var (
-	udpgwMu sync.Mutex
-	udpgwLn net.Listener
+	udpgwMu      sync.Mutex
+	udpgwLn      net.Listener
+	udpgwClients = make(map[net.Conn]struct{})
+
+	udpgwAutoMu     sync.Mutex
+	udpgwAutoCancel context.CancelFunc
 )
 
-// stopUDPGW closes the active UDPGW listener, causing the accept loop to exit.
-// It is a no-op if UDPGW is not running.
+// stopUDPGW closes the active UDPGW listener, all active UDPGW client TCP
+// sockets, and the optional auto-restart watchdog. It is a no-op if UDPGW is
+// not running.
 func stopUDPGW() {
+	stopUDPGWAutoRestart()
+	stopUDPGWInstance()
+}
+
+func stopUDPGWInstance() {
 	udpgwMu.Lock()
 	defer udpgwMu.Unlock()
 	if udpgwLn != nil {
 		_ = udpgwLn.Close()
 		udpgwLn = nil
 	}
+	for conn := range udpgwClients {
+		_ = conn.Close()
+		delete(udpgwClients, conn)
+	}
+}
+
+func stopUDPGWAutoRestart() {
+	udpgwAutoMu.Lock()
+	defer udpgwAutoMu.Unlock()
+	if udpgwAutoCancel != nil {
+		udpgwAutoCancel()
+		udpgwAutoCancel = nil
+	}
+}
+
+func registerUDPGWClient(conn net.Conn) bool {
+	udpgwMu.Lock()
+	defer udpgwMu.Unlock()
+	if udpgwLn == nil {
+		_ = conn.Close()
+		return false
+	}
+	udpgwClients[conn] = struct{}{}
+	return true
+}
+
+func unregisterUDPGWClient(conn net.Conn) {
+	udpgwMu.Lock()
+	delete(udpgwClients, conn)
+	udpgwMu.Unlock()
 }
 
 func udpgwRunning() bool {
@@ -53,6 +94,18 @@ func udpgwRunning() bool {
 // prevent the gateway from starting, but do not terminate the main
 // process.
 func startUDPGW(cfg *UDPGWConfig) error {
+	if cfg == nil {
+		return nil
+	}
+	stopUDPGWAutoRestart()
+	if err := startUDPGWInstance(cfg); err != nil {
+		return err
+	}
+	startUDPGWAutoRestart(cfg)
+	return nil
+}
+
+func startUDPGWInstance(cfg *UDPGWConfig) error {
 	if cfg == nil {
 		return nil
 	}
@@ -166,10 +219,97 @@ func startUDPGW(cfg *UDPGWConfig) error {
 				log.Printf("udpgw: accept error: %v", err)
 				continue
 			}
-			go handleUDPGWClient(conn, c)
+			if !registerUDPGWClient(conn) {
+				continue
+			}
+			go func(client net.Conn) {
+				defer unregisterUDPGWClient(client)
+				handleUDPGWClient(client, c)
+			}(conn)
 		}
 	}()
 	return nil
+}
+
+func startUDPGWAutoRestart(cfg *UDPGWConfig) {
+	interval := udpgwAutoRestartInterval(cfg)
+	if interval <= 0 {
+		return
+	}
+	grace := udpgwAutoRestartGrace(cfg)
+	cfgCopy := *cfg
+	ctx, cancel := context.WithCancel(context.Background())
+
+	udpgwAutoMu.Lock()
+	if udpgwAutoCancel != nil {
+		udpgwAutoCancel()
+	}
+	udpgwAutoCancel = cancel
+	udpgwAutoMu.Unlock()
+
+	go func() {
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		log.Printf("udpgw: auto restart enabled: interval=%s grace=%s mode=hard", interval, grace)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				log.Printf("udpgw: auto restart: stopping listener and connected clients")
+				stopUDPGWInstance()
+				if !sleepOrContextDone(ctx, grace) {
+					return
+				}
+				for attempt := 1; ; attempt++ {
+					if err := startUDPGWInstance(&cfgCopy); err != nil {
+						log.Printf("udpgw: auto restart: start attempt %d failed: %v", attempt, err)
+						if !sleepOrContextDone(ctx, 10*time.Second) {
+							return
+						}
+						continue
+					}
+					log.Printf("udpgw: auto restart: listener and client handler restarted")
+					break
+				}
+			}
+		}
+	}()
+}
+
+func udpgwAutoRestartInterval(cfg *UDPGWConfig) time.Duration {
+	if cfg == nil {
+		return 0
+	}
+	raw := strings.TrimSpace(cfg.AutoRestartInterval)
+	if raw == "" || raw == "0" || raw == "0s" || strings.EqualFold(raw, "off") || strings.EqualFold(raw, "disabled") {
+		return 0
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		log.Printf("udpgw: auto restart disabled: invalid interval %q: %v", raw, err)
+		return 0
+	}
+	if d < time.Minute {
+		log.Printf("udpgw: auto restart disabled: interval %q is below minimum 1m", raw)
+		return 0
+	}
+	return d
+}
+
+func udpgwAutoRestartGrace(cfg *UDPGWConfig) time.Duration {
+	if cfg == nil || strings.TrimSpace(cfg.AutoRestartGrace) == "" {
+		return 2 * time.Second
+	}
+	d, err := time.ParseDuration(strings.TrimSpace(cfg.AutoRestartGrace))
+	if err != nil || d < 0 {
+		log.Printf("udpgw: auto restart: invalid grace %q, using 2s", cfg.AutoRestartGrace)
+		return 2 * time.Second
+	}
+	if d > time.Minute {
+		return time.Minute
+	}
+	return d
 }
 
 // internalUDPGWConfig mirrors the exported UDPGWConfig but with

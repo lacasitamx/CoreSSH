@@ -42,7 +42,7 @@ const I18N_TEXT = {
     "Server Load":"Server Load","Interfaces":"Interfaces","Interface":"Interface","Rx Mbps":"Rx Mbps","Tx Mbps":"Tx Mbps","Rx Total":"Rx Total","Tx Total":"Tx Total","Updated: {time}":"Updated: {time}","Error loading stats.":"Error loading stats.","Normal load":"Normal load","Moderate load":"Moderate load","High load":"High load","Cleaning interface totals…":"Cleaning interface totals…","Interface totals cleaned. Auto-clean remains every 30 days.":"Interface totals cleaned. Auto-clean remains every 30 days.","Error cleaning totals: {error}":"Error cleaning totals: {error}",
     "VnStat Usage":"VnStat Usage","Today total":"Today total","This month total":"This month total","Interfaces tracked":"Interfaces tracked","daily / monthly":"daily / monthly","Daily usage":"Daily usage","Monthly usage":"Monthly usage","Day":"Day","Month":"Month","Clean usage":"Clean usage","Clean VnStat history":"Clean VnStat history","VnStat history does not auto-clean. Use the button when you want to reset it.":"VnStat history does not auto-clean. Use the button when you want to reset it.","Totals can be cleaned here and auto-clean every 30 days. VnStat history is separate.":"Totals can be cleaned here and auto-clean every 30 days. VnStat history is separate.","Loading VnStat usage…":"Loading VnStat usage…","VnStat history cleaned.":"VnStat history cleaned.","Error loading VnStat usage: {error}":"Error loading VnStat usage: {error}","Error cleaning VnStat history: {error}":"Error cleaning VnStat history: {error}",
     "Panel / system":"Panel / system","Select a log source and click Refresh.":"Select a log source and click Refresh.","Clean panel log":"Clean panel log","No log lines yet.":"No log lines yet.","Panel log cleaned · {path} · max {max}":"Panel log cleaned · {path} · max {max}","Cleaning panel log…":"Cleaning panel log…",
-    "Network":"Network","Main Listen (SSH / HTTP)":"Main Listen (SSH / HTTP)","Extra Listen Addresses":"Extra Listen Addresses","(one per line, e.g. 0.0.0.0:8080)":"(one per line, e.g. 0.0.0.0:8080)","SSH & General":"SSH & General","Default Upload Limit (Mbps)":"Default Upload Limit (Mbps)","Default Download Limit (Mbps)":"Default Download Limit (Mbps)","Quiet Logs":"Quiet Logs","User Count Display":"User Count Display","SSH Banner":"SSH Banner","Banner Text":"Banner Text","(shown to connecting SSH clients)":"(shown to connecting SSH clients)","DNSTT Tunnel":"DNSTT Tunnel","Domain":"Domain","UDP Listen":"UDP Listen","Private Key":"Private Key","Public Key":"Public Key","Disable Stats Log":"Disable Stats Log","Disable Console Log":"Disable Console Log","UDP Gateway":"UDP Gateway","Listen":"Listen","Idle Timeout":"Idle Timeout","Map TTL":"Map TTL","Debug Logging":"Debug Logging","TLS Forwarders":"TLS Forwarders","Listen Address":"Listen Address","Certificate":"Certificate","Generate Self-Signed":"Generate Self-Signed","Let's Encrypt (certbot)":"Let's Encrypt (certbot)","Paste PEM text":"Paste PEM text","Custom file paths":"Custom file paths","Cert File":"Cert File","Key File":"Key File","Certificate PEM":"Certificate PEM","Private Key PEM":"Private Key PEM","Add Forwarder":"Add Forwarder","Save Config":"Save Config","All service changes apply live.":"All service changes apply live.","Saved and applied live.":"Saved and applied live.","Saved live with warnings: {warnings}":"Saved live with warnings: {warnings}","Processing…":"Processing…","Listen address required.":"Listen address required.","Domain required.":"Domain required.","Domain and email required.":"Domain and email required.","Cert and key paths required.":"Cert and key paths required.","Added. Save config to apply.":"Added. Save config to apply.","Generating…":"Generating…","Generated ✓ paths set.":"Generated ✓ paths set.","Generating key…":"Generating key…","Key generated. Save config to apply.":"Key generated. Save config to apply.","Loading public key…":"Loading public key…","Self-signed cert generated.":"Self-signed cert generated.","Let's Encrypt cert issued.":"Let's Encrypt cert issued.","PEM saved.":"PEM saved.","Saved ✓ paths set.":"Saved ✓ paths set.","Name, cert PEM, and key PEM required.":"Name, cert PEM, and key PEM required.","Name, cert, and key required.":"Name, cert, and key required.","Name, cert PEM, and key PEM required.":"Name, cert PEM, and key PEM required.","Save Changes":"Save Changes"
+    "Network":"Network","Main Listen (SSH / HTTP)":"Main Listen (SSH / HTTP)","Extra Listen Addresses":"Extra Listen Addresses","(one per line, e.g. 0.0.0.0:8080)":"(one per line, e.g. 0.0.0.0:8080)","SSH & General":"SSH & General","Default Upload Limit (Mbps)":"Default Upload Limit (Mbps)","Default Download Limit (Mbps)":"Default Download Limit (Mbps)","Quiet Logs":"Quiet Logs","User Count Display":"User Count Display","SSH Banner":"SSH Banner","Banner Text":"Banner Text","(shown to connecting SSH clients)":"(shown to connecting SSH clients)","DNSTT Tunnel":"DNSTT Tunnel","Domain":"Domain","UDP Listen":"UDP Listen","Auto Restart Interval":"Auto Restart Interval","Restart Grace Delay":"Restart Grace Delay","0s/off disables":"0s/off disables","Private Key":"Private Key","Public Key":"Public Key","Disable Stats Log":"Disable Stats Log","Disable Console Log":"Disable Console Log","UDP Gateway":"UDP Gateway","Listen":"Listen","Idle Timeout":"Idle Timeout","Map TTL":"Map TTL","Debug Logging":"Debug Logging","TLS Forwarders":"TLS Forwarders","Listen Address":"Listen Address","Certificate":"Certificate","Generate Self-Signed":"Generate Self-Signed","Let's Encrypt (certbot)":"Let's Encrypt (certbot)","Paste PEM text":"Paste PEM text","Custom file paths":"Custom file paths","Cert File":"Cert File","Key File":"Key File","Certificate PEM":"Certificate PEM","Private Key PEM":"Private Key PEM","Add Forwarder":"Add Forwarder","Save Config":"Save Config","All service changes apply live.":"All service changes apply live.","Saved and applied live.":"Saved and applied live.","Saved live with warnings: {warnings}":"Saved live with warnings: {warnings}","Processing…":"Processing…","Listen address required.":"Listen address required.","Domain required.":"Domain required.","Domain and email required.":"Domain and email required.","Cert and key paths required.":"Cert and key paths required.","Added. Save config to apply.":"Added. Save config to apply.","Generating…":"Generating…","Generated ✓ paths set.":"Generated ✓ paths set.","Generating key…":"Generating key…","Key generated. Save config to apply.":"Key generated. Save config to apply.","Loading public key…":"Loading public key…","Self-signed cert generated.":"Self-signed cert generated.","Let's Encrypt cert issued.":"Let's Encrypt cert issued.","PEM saved.":"PEM saved.","Saved ✓ paths set.":"Saved ✓ paths set.","Name, cert PEM, and key PEM required.":"Name, cert PEM, and key PEM required.","Name, cert, and key required.":"Name, cert, and key required.","Name, cert PEM, and key PEM required.":"Name, cert PEM, and key PEM required.","Save Changes":"Save Changes"
   },
   "pt-BR": {
     "Dashboard":"Painel","Overview":"Visão geral","Accounts":"Contas","Administration":"Administração","Server":"Servidor","System":"Sistema","Settings":"Configurações","Traffic":"Tráfego","Monitoring":"Monitoramento",
@@ -59,7 +59,7 @@ const I18N_TEXT = {
     "Server Load":"Carga do servidor","Interfaces":"Interfaces","Interface":"Interface","Rx Mbps":"Rx Mbps","Tx Mbps":"Tx Mbps","Rx Total":"Rx Total","Tx Total":"Tx Total","Updated: {time}":"Atualizado: {time}","Error loading stats.":"Erro ao carregar stats.","Normal load":"Carga normal","Moderate load":"Carga moderada","High load":"Carga alta","Cleaning interface totals…":"Limpando totais das interfaces…","Interface totals cleaned. Auto-clean remains every 30 days.":"Totais das interfaces limpos. A limpeza automática continua a cada 30 dias.","Error cleaning totals: {error}":"Erro ao limpar totais: {error}",
     "VnStat Usage":"Uso do VnStat","Today total":"Total hoje","This month total":"Total este mês","Interfaces tracked":"Interfaces monitoradas","daily / monthly":"diário / mensal","Daily usage":"Uso diário","Monthly usage":"Uso mensal","Day":"Dia","Month":"Mês","Clean usage":"Limpar uso","Clean VnStat history":"Limpar histórico VnStat","VnStat history does not auto-clean. Use the button when you want to reset it.":"O histórico VnStat não é limpo automaticamente. Use o botão quando quiser resetar.","Totals can be cleaned here and auto-clean every 30 days. VnStat history is separate.":"Os totais podem ser limpos aqui e têm limpeza automática a cada 30 dias. O histórico VnStat é separado.","Loading VnStat usage…":"Carregando uso do VnStat…","VnStat history cleaned.":"Histórico VnStat limpo.","Error loading VnStat usage: {error}":"Erro ao carregar uso do VnStat: {error}","Error cleaning VnStat history: {error}":"Erro ao limpar histórico VnStat: {error}",
     "Panel / system":"Painel / sistema","Select a log source and click Refresh.":"Selecione uma fonte de log e clique em Atualizar.","Clean panel log":"Limpar log do painel","No log lines yet.":"Ainda não há linhas de log.","Panel log cleaned · {path} · max {max}":"Log do painel limpo · {path} · máx {max}","Cleaning panel log…":"Limpando log do painel…",
-    "Network":"Rede","Main Listen (SSH / HTTP)":"Listen principal (SSH / HTTP)","Extra Listen Addresses":"Endereços extras de listen","(one per line, e.g. 0.0.0.0:8080)":"(um por linha, ex. 0.0.0.0:8080)","SSH & General":"SSH e geral","Default Upload Limit (Mbps)":"Limite padrão de upload (Mbps)","Default Download Limit (Mbps)":"Limite padrão de download (Mbps)","Quiet Logs":"Logs silenciosos","User Count Display":"Exibir contagem de usuários","SSH Banner":"Banner SSH","Banner Text":"Texto do banner","(shown to connecting SSH clients)":"(mostrado aos clientes SSH ao conectar)","DNSTT Tunnel":"Túnel DNSTT","Domain":"Domínio","UDP Listen":"Listen UDP","Private Key":"Chave privada","Public Key":"Chave pública","Disable Stats Log":"Desativar log de stats","Disable Console Log":"Desativar log do console","UDP Gateway":"Gateway UDP","Listen":"Listen","Idle Timeout":"Timeout ocioso","Map TTL":"TTL do mapa","Debug Logging":"Log de debug","TLS Forwarders":"Encaminhadores TLS","Listen Address":"Endereço de listen","Certificate":"Certificado","Generate Self-Signed":"Gerar autoassinado","Let's Encrypt (certbot)":"Let's Encrypt (certbot)","Paste PEM text":"Colar texto PEM","Custom file paths":"Caminhos personalizados","Cert File":"Arquivo cert","Key File":"Arquivo key","Certificate PEM":"Certificado PEM","Private Key PEM":"Chave privada PEM","Add Forwarder":"Adicionar forwarder","Save Config":"Salvar config","All service changes apply live.":"Todas as mudanças de serviço aplicam ao vivo.","Saved and applied live.":"Salvo e aplicado ao vivo.","Saved live with warnings: {warnings}":"Salvo ao vivo com avisos: {warnings}","Processing…":"Processando…","Listen address required.":"Endereço de listen obrigatório.","Domain required.":"Domínio obrigatório.","Domain and email required.":"Domínio e email obrigatórios.","Cert and key paths required.":"Caminhos do certificado e da chave obrigatórios.","Added. Save config to apply.":"Adicionado. Salve a config para aplicar.","Generating…":"Gerando…","Generated ✓ paths set.":"Gerado ✓ caminhos definidos.","Generating key…":"Gerando chave…","Key generated. Save config to apply.":"Chave gerada. Salve a config para aplicar.","Loading public key…":"Carregando chave pública…","Self-signed cert generated.":"Certificado autoassinado gerado.","Let's Encrypt cert issued.":"Certificado Let's Encrypt emitido.","PEM saved.":"PEM salvo.","Saved ✓ paths set.":"Salvo ✓ caminhos definidos.","Name, cert PEM, and key PEM required.":"Nome, cert PEM e chave PEM obrigatórios.","Name, cert, and key required.":"Nome, cert e chave obrigatórios.","Save Changes":"Salvar alterações"
+    "Network":"Rede","Main Listen (SSH / HTTP)":"Listen principal (SSH / HTTP)","Extra Listen Addresses":"Endereços extras de listen","Proxy Auto Restart":"Reinício automático do proxy","Proxy Auto Restart Interval":"Intervalo de reinício automático do proxy","Proxy Restart Grace Delay":"Atraso para reiniciar proxy","(one per line, e.g. 0.0.0.0:8080)":"(um por linha, ex. 0.0.0.0:8080)","SSH & General":"SSH e geral","Default Upload Limit (Mbps)":"Limite padrão de upload (Mbps)","Default Download Limit (Mbps)":"Limite padrão de download (Mbps)","Quiet Logs":"Logs silenciosos","User Count Display":"Exibir contagem de usuários","SSH Banner":"Banner SSH","Banner Text":"Texto do banner","(shown to connecting SSH clients)":"(mostrado aos clientes SSH ao conectar)","DNSTT Tunnel":"Túnel DNSTT","Domain":"Domínio","UDP Listen":"Listen UDP","Auto Restart Interval":"Intervalo de reinício automático","Restart Grace Delay":"Atraso para reiniciar","0s/off disables":"0s/off desativa","Private Key":"Chave privada","Public Key":"Chave pública","Disable Stats Log":"Desativar log de stats","Disable Console Log":"Desativar log do console","UDP Gateway":"Gateway UDP","Listen":"Listen","Idle Timeout":"Timeout ocioso","Map TTL":"TTL do mapa","Debug Logging":"Log de debug","TLS Forwarders":"Encaminhadores TLS","Listen Address":"Endereço de listen","Certificate":"Certificado","Generate Self-Signed":"Gerar autoassinado","Let's Encrypt (certbot)":"Let's Encrypt (certbot)","Paste PEM text":"Colar texto PEM","Custom file paths":"Caminhos personalizados","Cert File":"Arquivo cert","Key File":"Arquivo key","Certificate PEM":"Certificado PEM","Private Key PEM":"Chave privada PEM","Add Forwarder":"Adicionar forwarder","Save Config":"Salvar config","All service changes apply live.":"Todas as mudanças de serviço aplicam ao vivo.","Saved and applied live.":"Salvo e aplicado ao vivo.","Saved live with warnings: {warnings}":"Salvo ao vivo com avisos: {warnings}","Processing…":"Processando…","Listen address required.":"Endereço de listen obrigatório.","Domain required.":"Domínio obrigatório.","Domain and email required.":"Domínio e email obrigatórios.","Cert and key paths required.":"Caminhos do certificado e da chave obrigatórios.","Added. Save config to apply.":"Adicionado. Salve a config para aplicar.","Generating…":"Gerando…","Generated ✓ paths set.":"Gerado ✓ caminhos definidos.","Generating key…":"Gerando chave…","Key generated. Save config to apply.":"Chave gerada. Salve a config para aplicar.","Loading public key…":"Carregando chave pública…","Self-signed cert generated.":"Certificado autoassinado gerado.","Let's Encrypt cert issued.":"Certificado Let's Encrypt emitido.","PEM saved.":"PEM salvo.","Saved ✓ paths set.":"Salvo ✓ caminhos definidos.","Name, cert PEM, and key PEM required.":"Nome, cert PEM e chave PEM obrigatórios.","Name, cert, and key required.":"Nome, cert e chave obrigatórios.","Save Changes":"Salvar alterações"
   }
 };
 const I18N_ALIASES = {
@@ -69,14 +69,14 @@ const I18N_ALIASES = {
   "Minha conta":"My Account","Usuários":"Users","Usuário":"User","Autenticação":"Auth","Conexões":"Conn","Máximo":"Max","Dono":"Owner","Ações":"Actions","Criar / atualizar usuário":"Create / update user","Mostrar formulário":"Show form","Ocultar formulário":"Hide form","Salvar usuário":"Save user","Cancelar":"Cancel","Gerar":"Gen","Copiar":"Copy","Editar":"Edit","Excluir":"Del","Recarregar":"Reload","Atualizar":"Refresh",
   "Rodando":"Running","Parado":"Stopped","rodando":"running","parado":"stopped","desativado":"disabled","API de contadores":"Counters API","Reparar contadores":"Repair counters","Iniciar":"Start","Parar":"Stop","Reiniciar":"Restart","Inbounds e clientes":"Inbounds & Clients","Configuração Xray":"Xray Config","Editor de configuração":"Config editor","Carregar JSON":"Load JSON","Salvar e reiniciar":"Save & Restart","Logs do sistema":"System Logs","últimas 200 linhas":"last 200 lines","Clientes Xray":"Xray clients","Núcleo Xray":"Xray Core","Ativado":"Enabled","Tempo ativo":"Uptime","Precisa de reparo":"Needs repair",
   "Nome":"Name","Nome de exibição":"Display Name","Data de vencimento":"Expiry Date","Máx. conexões":"Max Connections","Ilimitado":"Unlimited","Ativo":"Active","Suspenso":"Suspended","Expirado":"Expired","Sem vencimento":"No expiration","ocioso":"idle","Nenhum cliente.":"No clients.","Adicionar cliente":"Add Client","Novo usuário.":"New user.","Carregado.":"Loaded.","Salvo.":"Saved.","Salvando…":"Saving…","Erro ao carregar usuários.":"Error loading users.","Erro ao excluir.":"Error deleting.","Credenciais inválidas.":"Invalid credentials.","Conta suspensa ou expirada.":"Account suspended or expired.","Falha no login.":"Login failed.","Erro de rede.":"Network error.","Sessão expirada — faça login novamente.":"Session expired — please sign in again.",
-  "Rede":"Network","Listen principal (SSH / HTTP)":"Main Listen (SSH / HTTP)","Endereços extras de listen":"Extra Listen Addresses","SSH e geral":"SSH & General","Limite padrão de upload (Mbps)":"Default Upload Limit (Mbps)","Limite padrão de download (Mbps)":"Default Download Limit (Mbps)","Logs silenciosos":"Quiet Logs","Exibir contagem de usuários":"User Count Display","Banner SSH":"SSH Banner","Texto do banner":"Banner Text","Túnel DNSTT":"DNSTT Tunnel","Domínio":"Domain","Chave privada":"Private Key","Chave pública":"Public Key","Gateway UDP":"UDP Gateway","Endereço de listen":"Listen Address","Certificado":"Certificate","Gerar autoassinado":"Generate Self-Signed","Colar texto PEM":"Paste PEM text","Caminhos personalizados":"Custom file paths","Arquivo cert":"Cert File","Arquivo key":"Key File","Adicionar forwarder":"Add Forwarder","Salvar config":"Save Config","Todas as mudanças de serviço aplicam ao vivo.":"All service changes apply live."
+  "Rede":"Network","Listen principal (SSH / HTTP)":"Main Listen (SSH / HTTP)","Endereços extras de listen":"Extra Listen Addresses","Reinício automático do proxy":"Proxy Auto Restart","Intervalo de reinício automático do proxy":"Proxy Auto Restart Interval","Atraso para reiniciar proxy":"Proxy Restart Grace Delay","SSH e geral":"SSH & General","Limite padrão de upload (Mbps)":"Default Upload Limit (Mbps)","Limite padrão de download (Mbps)":"Default Download Limit (Mbps)","Logs silenciosos":"Quiet Logs","Exibir contagem de usuários":"User Count Display","Banner SSH":"SSH Banner","Texto do banner":"Banner Text","Túnel DNSTT":"DNSTT Tunnel","Domínio":"Domain","Chave privada":"Private Key","Intervalo de reinício automático":"Auto Restart Interval","Atraso para reiniciar":"Restart Grace Delay","0s/off desativa":"0s/off disables","Chave pública":"Public Key","Gateway UDP":"UDP Gateway","Endereço de listen":"Listen Address","Certificado":"Certificate","Gerar autoassinado":"Generate Self-Signed","Colar texto PEM":"Paste PEM text","Caminhos personalizados":"Custom file paths","Arquivo cert":"Cert File","Arquivo key":"Key File","Adicionar forwarder":"Add Forwarder","Salvar config":"Save Config","Todas as mudanças de serviço aplicam ao vivo.":"All service changes apply live."
 };
 
 Object.assign(I18N_TEXT["en-US"], {
   "Servers":"Servers","Reseller area":"Reseller area","shared quota":"shared quota","available":"available","used":"used","breakdown":"breakdown",
   "Create Xray clients with the same experience as the main panel. Each Xray client uses the same limit shared with SSH accounts.":"Create Xray clients with the same experience as the main panel. Each Xray client uses the same limit shared with SSH accounts.",
   "Loading inbounds…":"Loading inbounds…","SSH -- · Xray --":"SSH -- · Xray --","active ·":"active ·","expired":"expired",
-  "Binary: /opt/sshpanel/xray · Config: /opt/sshpanel/xray_config.json · Online counters use Xray Stats API on 127.0.0.1:10085":"Binary: /opt/sshpanel/xray · Config: /opt/sshpanel/xray_config.json · Online counters use Xray Stats API on 127.0.0.1:10085",
+  "Binary: /opt/sshpanel/xray · Config: DB-backed /opt/sshpanel/xray_config.json · Online counters use Xray Stats API on 127.0.0.1:10085":"Binary: /opt/sshpanel/xray · Config: DB-backed /opt/sshpanel/xray_config.json · Online counters use Xray Stats API on 127.0.0.1:10085",
   "Public Key — share with dnstt clients":"Public Key — share with DNSTT clients","auto-saved to /opt/sshpanel/dnstt.key":"auto-saved to /opt/sshpanel/dnstt.key",
   "Max UDP Sessions Per Client":"Max UDP Sessions Per Client","(not total server users)":"(not total server users)","Service Name":"Service Name","Mode":"Mode","Protocol":"Protocol","Port":"Port","Tag":"Tag","Listen IP":"Listen IP","Method":"Method","Host":"Host","Path":"Path","Dest":"Dest","Short ID":"Short ID","Server Name":"Server Name","Cert File Path":"Cert File Path","Key File Path":"Key File Path","Certificate source:":"Certificate source:","Self-Signed":"Self-Signed","Paste PEM":"Paste PEM","File Path":"File Path","Save PEM":"Save PEM","Generate":"Generate","Public Key":"Public Key","Debug Logging":"Debug Logging","Name":"Name","Private Key PEM":"Private Key PEM","Certificate PEM":"Certificate PEM","Domain Name":"Domain Name"
 });
@@ -84,7 +84,7 @@ Object.assign(I18N_TEXT["pt-BR"], {
   "Servers":"Servidores","Reseller area":"Área do revendedor","shared quota":"cota única","available":"disponíveis","used":"usadas","breakdown":"divisão",
   "Create Xray clients with the same experience as the main panel. Each Xray client uses the same limit shared with SSH accounts.":"Crie clientes Xray com a mesma experiência do painel principal. Cada cliente Xray desconta do mesmo limite usado pelas contas SSH.",
   "Loading inbounds…":"Carregando inbounds…","SSH -- · Xray --":"SSH -- · Xray --","active ·":"ativas ·","expired":"expiradas",
-  "Binary: /opt/sshpanel/xray · Config: /opt/sshpanel/xray_config.json · Online counters use Xray Stats API on 127.0.0.1:10085":"Binário: /opt/sshpanel/xray · Config: /opt/sshpanel/xray_config.json · Contadores online usam a Xray Stats API em 127.0.0.1:10085",
+  "Binary: /opt/sshpanel/xray · Config: DB-backed /opt/sshpanel/xray_config.json · Online counters use Xray Stats API on 127.0.0.1:10085":"Binário: /opt/sshpanel/xray · Config: DB-backed /opt/sshpanel/xray_config.json · Contadores online usam a Xray Stats API em 127.0.0.1:10085",
   "Public Key — share with dnstt clients":"Chave pública — compartilhe com clientes DNSTT","auto-saved to /opt/sshpanel/dnstt.key":"salva automaticamente em /opt/sshpanel/dnstt.key",
   "Max UDP Sessions Per Client":"Máx. sessões UDP por cliente","(not total server users)":"(não é o total de usuários do servidor)","Service Name":"Nome do serviço","Mode":"Modo","Protocol":"Protocolo","Port":"Porta","Tag":"Tag","Listen IP":"IP de listen","Method":"Método","Host":"Host","Path":"Caminho","Dest":"Destino","Short ID":"ID curto","Server Name":"Nome do servidor","Cert File Path":"Caminho do arquivo cert","Key File Path":"Caminho do arquivo key","Certificate source:":"Fonte do certificado:","Self-Signed":"Autoassinado","Paste PEM":"Colar PEM","File Path":"Caminho do arquivo","Save PEM":"Salvar PEM","Generate":"Gerar","Public Key":"Chave pública","Debug Logging":"Log de debug","Name":"Nome","Private Key PEM":"Chave privada PEM","Certificate PEM":"Certificado PEM","Domain Name":"Nome do domínio"
 });
@@ -92,9 +92,9 @@ Object.assign(I18N_ALIASES, {
   "Servidores":"Servers","Área do revendedor":"Reseller area","cota única":"shared quota","disponíveis":"available","usadas":"used","divisão":"breakdown",
   "Crie clientes Xray com a mesma experiência do painel principal. Cada cliente Xray desconta do mesmo limite usado pelas contas SSH.":"Create Xray clients with the same experience as the main panel. Each Xray client uses the same limit shared with SSH accounts.",
   "Carregando inbounds…":"Loading inbounds…","Loading inbounds…":"Loading inbounds…","ativas ·":"active ·","expiradas":"expired",
-  "Binário: /opt/sshpanel/xray · Config: /opt/sshpanel/xray_config.json · Contadores online usam a Xray Stats API em 127.0.0.1:10085":"Binary: /opt/sshpanel/xray · Config: /opt/sshpanel/xray_config.json · Online counters use Xray Stats API on 127.0.0.1:10085",
+  "Binário: /opt/sshpanel/xray · Config: DB-backed /opt/sshpanel/xray_config.json · Contadores online usam a Xray Stats API em 127.0.0.1:10085":"Binary: /opt/sshpanel/xray · Config: DB-backed /opt/sshpanel/xray_config.json · Online counters use Xray Stats API on 127.0.0.1:10085",
   "Public Key — share with dnstt clients":"Public Key — share with dnstt clients","Chave pública — compartilhe com clientes DNSTT":"Public Key — share with dnstt clients",
-  "Máx. sessões UDP por cliente":"Max UDP Sessions Per Client","(não é o total de usuários do servidor)":"(not total server users)","Nome do serviço":"Service Name","Modo":"Mode","Protocolo":"Protocol","Porta":"Port","IP de listen":"Listen IP","Método":"Method","Caminho":"Path","Destino":"Dest","ID curto":"Short ID","Nome do servidor":"Server Name","Caminho do arquivo cert":"Cert File Path","Caminho do arquivo key":"Key File Path","Fonte do certificado:":"Certificate source:","Autoassinado":"Self-Signed","Colar PEM":"Paste PEM","Caminho do arquivo":"File Path","Salvar PEM":"Save PEM","Chave pública":"Public Key","Nome do domínio":"Domain Name"
+  "Máx. sessões UDP por cliente":"Max UDP Sessions Per Client","(não é o total de usuários do servidor)":"(not total server users)","Nome do serviço":"Service Name","Modo":"Mode","Protocolo":"Protocol","Porta":"Port","IP de listen":"Listen IP","Método":"Method","Caminho":"Path","Destino":"Dest","ID curto":"Short ID","Nome do servidor":"Server Name","Caminho do arquivo cert":"Cert File Path","Caminho do arquivo key":"Key File Path","Fonte do certificado:":"Certificate source:","Autoassinado":"Self-Signed","Colar PEM":"Paste PEM","Caminho do arquivo":"File Path","Salvar PEM":"Save PEM","Intervalo de reinício automático":"Auto Restart Interval","Atraso para reiniciar":"Restart Grace Delay","0s/off desativa":"0s/off disables","Chave pública":"Public Key","Nome do domínio":"Domain Name"
 });
 const I18N_REVERSE = Object.fromEntries(SUPPORTED_LANGS.map(lang => [lang, Object.fromEntries(Object.entries(I18N_TEXT[lang] || {}).map(([k, v]) => [v, k]))]));
 let currentLang = detectInitialLanguage();
@@ -269,6 +269,8 @@ const xPID           = document.getElementById("xPID");
 const xUptime        = document.getElementById("xUptime");
 const xStatus        = document.getElementById("xStatus");
 const xOnlineUsers   = document.getElementById("xOnlineUsers");
+const xCoreMode      = document.getElementById("xCoreMode");
+const xSaveModeBtn   = document.getElementById("xSaveModeBtn");
 const xCfgEditor     = document.getElementById("xCfgEditor");
 const xCfgStatus     = document.getElementById("xCfgStatus");
 const xLogsBox       = document.getElementById("xLogsBox");
@@ -326,6 +328,14 @@ const ifaceBody  = document.getElementById("ifaceBody");
 const ifaceSummary = document.getElementById("ifaceSummary");
 const statsUpdated = document.getElementById("statsUpdated");
 const resetIfaceStatsBtn = document.getElementById("resetIfaceStatsBtn");
+const dnsttDashboardCard = document.getElementById("dnsttDashboardCard");
+const dnsttHealthUpdated = document.getElementById("dnsttHealthUpdated");
+const dnsttActiveSessions = document.getElementById("dnsttActiveSessions");
+const dnsttActiveStreams = document.getElementById("dnsttActiveStreams");
+const dnsttDNSRx = document.getElementById("dnsttDNSRx");
+const dnsttQueueLen = document.getElementById("dnsttQueueLen");
+const dnsttHealthBody = document.getElementById("dnsttHealthBody");
+const dnsttHealthSummary = document.getElementById("dnsttHealthSummary");
 
 // VnStat
 const vnstatDailyBody = document.getElementById("vnstatDailyBody");
@@ -362,6 +372,25 @@ function selectedXrayServerLabel() {
   if (srv) return srv.name || srv.base_url || id;
   return id === "local" ? "Master node" : id;
 }
+function xrayModeFromConfig(x) {
+  const mode = String(x?.mode || "").toLowerCase();
+  return mode === "external" ? "external" : "native";
+}
+
+function applyXrayModeToConfig(cfg, mode) {
+  mode = mode === "external" ? "external" : "native";
+  cfg.xray = cfg.xray && typeof cfg.xray === "object" ? cfg.xray : {};
+  cfg.xray.mode = mode;
+  cfg.xray.native = mode === "native";
+  cfg.xray.bin_path = cfg.xray.bin_path || "/opt/sshpanel/xray";
+  cfg.xray.config_file = cfg.xray.config_file || "/opt/sshpanel/xray_config.json";
+  cfg.xray.native_config_file = cfg.xray.native_config_file || "/opt/sshpanel/xray_native_config.json";
+  cfg.xray.api_server = cfg.xray.api_server || "127.0.0.1:10085";
+  cfg.xray.online_window_seconds = cfg.xray.online_window_seconds || 90;
+  cfg.xray.stats_poll_seconds = cfg.xray.stats_poll_seconds || 15;
+  return cfg;
+}
+
 function reloadXrayConfigForSelectedServer() {
   const wizPane = document.getElementById("xrayWizardPane");
   const jsonPane = document.getElementById("xrayCfgPaneJson");
@@ -378,6 +407,16 @@ function fmtBytes(n) {
   const k=n/1024; if(k<1024) return k.toFixed(1)+" KiB";
   const m=k/1024; if(m<1024) return m.toFixed(1)+" MiB";
   return (m/1024).toFixed(1)+" GiB";
+}
+function fmtInt(n) {
+  const v = Number(n);
+  return Number.isFinite(v) ? v.toLocaleString() : "--";
+}
+function fmtDnsttTimestamp(ts) {
+  if (!ts) return "Waiting for DNSTT stats…";
+  const d = new Date(ts);
+  if (!Number.isFinite(d.getTime()) || d.getFullYear() < 2020) return "Waiting for DNSTT stats…";
+  return "Updated: " + d.toLocaleTimeString();
 }
 function localDateKey(d = new Date()) {
   const y = d.getFullYear();
@@ -461,6 +500,13 @@ function clientOnlineHTML(c) {
   return `${c.online ? `<span class="badge-on">${t("online")}</span>` : `<span class="badge-off">${t("offline")}</span>`}<div class="hint">${escapeHTML(formatLastActive(c.last_active))}</div>`;
 }
 
+function clientTrafficHTML(c) {
+  const up = Number(c.uplink_bytes || 0);
+  const down = Number(c.downlink_bytes || 0);
+  const total = Number(c.total_bytes || (up + down) || 0);
+  return `${escapeHTML(formatBytes(total))}<div class="hint">↑ ${escapeHTML(formatBytes(up))} · ↓ ${escapeHTML(formatBytes(down))}</div>`;
+}
+
 function updateCell(row, name, html) {
   const cell = row?.querySelector?.(`[data-cell="${name}"]`);
   if (cell && cell.innerHTML !== html) cell.innerHTML = html;
@@ -496,7 +542,7 @@ function patchRenderedInbounds(inbounds) {
       updateCell(row, "expiry", escapeHTML(clientExpiryLabel(c)));
       updateCell(row, "status", clientStatusHTML(c));
       updateCell(row, "online", clientOnlineHTML(c));
-      updateCell(row, "traffic", escapeHTML(formatBytes(c.total_bytes)));
+      updateCell(row, "traffic", clientTrafficHTML(c));
       updateCell(row, "max", escapeHTML(c.max_conns || "∞"));
     }
   }
@@ -550,7 +596,6 @@ document.querySelectorAll(".tab-btn").forEach(btn => btn.addEventListener("click
 menuToggle?.addEventListener("click", () => document.body.classList.add("sidebar-open"));
 drawerBackdrop?.addEventListener("click", () => document.body.classList.remove("sidebar-open"));
 languageSelect?.addEventListener("change", () => { applyLanguage(languageSelect.value); renderDashboardCounters(); });
-document.querySelectorAll(".quick-action[data-jump]").forEach(btn => btn.addEventListener("click", () => selectTab(btn.dataset.jump)));
 applyLanguage(currentLang, { persist: false });
 startI18nObserver();
 
@@ -956,6 +1001,7 @@ document.getElementById("xStartBtn").addEventListener("click", () => xrayCtrl("s
 document.getElementById("xStopBtn").addEventListener("click", () => xrayCtrl("stop"));
 document.getElementById("xRestartBtn").addEventListener("click", () => xrayCtrl("restart"));
 document.getElementById("xRepairStatsBtn")?.addEventListener("click", repairXrayStats);
+xSaveModeBtn?.addEventListener("click", saveXrayCoreMode);
 document.getElementById("xRefreshBtn").addEventListener("click", () => { loadXrayStatus(); loadInbounds({ force: true }); });
 document.getElementById("xLoadInboundsBtn").addEventListener("click", () => loadInbounds({ force: true }));
 document.getElementById("xLoadCfgBtn").addEventListener("click", loadXrayCfg);
@@ -972,8 +1018,9 @@ async function loadXrayStatus() {
     xrayChip.className    = "chip " + (run ? "green" : "red");
     xRunning.textContent  = run ? t("Running") : t("Stopped");
     xRunning.style.color  = run ? "var(--success)" : "var(--danger)";
-    xPID.textContent      = s.pid    || "--";
+    xPID.textContent      = s.pid    || (s.native ? "internal" : "--");
     xUptime.textContent   = s.uptime || "--";
+    if (xCoreMode) xCoreMode.value = String(s.mode || (s.native ? "native" : "external")).toLowerCase() === "external" ? "external" : "native";
     const statsCfgEl = document.getElementById("xStatsConfig");
     const repairBtn = document.getElementById("xRepairStatsBtn");
     if (statsCfgEl) {
@@ -995,6 +1042,29 @@ async function loadXrayStatus() {
     renderDashboardCounters();
     if (s.error) xStatus.textContent = t("Error: {error}", {error: s.error});
   } catch (e) { if (e.message==="auth") doAuthError(); }
+}
+
+async function saveXrayCoreMode() {
+  const mode = xCoreMode?.value === "external" ? "external" : "native";
+  const target = selectedXrayServerLabel();
+  const selectedID = selectedXrayServer() || "local";
+  if (xStatus) xStatus.textContent = `Saving Xray mode on ${target}...`;
+  try {
+    const getRes = await api(withServerParam("/api/servers/config", selectedID));
+    if (!getRes.ok) throw new Error(await getRes.text());
+    const cfg = await getRes.json();
+    applyXrayModeToConfig(cfg, mode);
+    const postRes = await api(withServerParam("/api/servers/config", selectedID), { method:"POST", body: JSON.stringify(cfg) });
+    if (!postRes.ok) throw new Error(await postRes.text());
+    if (xStatus) xStatus.textContent = mode === "native"
+      ? `Saved on ${target}: using internal native emulator.`
+      : `Saved on ${target}: using external Xray binary.`;
+    setTimeout(loadXrayStatus, 700);
+    setTimeout(() => loadInbounds({ force: true }), 1200);
+  } catch (e) {
+    if (e.message === "auth") doAuthError();
+    else if (xStatus) xStatus.textContent = t("Error: {error}", {error: e.message});
+  }
 }
 
 async function repairXrayStats() {
@@ -1155,7 +1225,7 @@ function renderInbounds(inbounds, options = {}) {
           <td data-cell="expiry" style="font-size:.7rem;">${escapeHTML(clientExpiryLabel(c))}</td>
           <td data-cell="status">${clientStatusHTML(c)}</td>
           <td data-cell="online">${clientOnlineHTML(c)}</td>
-          <td data-cell="traffic" style="font-size:.7rem;">${escapeHTML(formatBytes(c.total_bytes))}</td>
+          <td data-cell="traffic" style="font-size:.7rem;">${clientTrafficHTML(c)}</td>
           <td data-cell="max" style="font-size:.7rem;">${escapeHTML(c.max_conns || "∞")}</td>`;
         const actTd = document.createElement("td");
         actTd.style.whiteSpace = "nowrap";
@@ -1215,7 +1285,7 @@ async function addClient(tag) {
       body: JSON.stringify({ inbound_tag: tag, uuid, email, name, expires_at: expiresAt, max_connections: maxConns, server_id: selectedXrayServer() }),
     });
     if (!res.ok) throw new Error(await res.text());
-    xStatus.textContent = t("Client {id}… added. Restarting Xray…", {id: uuid.slice(0,8)});
+    xStatus.textContent = t("Client {id}… added. Native mode hot-reloads without restart.", {id: uuid.slice(0,8)});
     setTimeout(() => { loadInbounds({ force: true }); if (currentRole === "reseller") loadMe(); }, 1500);
   } catch (e) {
     if (e.message==="auth") doAuthError();
@@ -1228,7 +1298,7 @@ async function removeClient(tag, uuid) {
   try {
     const res = await api(withServerParam(`/api/xray/clients/remove?inbound_tag=${encodeURIComponent(tag)}&uuid=${encodeURIComponent(uuid)}`, selectedXrayServer()), { method:"DELETE" });
     if (!res.ok && res.status !== 204) throw new Error(await res.text());
-    xStatus.textContent = t("Client removed. Restarting Xray…");
+    xStatus.textContent = t("Client removed. Native mode hot-reloads without restart.");
     setTimeout(() => { loadInbounds({ force: true }); if (currentRole === "reseller") loadMe(); }, 1500);
   } catch (e) {
     if (e.message==="auth") doAuthError();
@@ -1764,6 +1834,8 @@ async function loadManagedServerConfig(id) {
 
     document.getElementById("managedCfgListen").value = c.listen || "";
     document.getElementById("managedCfgExtraListen").value = (c.extra_listen || []).join("\n");
+    document.getElementById("managedCfgProxyAutoRestart").value = c.proxy_auto_restart_interval || "";
+    document.getElementById("managedCfgProxyRestartGrace").value = c.proxy_auto_restart_grace || "";
 
     document.getElementById("managedCfgLimitUp").value = c.default_limit_mbps_up || 0;
     document.getElementById("managedCfgLimitDown").value = c.default_limit_mbps_down || 0;
@@ -1775,11 +1847,25 @@ async function loadManagedServerConfig(id) {
     document.getElementById("managedCfgDnsttEnabled").checked = hasDnstt;
     toggleManagedDnsttFields(hasDnstt);
     const d = c.dnstt || {};
-    document.getElementById("managedCfgDnsttDomain").value = d.domain || "";
+    document.getElementById("managedCfgDnsttDomains").value = dnsttDomainsText(d);
     document.getElementById("managedCfgDnsttUDP").value = d.udp_listen || "";
+    document.getElementById("managedCfgDnsttFakeEnabled").checked = !!d.fake_dns_enabled;
+    document.getElementById("managedCfgDnsttFakeListen").value = d.fake_dns_listen || "";
+    document.getElementById("managedCfgDnsttFakeDomain").value = d.fake_dns_domain || "t.local.lan";
+    document.getElementById("managedCfgDnsttFakeWorkers").value = d.fake_dns_workers || 0;
+    document.getElementById("managedCfgDnsttRespWorkers").value = d.dns_response_workers || 0;
+    document.getElementById("managedCfgDnsttAutoRestart").value = d.auto_restart_interval || "";
+    document.getElementById("managedCfgDnsttRestartGrace").value = d.auto_restart_grace || "";
+    document.getElementById("managedCfgDnsttMaxSessions").value = d.max_sessions || 0;
+    document.getElementById("managedCfgDnsttMaxStreams").value = d.max_streams || 0;
+    document.getElementById("managedCfgDnsttPendingResponses").value = d.pending_responses || 0;
+    document.getElementById("managedCfgDnsttStreamBuffer").value = d.stream_buffer || 0;
+    document.getElementById("managedCfgDnsttUDPReadBuffer").value = d.udp_read_buffer || 0;
+    document.getElementById("managedCfgDnsttUDPWriteBuffer").value = d.udp_write_buffer || 0;
     document.getElementById("managedCfgDnsttKey").value = d.privkey_file || "/opt/sshpanel/dnstt.key";
     document.getElementById("managedCfgDnsttNoStats").checked = !!d.disable_stats_log;
     document.getElementById("managedCfgDnsttNoConsole").checked = !!d.disable_console_log;
+    document.getElementById("managedCfgDnsttLogConnections").checked = !!d.log_connections;
 
     const hasUdpgw = !!c.udpgw;
     document.getElementById("managedCfgUdpgwEnabled").checked = hasUdpgw;
@@ -1789,6 +1875,8 @@ async function loadManagedServerConfig(id) {
     document.getElementById("managedCfgUdpgwMaxConns").value = u.max_client_conns || 0;
     document.getElementById("managedCfgUdpgwIdle").value = u.idle_timeout || "";
     document.getElementById("managedCfgUdpgwMapTTL").value = u.map_ttl || "";
+    document.getElementById("managedCfgUdpgwAutoRestart").value = u.auto_restart_interval || "";
+    document.getElementById("managedCfgUdpgwRestartGrace").value = u.auto_restart_grace || "";
     document.getElementById("managedCfgUdpgwDebug").checked = !!u.debug;
 
     managedTlsForwardersState = c.tls_forwarders || [];
@@ -1796,6 +1884,7 @@ async function loadManagedServerConfig(id) {
 
     const x = c.xray || {};
     document.getElementById("managedCfgXrayEnabled").checked = !!x.enabled;
+    document.getElementById("managedCfgXrayMode").value = xrayModeFromConfig(x);
 
     document.getElementById("managedDnsttPubkeyWrap")?.classList.add("hidden");
     if (st) st.textContent = "Config loaded.";
@@ -1808,9 +1897,12 @@ async function loadManagedServerConfig(id) {
 function managedConfigFromForm() {
   const extraLines = document.getElementById("managedCfgExtraListen").value
     .split("\n").map(s => s.trim()).filter(Boolean);
+  const dnsttDomains = readDnsttDomains("managedCfgDnsttDomains");
   return {
     listen: document.getElementById("managedCfgListen").value.trim(),
     extra_listen: extraLines,
+    proxy_auto_restart_interval: document.getElementById("managedCfgProxyAutoRestart").value.trim(),
+    proxy_auto_restart_grace: document.getElementById("managedCfgProxyRestartGrace").value.trim(),
     host_key_file: "/opt/sshpanel/ssh_host_rsa_key",
     admin_dir: "/opt/sshpanel/admin",
     default_limit_mbps_up: parseInt(document.getElementById("managedCfgLimitUp").value || "0", 10),
@@ -1820,24 +1912,44 @@ function managedConfigFromForm() {
     banner: document.getElementById("managedCfgBanner").value,
     banner_file: "/opt/sshpanel/banner.txt",
     dnstt: document.getElementById("managedCfgDnsttEnabled").checked ? {
-      domain: document.getElementById("managedCfgDnsttDomain").value.trim(),
+      domain: dnsttDomains[0] || "",
+      domains: dnsttDomains,
       udp_listen: document.getElementById("managedCfgDnsttUDP").value.trim(),
+      fake_dns_enabled: document.getElementById("managedCfgDnsttFakeEnabled").checked,
+      fake_dns_listen: document.getElementById("managedCfgDnsttFakeListen").value.trim(),
+      fake_dns_domain: document.getElementById("managedCfgDnsttFakeDomain").value.trim(),
+      fake_dns_workers: parseInt(document.getElementById("managedCfgDnsttFakeWorkers").value || "0", 10),
+      dns_response_workers: parseInt(document.getElementById("managedCfgDnsttRespWorkers").value || "0", 10),
+      auto_restart_interval: document.getElementById("managedCfgDnsttAutoRestart").value.trim(),
+      auto_restart_grace: document.getElementById("managedCfgDnsttRestartGrace").value.trim(),
+      max_sessions: parseInt(document.getElementById("managedCfgDnsttMaxSessions").value || "0", 10),
+      max_streams: parseInt(document.getElementById("managedCfgDnsttMaxStreams").value || "0", 10),
+      pending_responses: parseInt(document.getElementById("managedCfgDnsttPendingResponses").value || "0", 10),
+      stream_buffer: parseInt(document.getElementById("managedCfgDnsttStreamBuffer").value || "0", 10),
+      udp_read_buffer: parseInt(document.getElementById("managedCfgDnsttUDPReadBuffer").value || "0", 10),
+      udp_write_buffer: parseInt(document.getElementById("managedCfgDnsttUDPWriteBuffer").value || "0", 10),
       privkey_file: document.getElementById("managedCfgDnsttKey").value.trim(),
       disable_stats_log: document.getElementById("managedCfgDnsttNoStats").checked,
       disable_console_log: document.getElementById("managedCfgDnsttNoConsole").checked,
+      log_connections: document.getElementById("managedCfgDnsttLogConnections").checked,
     } : null,
     udpgw: document.getElementById("managedCfgUdpgwEnabled").checked ? {
       listen: document.getElementById("managedCfgUdpgwListen").value.trim(),
       max_client_conns: parseInt(document.getElementById("managedCfgUdpgwMaxConns").value || "0", 10),
       idle_timeout: document.getElementById("managedCfgUdpgwIdle").value.trim(),
       map_ttl: document.getElementById("managedCfgUdpgwMapTTL").value.trim(),
+      auto_restart_interval: document.getElementById("managedCfgUdpgwAutoRestart").value.trim(),
+      auto_restart_grace: document.getElementById("managedCfgUdpgwRestartGrace").value.trim(),
       debug: document.getElementById("managedCfgUdpgwDebug").checked,
     } : null,
     tls_forwarders: managedTlsForwardersState,
     xray: {
       enabled: document.getElementById("managedCfgXrayEnabled").checked,
+      mode: document.getElementById("managedCfgXrayMode").value === "external" ? "external" : "native",
+      native: document.getElementById("managedCfgXrayMode").value !== "external",
       bin_path: "/opt/sshpanel/xray",
       config_file: "/opt/sshpanel/xray_config.json",
+      native_config_file: "/opt/sshpanel/xray_native_config.json",
       api_server: "127.0.0.1:10085",
       online_window_seconds: 90,
       stats_poll_seconds: 15,
@@ -2025,6 +2137,7 @@ async function loadDashboardStats() {
     if (!res.ok) throw new Error(await res.text());
     const s = await res.json();
     updateDashboardStats(s);
+    await loadDnsttHealth();
   } catch (e) {
     if (e.message === "auth") doAuthError();
     else {
@@ -2061,6 +2174,76 @@ function updateDashboardStats(s) {
   if (dashNetTotal) dashNetTotal.textContent = `Total ${fmtBytes(rxTotal + txTotal)}`;
 }
 
+async function loadDnsttHealth() {
+  if (!dnsttDashboardCard && !dnsttHealthBody && !dnsttActiveSessions) return;
+  if (currentRole !== "superadmin") {
+    dnsttDashboardCard?.classList.add("hidden");
+    return;
+  }
+  try {
+    const res = await api("/api/dnstt");
+    if (!res.ok) throw new Error(await res.text());
+    const d = await res.json();
+    const enabled = d.enabled !== false;
+    if (dnsttDashboardCard) dnsttDashboardCard.classList.toggle("hidden", !enabled);
+    if (!enabled) return;
+
+    if (dnsttActiveSessions) dnsttActiveSessions.textContent = fmtInt(d.active_sessions);
+    if (dnsttActiveStreams) dnsttActiveStreams.textContent = fmtInt(d.active_streams);
+    if (dnsttDNSRx) dnsttDNSRx.textContent = fmtInt(d.dns_rx);
+    if (dnsttQueueLen) dnsttQueueLen.textContent = fmtInt(d.ch_len);
+    if (dnsttHealthUpdated) dnsttHealthUpdated.textContent = d.running === false ? "DNSTT stopped" : fmtDnsttTimestamp(d.timestamp);
+
+    const rows = [
+      ["Session rejected", d.sess_rejected],
+      ["Stream rejected", d.stream_rejected],
+      ["DNS parse errors", d.parse_err],
+      ["No EDNS", d.no_edns],
+      ["EDNS limit 512", d.limit512],
+      ["Local DNS workers", d.fake_dns_workers],
+      ["Response workers", d.dns_response_workers],
+      ["Responses queued", d.rec_queued],
+      ["Responses dropped", d.rec_dropped],
+      ["Responses sent", d.resp_sent],
+      ["Response bytes", d.resp_bytes],
+      ["Empty responses", d.resp_empty],
+      ["Data responses", d.resp_data],
+      ["Oversize responses", d.resp_oversize],
+      ["KCP sessions new", d.kcp_new],
+      ["KCP sessions ended", d.kcp_end],
+      ["SMUX streams new", d.smux_new],
+      ["SMUX streams ended", d.smux_end],
+      ["Panic recovered", d.panic_recovered],
+    ];
+    if (dnsttHealthBody) {
+      dnsttHealthBody.innerHTML = "";
+      for (let i = 0; i < rows.length; i += 2) {
+        const a = rows[i];
+        const b = rows[i + 1] || ["", ""];
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td>${a[0]}</td><td>${fmtInt(a[1])}</td><td>${b[0]}</td><td>${b[0] ? fmtInt(b[1]) : ""}</td>`;
+        dnsttHealthBody.appendChild(tr);
+      }
+    }
+    const bad = Number(d.sess_rejected || 0) + Number(d.stream_rejected || 0) + Number(d.rec_dropped || 0) + Number(d.panic_recovered || 0);
+    if (dnsttHealthSummary) {
+      if (d.running === false) {
+        dnsttHealthSummary.textContent = "DNSTT is enabled but not running. Check key/domain/listen config or recent logs.";
+      } else {
+        dnsttHealthSummary.textContent = bad > 0
+          ? `Attention: ${fmtInt(bad)} overload/recovery events in the last DNSTT stats window.`
+          : "DNSTT health OK: no rejects, drops, or recovered panics in the last stats window.";
+      }
+    }
+  } catch (e) {
+    if (e.message === "auth") throw e;
+    dnsttDashboardCard?.classList.add("hidden");
+    if (dnsttHealthUpdated) dnsttHealthUpdated.textContent = "Error loading DNSTT stats.";
+    if (dnsttHealthSummary) dnsttHealthSummary.textContent = e.message || "DNSTT stats unavailable.";
+  }
+}
+
+
 async function loadStats() {
   try {
     const res = await api("/api/stats");
@@ -2087,6 +2270,7 @@ async function loadStats() {
     });
     if (ifaceSummary) ifaceSummary.textContent = `Total: ${fmtBytes(totRx)} rx / ${fmtBytes(totTx)} tx`;
     if (statsUpdated) statsUpdated.textContent = "Updated: " + new Date().toLocaleTimeString();
+    await loadDnsttHealth();
   } catch (e) {
     if (e.message==="auth") doAuthError();
     else if (statsUpdated) statsUpdated.textContent = "Erro ao carregar stats.";
@@ -2223,6 +2407,22 @@ async function clearPanelLog() {
 // ─── Server Config ────────────────────────────────────────────────────────────
 document.querySelector("[data-tab='server']")?.addEventListener("click", loadServerConfig);
 
+
+function dnsttDomainsText(d) {
+  const domains = Array.isArray(d?.domains) && d.domains.length ? d.domains : (d?.domain ? [d.domain] : []);
+  return domains.join("\n");
+}
+function readDnsttDomains(id) {
+  const el = document.getElementById(id);
+  if (!el) return [];
+  const seen = new Set();
+  return el.value.split(/\r?\n|,/).map(s => s.trim()).filter(Boolean).map(s => s.replace(/\.$/, "").toLowerCase()).filter(s => {
+    if (seen.has(s)) return false;
+    seen.add(s);
+    return true;
+  });
+}
+
 function toggleDnsttFields(on) {
   const el = document.getElementById("dnsttFields");
   el.style.opacity = on ? "1" : ".4";
@@ -2245,6 +2445,8 @@ async function loadServerConfig() {
     // Network
     document.getElementById("cfgListen").value       = c.listen || "";
     document.getElementById("cfgExtraListen").value  = (c.extra_listen || []).join("\n");
+    document.getElementById("cfgProxyAutoRestart").value = c.proxy_auto_restart_interval || "";
+    document.getElementById("cfgProxyRestartGrace").value = c.proxy_auto_restart_grace || "";
 
     // SSH / general
     document.getElementById("cfgLimitUp").value      = c.default_limit_mbps_up || 0;
@@ -2260,11 +2462,25 @@ async function loadServerConfig() {
     document.getElementById("cfgDnsttEnabled").checked = hasDnstt;
     toggleDnsttFields(hasDnstt);
     const d = c.dnstt || {};
-    document.getElementById("cfgDnsttDomain").value    = d.domain || "";
+    document.getElementById("cfgDnsttDomains").value = dnsttDomainsText(d);
     document.getElementById("cfgDnsttUDP").value       = d.udp_listen || "";
+    document.getElementById("cfgDnsttFakeEnabled").checked = !!d.fake_dns_enabled;
+    document.getElementById("cfgDnsttFakeListen").value = d.fake_dns_listen || "";
+    document.getElementById("cfgDnsttFakeDomain").value = d.fake_dns_domain || "t.local.lan";
+    document.getElementById("cfgDnsttFakeWorkers").value = d.fake_dns_workers || 0;
+    document.getElementById("cfgDnsttRespWorkers").value = d.dns_response_workers || 0;
+    document.getElementById("cfgDnsttAutoRestart").value = d.auto_restart_interval || "";
+    document.getElementById("cfgDnsttRestartGrace").value = d.auto_restart_grace || "";
+    document.getElementById("cfgDnsttMaxSessions").value = d.max_sessions || 0;
+    document.getElementById("cfgDnsttMaxStreams").value = d.max_streams || 0;
+    document.getElementById("cfgDnsttPendingResponses").value = d.pending_responses || 0;
+    document.getElementById("cfgDnsttStreamBuffer").value = d.stream_buffer || 0;
+    document.getElementById("cfgDnsttUDPReadBuffer").value = d.udp_read_buffer || 0;
+    document.getElementById("cfgDnsttUDPWriteBuffer").value = d.udp_write_buffer || 0;
     document.getElementById("cfgDnsttKey").value       = d.privkey_file || "/opt/sshpanel/dnstt.key";
     document.getElementById("cfgDnsttNoStats").checked = !!d.disable_stats_log;
     document.getElementById("cfgDnsttNoConsole").checked = !!d.disable_console_log;
+    document.getElementById("cfgDnsttLogConnections").checked = !!d.log_connections;
 
     // UDPGW
     const hasUdpgw = !!c.udpgw;
@@ -2275,6 +2491,8 @@ async function loadServerConfig() {
     document.getElementById("cfgUdpgwMaxConns").value  = u.max_client_conns || 0;
     document.getElementById("cfgUdpgwIdle").value      = u.idle_timeout || "";
     document.getElementById("cfgUdpgwMapTTL").value    = u.map_ttl || "";
+    document.getElementById("cfgUdpgwAutoRestart").value = u.auto_restart_interval || "";
+    document.getElementById("cfgUdpgwRestartGrace").value = u.auto_restart_grace || "";
     document.getElementById("cfgUdpgwDebug").checked   = !!u.debug;
 
     // TLS forwarders
@@ -2284,6 +2502,7 @@ async function loadServerConfig() {
     // Xray
     const x = c.xray || {};
     document.getElementById("cfgXrayEnabled").checked = !!x.enabled;
+    document.getElementById("cfgXrayMode").value = xrayModeFromConfig(x);
 
     st.textContent = "Config loaded.";
   } catch (e) {
@@ -2300,10 +2519,13 @@ async function saveServerConfig() {
 
   const extraLines = document.getElementById("cfgExtraListen").value
     .split("\n").map(s => s.trim()).filter(Boolean);
+  const dnsttDomains = readDnsttDomains("cfgDnsttDomains");
 
   const cfg = {
     listen:               document.getElementById("cfgListen").value.trim(),
     extra_listen:         extraLines,
+    proxy_auto_restart_interval: document.getElementById("cfgProxyAutoRestart").value.trim(),
+    proxy_auto_restart_grace:    document.getElementById("cfgProxyRestartGrace").value.trim(),
     host_key_file:        "/opt/sshpanel/ssh_host_rsa_key",
     admin_dir:            "/opt/sshpanel/admin",
     default_limit_mbps_up:   parseInt(document.getElementById("cfgLimitUp").value  || "0", 10),
@@ -2313,24 +2535,44 @@ async function saveServerConfig() {
     banner:      document.getElementById("cfgBanner").value,
     banner_file: "/opt/sshpanel/banner.txt",
     dnstt: document.getElementById("cfgDnsttEnabled").checked ? {
-      domain:              document.getElementById("cfgDnsttDomain").value.trim(),
+      domain:              dnsttDomains[0] || "",
+      domains:             dnsttDomains,
       udp_listen:          document.getElementById("cfgDnsttUDP").value.trim(),
+      fake_dns_enabled:    document.getElementById("cfgDnsttFakeEnabled").checked,
+      fake_dns_listen:     document.getElementById("cfgDnsttFakeListen").value.trim(),
+      fake_dns_domain:     document.getElementById("cfgDnsttFakeDomain").value.trim(),
+      fake_dns_workers: parseInt(document.getElementById("cfgDnsttFakeWorkers").value || "0", 10),
+      dns_response_workers: parseInt(document.getElementById("cfgDnsttRespWorkers").value || "0", 10),
+      auto_restart_interval: document.getElementById("cfgDnsttAutoRestart").value.trim(),
+      auto_restart_grace:  document.getElementById("cfgDnsttRestartGrace").value.trim(),
+      max_sessions: parseInt(document.getElementById("cfgDnsttMaxSessions").value || "0", 10),
+      max_streams: parseInt(document.getElementById("cfgDnsttMaxStreams").value || "0", 10),
+      pending_responses: parseInt(document.getElementById("cfgDnsttPendingResponses").value || "0", 10),
+      stream_buffer: parseInt(document.getElementById("cfgDnsttStreamBuffer").value || "0", 10),
+      udp_read_buffer: parseInt(document.getElementById("cfgDnsttUDPReadBuffer").value || "0", 10),
+      udp_write_buffer: parseInt(document.getElementById("cfgDnsttUDPWriteBuffer").value || "0", 10),
       privkey_file:        document.getElementById("cfgDnsttKey").value.trim(),
       disable_stats_log:   document.getElementById("cfgDnsttNoStats").checked,
       disable_console_log: document.getElementById("cfgDnsttNoConsole").checked,
+      log_connections: document.getElementById("cfgDnsttLogConnections").checked,
     } : null,
     udpgw: document.getElementById("cfgUdpgwEnabled").checked ? {
       listen:          document.getElementById("cfgUdpgwListen").value.trim(),
       max_client_conns: parseInt(document.getElementById("cfgUdpgwMaxConns").value || "0", 10),
       idle_timeout:    document.getElementById("cfgUdpgwIdle").value.trim(),
       map_ttl:         document.getElementById("cfgUdpgwMapTTL").value.trim(),
+      auto_restart_interval: document.getElementById("cfgUdpgwAutoRestart").value.trim(),
+      auto_restart_grace:    document.getElementById("cfgUdpgwRestartGrace").value.trim(),
       debug:           document.getElementById("cfgUdpgwDebug").checked,
     } : null,
     tls_forwarders: tlsArr,
     xray: {
       enabled:     document.getElementById("cfgXrayEnabled").checked,
+      mode:        document.getElementById("cfgXrayMode").value === "external" ? "external" : "native",
+      native:      document.getElementById("cfgXrayMode").value !== "external",
       bin_path:    "/opt/sshpanel/xray",
       config_file: "/opt/sshpanel/xray_config.json",
+      native_config_file: "/opt/sshpanel/xray_native_config.json",
       api_server:  "127.0.0.1:10085",
       online_window_seconds: 90,
       stats_poll_seconds: 15,
@@ -2779,7 +3021,7 @@ function wzSaveInbound() {
         break;
       case "xhttp":
         ib.streamSettings.xhttpSettings = {
-          path: document.getElementById("wzXHTTPPath").value.trim() || "/",
+          path: document.getElementById("wzXHTTPPath").value.trim() || "/xhttp",
           host: document.getElementById("wzXHTTPHost").value.trim() || undefined,
           mode: document.getElementById("wzXHTTPMode").value,
         };

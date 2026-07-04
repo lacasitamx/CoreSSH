@@ -64,6 +64,17 @@ type TLSForwarderConfig struct {
 
 type Config struct {
 	Listen string `json:"listen"`
+
+	// ProxyAutoRestartInterval controls a watchdog that periodically hard-restarts
+	// the public proxy listeners (listen, extra_listen, and TLS forwarders) and
+	// closes active SSH sessions. Empty, "0s", "off", or "disabled" turns it off.
+	// Valid examples: "30m", "6h", "24h". Minimum accepted value is 1m.
+	ProxyAutoRestartInterval string `json:"proxy_auto_restart_interval,omitempty"`
+
+	// ProxyAutoRestartGrace is the delay between closing proxy listeners/sessions
+	// and binding them again during an auto restart. Empty defaults to "2s".
+	ProxyAutoRestartGrace string `json:"proxy_auto_restart_grace,omitempty"`
+
 	// Optional extra public listen addresses (multi‑port).  These
 	// addresses use the same HTTP‑cleanup and SSH handler as the
 	// primary Listen address.  For IPv6, use bracket form, e.g.
@@ -126,14 +137,46 @@ type Config struct {
 // the tunnelled zone, and loads its private key from PrivKeyFile.  The
 // corresponding public key must be distributed to clients.
 type DNSTTConfig struct {
-	// Domain is the root of the DNS zone reserved for the tunnel (e.g. "t.example.com").
+	// Domain is the primary/root DNS zone reserved for the tunnel (e.g. "t.example.com").
+	// It is kept for backward compatibility and is also used as the first client
+	// domain when Domains is empty.
 	Domain string `json:"domain"`
-	// UDPListen is the UDP address to listen on for incoming DNS queries.
-	// The address should be IPv6‑formatted (e.g. "[::]:5300") and reachable by
-	// recursive resolvers.  Note: port 53 may require root privileges; binding
-	// to an unprivileged port and using iptables to redirect port 53 is
-	// recommended【561853413345496†L97-L109】.
+
+	// Domains optionally lists all DNS root zones/NS domains accepted by this
+	// server. This allows the same DNSTT listener/key to answer for public and
+	// local DNS deployments at the same time, for example:
+	// ["t.example.com", "t.local.lan"]. The first normalized value is mirrored
+	// into Domain for older clients/UI code.
+	Domains []string `json:"domains,omitempty"`
+	// UDPListen is the UDP address to listen on for incoming DNS tunnel queries.
+	// IPv6 addresses must use bracket form, for example "[::]:5300" or
+	// "[2001:db8::1234]:53". IPv6 listeners are opened with udp6 so they do
+	// not require a spare IPv4 address on the same port.
 	UDPListen string `json:"udp_listen"`
+
+	// FakeDNSEnabled starts an extra built-in DNS listener for local/LAN testing.
+	// It uses the same DNSTT private key and session pool, but only accepts the
+	// FakeDNSDomain zone. This avoids needing a second DNS server for tests such
+	// as t.local.lan over a dedicated IPv6 address.
+	FakeDNSEnabled bool `json:"fake_dns_enabled,omitempty"`
+
+	// FakeDNSListen is the IPv4/IPv6 UDP address for the built-in local DNS
+	// listener. For your case use an IPv6 address, for example
+	// "[2001:db8::1234]:53" or "[::]:53".
+	FakeDNSListen string `json:"fake_dns_listen,omitempty"`
+
+	// FakeDNSDomain is the local DNSTT zone accepted by the built-in DNS listener.
+	// If empty while FakeDNSEnabled is true, it defaults to "t.local.lan".
+	FakeDNSDomain string `json:"fake_dns_domain,omitempty"`
+
+	// FakeDNSWorkers controls how many concurrent UDP read/parse workers are used
+	// by the built-in local DNS listener. Zero uses a safe automatic default.
+	FakeDNSWorkers int `json:"fake_dns_workers,omitempty"`
+
+	// DNSResponseWorkers controls how many DNS response sender shards are used.
+	// Zero keeps the safest default of one sender. Increase carefully only when
+	// the DNSTT pending queue grows under load.
+	DNSResponseWorkers int `json:"dns_response_workers,omitempty"`
 	// PrivKeyFile is the path to the Noise server private key.  Generate a
 	// keypair with the dnstt tool (use -gen-key) and copy the resulting
 	// private key here; the matching public key must be distributed to
@@ -158,6 +201,41 @@ type DNSTTConfig struct {
 	// printed to the console.  Set this to true in combination with
 	// disable_stats_log if you want a fully quiet DNSTT server.
 	DisableConsoleLog bool `json:"disable_console_log"`
+
+	// AutoRestartInterval controls a watchdog that periodically cycles only the
+	// integrated DNSTT UDP listener. Empty, "0s", "off", or "disabled" turns it
+	// off. Valid examples: "30m", "2h", "6h". Minimum accepted value is 1m.
+	AutoRestartInterval string `json:"auto_restart_interval,omitempty"`
+
+	// AutoRestartGrace is the delay between closing the old DNSTT UDP socket and
+	// binding a new one during an auto restart. Empty defaults to "2s".
+	AutoRestartGrace string `json:"auto_restart_grace,omitempty"`
+
+	// MaxSessions limits concurrently open DNSTT/KCP sessions. Zero uses a safe
+	// default for large public servers. Negative disables the limit.
+	MaxSessions int `json:"max_sessions,omitempty"`
+
+	// MaxStreams limits concurrently open smux/SSH streams across all DNSTT
+	// sessions. Zero uses a safe default. Negative disables the limit.
+	MaxStreams int `json:"max_streams,omitempty"`
+
+	// PendingResponses controls the buffer of queued DNS responses waiting for
+	// sendLoop. Zero uses the default. Keeping it bounded prevents RAM spikes.
+	PendingResponses int `json:"pending_responses,omitempty"`
+
+	// StreamBuffer sets smux MaxStreamBuffer in bytes. Zero uses the default.
+	// Lower values reduce RAM use when thousands of clients are connected.
+	StreamBuffer int `json:"stream_buffer,omitempty"`
+
+	// UDPReadBuffer and UDPWriteBuffer request OS socket buffers in bytes. Zero
+	// uses the default. The kernel may clamp these unless sysctl limits are raised.
+	UDPReadBuffer  int `json:"udp_read_buffer,omitempty"`
+	UDPWriteBuffer int `json:"udp_write_buffer,omitempty"`
+
+	// LogConnections enables per-session and per-stream DNSTT logs. Leave off on
+	// servers with thousands of users because connection logging can become the
+	// bottleneck and make crashes more likely.
+	LogConnections bool `json:"log_connections,omitempty"`
 }
 
 // UDPGWConfig defines the settings for the integrated UDP gateway.  The
@@ -214,6 +292,16 @@ type UDPGWConfig struct {
 	// growth if a client sprays packets to many unique destinations.
 	// Default is 32768.
 	MaxMapEntries int `json:"max_map_entries"`
+
+	// AutoRestartInterval controls a watchdog that periodically hard-restarts
+	// the integrated UDPGW listener and closes all connected UDPGW clients. Empty,
+	// "0s", "off", or "disabled" turns it off. Valid examples: "30m", "6h", "24h".
+	// Minimum accepted value is 1m.
+	AutoRestartInterval string `json:"auto_restart_interval,omitempty"`
+
+	// AutoRestartGrace is the delay between closing the old UDPGW listener/clients
+	// and binding a new one during an auto restart. Empty defaults to "2s".
+	AutoRestartGrace string `json:"auto_restart_grace,omitempty"`
 }
 
 type UserConfig struct {
@@ -339,6 +427,35 @@ func (m *UserManager) DisconnectUser(username string) {
 	for _, c := range conns {
 		_ = c.Close()
 	}
+}
+
+// DisconnectAll closes every authenticated SSH connection currently tracked by
+// the user manager. It is used by the proxy hard auto-restart to mimic a real
+// service reboot instead of only reopening listening sockets.
+func (m *UserManager) DisconnectAll() int {
+	m.mu.RLock()
+	states := make([]*UserState, 0, len(m.users))
+	for _, u := range m.users {
+		states = append(states, u)
+	}
+	m.mu.RUnlock()
+
+	seen := make(map[*ssh.ServerConn]struct{})
+	for _, u := range states {
+		if u == nil {
+			continue
+		}
+		u.mu.Lock()
+		for c := range u.conns {
+			seen[c] = struct{}{}
+		}
+		u.mu.Unlock()
+	}
+
+	for c := range seen {
+		_ = c.Close()
+	}
+	return len(seen)
 }
 
 // Global state
@@ -1030,6 +1147,19 @@ func readNetDev() (map[string]ifaceCounters, error) {
 
 // ---------- Config loading ----------
 
+const defaultInstalledConfigPath = "/opt/sshpanel/config.json"
+
+func resolveMainConfigPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path != "" {
+		return path
+	}
+	if _, err := os.Stat("config.json"); err == nil {
+		return "config.json"
+	}
+	return defaultInstalledConfigPath
+}
+
 func loadConfig(path string) (*Config, map[string]*UserState, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -1039,6 +1169,9 @@ func loadConfig(path string) (*Config, map[string]*UserState, error) {
 	var cfg Config
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, nil, fmt.Errorf("parse config: %w", err)
+	}
+	if cfg.Xray != nil {
+		cfg.Xray.NormalizeDefaults()
 	}
 
 	if cfg.Listen == "" {
@@ -1719,6 +1852,9 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 func handleDnsttStats(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if proxyManagedServerFromRequest(w, r, statsStore, "/api/dnstt", nil, "") {
 		return
 	}
 	// Obtain a copy of the current snapshot.
@@ -2621,19 +2757,20 @@ func main() {
 		log.Printf("GOMEMLIMIT auto-set to 80%% of RAM: %d MB", limit/1024/1024)
 	}
 
-	configPath := flag.String("config", "config.json", "path to JSON config file")
+	configPath := flag.String("config", "", "path to JSON config file (default: ./config.json if present, otherwise /opt/sshpanel/config.json)")
 	quietFlag := flag.Bool("quiet", false, "override config and disable logs")
 	userCountFlag := flag.Bool("usercount", false, "show per-user connection counters (single line)")
 	flag.Parse()
 
-	cfg, userMap, err := loadConfig(*configPath)
+	resolvedConfigPath := resolveMainConfigPath(*configPath)
+	cfg, userMap, err := loadConfig(resolvedConfigPath)
 	if err != nil {
 		log.Fatalf("failed to load config: %v", err)
 	}
 	userMgr.ReplaceAll(userMap)
 
 	// Store config path and live config for hot-reload via admin API.
-	globalCfgPath = *configPath
+	globalCfgPath = resolvedConfigPath
 	setGlobalCfg(cfg)
 
 	userCountEnabled = cfg.UserCount || *userCountFlag
@@ -2677,7 +2814,13 @@ func main() {
 		if err := store.EnsureXrayClientsSchema(ctx); err != nil {
 			log.Printf("xray clients table: %v", err)
 		} else {
+			if err := store.ResetXrayActiveConnections(ctx); err != nil {
+				log.Printf("xray active connection reset: %v", err)
+			}
 			startXrayClientExpiryChecker(store)
+		}
+		if err := store.EnsureXrayConfigSchema(ctx); err != nil {
+			log.Printf("xray config table disabled: %v", err)
 		}
 		if err := store.EnsureIfaceUsageTables(ctx); err != nil {
 			log.Printf("vnstat usage tables disabled: %v", err)
@@ -2891,6 +3034,9 @@ func main() {
 	for _, e := range tlsPool.Sync(cfg.TLSForwarders) {
 		log.Printf("failed to start TLS listener: %v", e)
 	}
+
+	// Start proxy hard auto-restart after the initial listeners are bound.
+	startProxyAutoRestart(cfg)
 
 	// Print user counts once at startup.
 	updateUserDisplay()

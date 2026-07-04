@@ -92,6 +92,9 @@ func serverConfigPost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "listen address required", http.StatusBadRequest)
 		return
 	}
+	if newCfg.Xray != nil {
+		newCfg.Xray.NormalizeDefaults()
+	}
 
 	// Preserve file-based users array (not editable through the UI).
 	globalCfgMu.RLock()

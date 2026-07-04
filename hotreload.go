@@ -98,6 +98,26 @@ func (p *listenerPool) Has(addr string) bool {
 	return ok
 }
 
+// StopAll closes every listener in the pool. Active SSH sessions are not owned
+// by this pool; callers that want a hard restart should also close tracked SSH
+// server connections through userMgr.DisconnectAll().
+func (p *listenerPool) StopAll(reason string) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for addr, ln := range p.entries {
+		_ = ln.Close()
+		delete(p.entries, addr)
+		if reason != "" {
+			log.Printf("hotreload: stopped %s (%s)", addr, reason)
+		} else {
+			log.Printf("hotreload: stopped %s", addr)
+		}
+	}
+}
+
 func (p *listenerPool) HasAll(addrs []string) bool {
 	if p == nil {
 		return false
@@ -177,6 +197,23 @@ func (p *tlsListenerPool) Has(addr string) bool {
 	defer p.mu.Unlock()
 	_, ok := p.entries[addr]
 	return ok
+}
+
+func (p *tlsListenerPool) StopAll(reason string) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for addr, ln := range p.entries {
+		_ = ln.Close()
+		delete(p.entries, addr)
+		if reason != "" {
+			log.Printf("hotreload: stopped TLS %s (%s)", addr, reason)
+		} else {
+			log.Printf("hotreload: stopped TLS %s", addr)
+		}
+	}
 }
 
 func (p *tlsListenerPool) HasAll(forwarders []TLSForwarderConfig) bool {
@@ -283,6 +320,7 @@ func joinAddrs(addrs []string) string {
 
 func applyFullConfigReload(newCfg *Config) ConfigReloadReport {
 	report := newReloadReport()
+	stopProxyAutoRestart()
 	// Banner
 	bt := newCfg.Banner
 	if bt == "" && newCfg.BannerFile != "" {
@@ -372,9 +410,13 @@ func applyFullConfigReload(newCfg *Config) ConfigReloadReport {
 
 	// Xray — update stored config then restart/stop as needed.
 	if newCfg.Xray != nil {
+		newCfg.Xray.NormalizeDefaults()
 		xrayMgr.mu.Lock()
 		xrayMgr.cfg = newCfg.Xray
 		xrayMgr.mu.Unlock()
+		if !newCfg.Xray.UseNative() {
+			xrayMgr.startStatsPoller()
+		}
 		if newCfg.Xray.Enabled {
 			if err := xrayMgr.Restart(); err != nil {
 				report.warnf("Xray failed to restart: %v", err)
@@ -395,6 +437,7 @@ func applyFullConfigReload(newCfg *Config) ConfigReloadReport {
 	}
 
 	setGlobalCfg(newCfg)
+	startProxyAutoRestart(newCfg)
 	return report
 }
 

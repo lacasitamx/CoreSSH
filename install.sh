@@ -455,8 +455,11 @@ cat > "$INSTALL_DIR/config.json" <<EOF
   "banner_file": "${INSTALL_DIR}/banner.txt",
   "xray": {
     "enabled": true,
+    "mode": "native",
+    "native": true,
     "bin_path": "${INSTALL_DIR}/xray",
-    "config_file": "${INSTALL_DIR}/xray_config.json"
+    "config_file": "${INSTALL_DIR}/xray_config.json",
+    "native_config_file": "${INSTALL_DIR}/xray_native_config.json"
   }
 }
 EOF
@@ -467,8 +470,9 @@ UUID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null \
     || python3 -c "import uuid; print(uuid.uuid4())" 2>/dev/null \
     || echo "11111111-2222-3333-4444-555555555555")
 
-# xray_config.json  (default VLESS + SOCKS inbounds — no geoip routing needed)
-cat > "$INSTALL_DIR/xray_config.json" <<EOF
+# xray_native_config.json is used by the internal emulator. xray_config.json is
+# kept only for optional external-xray mode. Both start with the same default.
+cat > "$INSTALL_DIR/xray_native_config.json" <<EOF
 {
   "log": { "loglevel": "warning" },
   "inbounds": [
@@ -497,7 +501,8 @@ cat > "$INSTALL_DIR/xray_config.json" <<EOF
   ]
 }
 EOF
-chmod 600 "$INSTALL_DIR/xray_config.json"
+cp -f "$INSTALL_DIR/xray_native_config.json" "$INSTALL_DIR/xray_config.json"
+chmod 600 "$INSTALL_DIR/xray_native_config.json" "$INSTALL_DIR/xray_config.json"
 info "  VLESS UUID: ${UUID}"
 
 # ── 9. DNSTT DNS/53 redirect ─────────────────────────────────────────────────

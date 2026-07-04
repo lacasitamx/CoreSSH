@@ -356,6 +356,13 @@ patch_configs() {
   cfg="$INSTALL_DIR/config.json"
   xcfg="$INSTALL_DIR/xray_config.json"
 
+  native_xcfg="$INSTALL_DIR/xray_native_config.json"
+  if [[ ! -f "$native_xcfg" && -f "$xcfg" ]]; then
+    cp -f "$xcfg" "$native_xcfg"
+    chmod 600 "$native_xcfg" || true
+    info "  Created independent native Xray config: $native_xcfg"
+  fi
+
   if [[ -f "$cfg" ]]; then
     python3 - "$cfg" <<'PYEOF'
 import json, sys
@@ -373,6 +380,22 @@ if 'banner_file' not in d:
 if 'local_ssh_listen' in d:
     d.pop('local_ssh_listen', None)
     changed = True
+x = d.get('xray')
+if isinstance(x, dict):
+    mode = str(x.get('mode') or '').strip().lower()
+    if mode not in ('native', 'external'):
+        x['mode'] = 'native'
+        x['native'] = True
+        changed = True
+    elif mode == 'native' and x.get('native') is not True:
+        x['native'] = True
+        changed = True
+    elif mode == 'external' and x.get('native') is not False:
+        x['native'] = False
+        changed = True
+    x.setdefault('bin_path', '/opt/sshpanel/xray')
+    x.setdefault('config_file', '/opt/sshpanel/xray_config.json')
+    x.setdefault('native_config_file', '/opt/sshpanel/xray_native_config.json')
 if changed:
     with open(path, 'w') as f:
         json.dump(d, f, indent=2)

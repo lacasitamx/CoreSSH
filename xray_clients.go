@@ -11,29 +11,41 @@ import (
 // Xray's own config only stores uuid/email/level; expiry, display name,
 // reseller owner, and connection policy live here.
 type XrayClientMeta struct {
-	UUID          string
-	Name          string
-	Email         string
-	InboundTag    string
-	OwnerUsername string
-	ExpiresAt     *time.Time
-	MaxConns      int
-	CreatedAt     time.Time
+	UUID               string
+	Name               string
+	Email              string
+	InboundTag         string
+	OwnerUsername      string
+	ExpiresAt          *time.Time
+	MaxConns           int
+	CreatedAt          time.Time
+	TotalUplinkBytes   int64
+	TotalDownlinkBytes int64
+	LastActive         *time.Time
+	ActiveConnections  int
 }
 
 func (s *Store) EnsureXrayClientsSchema(ctx context.Context) error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS xray_clients (
-			uuid           TEXT PRIMARY KEY,
-			name           TEXT NOT NULL DEFAULT '',
-			email          TEXT NOT NULL DEFAULT '',
-			inbound_tag    TEXT NOT NULL DEFAULT '',
-			owner_username TEXT NOT NULL DEFAULT '',
-			expires_at     TIMESTAMPTZ,
-			max_conns      INT NOT NULL DEFAULT 0,
-			created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			uuid                  TEXT PRIMARY KEY,
+			name                  TEXT NOT NULL DEFAULT '',
+			email                 TEXT NOT NULL DEFAULT '',
+			inbound_tag           TEXT NOT NULL DEFAULT '',
+			owner_username        TEXT NOT NULL DEFAULT '',
+			expires_at            TIMESTAMPTZ,
+			max_conns             INT NOT NULL DEFAULT 0,
+			created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			total_uplink_bytes    BIGINT NOT NULL DEFAULT 0,
+			total_downlink_bytes  BIGINT NOT NULL DEFAULT 0,
+			last_active           TIMESTAMPTZ,
+			active_connections    INT NOT NULL DEFAULT 0
 		)`,
 		`ALTER TABLE xray_clients ADD COLUMN IF NOT EXISTS owner_username TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE xray_clients ADD COLUMN IF NOT EXISTS total_uplink_bytes BIGINT NOT NULL DEFAULT 0`,
+		`ALTER TABLE xray_clients ADD COLUMN IF NOT EXISTS total_downlink_bytes BIGINT NOT NULL DEFAULT 0`,
+		`ALTER TABLE xray_clients ADD COLUMN IF NOT EXISTS last_active TIMESTAMPTZ`,
+		`ALTER TABLE xray_clients ADD COLUMN IF NOT EXISTS active_connections INT NOT NULL DEFAULT 0`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
@@ -65,15 +77,20 @@ func (s *Store) UpsertXrayClientMeta(ctx context.Context, m XrayClientMeta) erro
 func (s *Store) GetXrayClientMeta(ctx context.Context, uuid string) (*XrayClientMeta, error) {
 	m := &XrayClientMeta{}
 	var expiresAt sql.NullTime
+	var lastActive sql.NullTime
 	err := s.db.QueryRowContext(ctx, `
-		SELECT uuid, name, email, inbound_tag, COALESCE(owner_username, ''), expires_at, max_conns, created_at
+		SELECT uuid, name, email, inbound_tag, COALESCE(owner_username, ''), expires_at, max_conns, created_at,
+		       COALESCE(total_uplink_bytes, 0), COALESCE(total_downlink_bytes, 0), last_active, COALESCE(active_connections, 0)
 		FROM xray_clients WHERE uuid = $1`, uuid).
-		Scan(&m.UUID, &m.Name, &m.Email, &m.InboundTag, &m.OwnerUsername, &expiresAt, &m.MaxConns, &m.CreatedAt)
+		Scan(&m.UUID, &m.Name, &m.Email, &m.InboundTag, &m.OwnerUsername, &expiresAt, &m.MaxConns, &m.CreatedAt, &m.TotalUplinkBytes, &m.TotalDownlinkBytes, &lastActive, &m.ActiveConnections)
 	if err != nil {
 		return nil, err
 	}
 	if expiresAt.Valid {
 		m.ExpiresAt = &expiresAt.Time
+	}
+	if lastActive.Valid {
+		m.LastActive = &lastActive.Time
 	}
 	return m, nil
 }
@@ -85,7 +102,8 @@ func (s *Store) DeleteXrayClientMeta(ctx context.Context, uuid string) error {
 
 func (s *Store) ListAllXrayClients(ctx context.Context) ([]*XrayClientMeta, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT uuid, name, email, inbound_tag, COALESCE(owner_username, ''), expires_at, max_conns, created_at
+		SELECT uuid, name, email, inbound_tag, COALESCE(owner_username, ''), expires_at, max_conns, created_at,
+		       COALESCE(total_uplink_bytes, 0), COALESCE(total_downlink_bytes, 0), last_active, COALESCE(active_connections, 0)
 		FROM xray_clients ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
@@ -96,7 +114,8 @@ func (s *Store) ListAllXrayClients(ctx context.Context) ([]*XrayClientMeta, erro
 
 func (s *Store) ListXrayClientsByOwner(ctx context.Context, ownerUsername string) ([]*XrayClientMeta, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT uuid, name, email, inbound_tag, COALESCE(owner_username, ''), expires_at, max_conns, created_at
+		SELECT uuid, name, email, inbound_tag, COALESCE(owner_username, ''), expires_at, max_conns, created_at,
+		       COALESCE(total_uplink_bytes, 0), COALESCE(total_downlink_bytes, 0), last_active, COALESCE(active_connections, 0)
 		FROM xray_clients WHERE owner_username = $1 ORDER BY created_at DESC`, ownerUsername)
 	if err != nil {
 		return nil, err
@@ -113,7 +132,8 @@ func (s *Store) CountXrayClientsByOwner(ctx context.Context, ownerUsername strin
 
 func (s *Store) ListExpiredXrayClients(ctx context.Context) ([]*XrayClientMeta, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT uuid, name, email, inbound_tag, COALESCE(owner_username, ''), expires_at, max_conns, created_at
+		SELECT uuid, name, email, inbound_tag, COALESCE(owner_username, ''), expires_at, max_conns, created_at,
+		       COALESCE(total_uplink_bytes, 0), COALESCE(total_downlink_bytes, 0), last_active, COALESCE(active_connections, 0)
 		FROM xray_clients WHERE expires_at IS NOT NULL AND expires_at <= NOW()`)
 	if err != nil {
 		return nil, err
@@ -127,15 +147,76 @@ func scanXrayClientMetaRows(rows *sql.Rows) ([]*XrayClientMeta, error) {
 	for rows.Next() {
 		m := &XrayClientMeta{}
 		var expiresAt sql.NullTime
-		if err := rows.Scan(&m.UUID, &m.Name, &m.Email, &m.InboundTag, &m.OwnerUsername, &expiresAt, &m.MaxConns, &m.CreatedAt); err != nil {
+		var lastActive sql.NullTime
+		if err := rows.Scan(&m.UUID, &m.Name, &m.Email, &m.InboundTag, &m.OwnerUsername, &expiresAt, &m.MaxConns, &m.CreatedAt, &m.TotalUplinkBytes, &m.TotalDownlinkBytes, &lastActive, &m.ActiveConnections); err != nil {
 			return nil, err
 		}
 		if expiresAt.Valid {
 			m.ExpiresAt = &expiresAt.Time
 		}
+		if lastActive.Valid {
+			m.LastActive = &lastActive.Time
+		}
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// ResetXrayActiveConnections clears stale online counters after the panel starts.
+// Native mode then increments/decrements active_connections for real live streams.
+func (s *Store) ResetXrayActiveConnections(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE xray_clients SET active_connections = 0`)
+	return err
+}
+
+// AddXrayClientTrafficBatch persists native-emulator traffic deltas. It keeps
+// totals in PostgreSQL so bandwidth remains visible after panel restarts.
+func (s *Store) AddXrayClientTrafficBatch(ctx context.Context, deltas map[string]xrayPendingTraffic) error {
+	if len(deltas) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	stmt, err := tx.PrepareContext(ctx, `
+		UPDATE xray_clients SET
+			email                = CASE WHEN email = '' AND $2 <> '' THEN $2 ELSE email END,
+			name                 = CASE WHEN name = '' AND $2 <> '' THEN $2 ELSE name END,
+			total_uplink_bytes   = GREATEST(total_uplink_bytes + GREATEST($3::BIGINT, 0), 0),
+			total_downlink_bytes = GREATEST(total_downlink_bytes + GREATEST($4::BIGINT, 0), 0),
+			last_active          = NOW()
+		WHERE uuid = $1`)
+	if err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	defer stmt.Close()
+	for uuid, d := range deltas {
+		if uuid == "" || (d.Uplink == 0 && d.Downlink == 0) {
+			continue
+		}
+		if _, err := stmt.ExecContext(ctx, uuid, d.Email, d.Uplink, d.Downlink); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// UpdateXrayClientActive adjusts the native online connection counter.
+func (s *Store) UpdateXrayClientActive(ctx context.Context, uuid, email string, delta int) error {
+	if uuid == "" || delta == 0 {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE xray_clients SET
+			email              = CASE WHEN email = '' AND $2 <> '' THEN $2 ELSE email END,
+			name               = CASE WHEN name = '' AND $2 <> '' THEN $2 ELSE name END,
+			last_active        = CASE WHEN $3::INT > 0 THEN NOW() ELSE last_active END,
+			active_connections = GREATEST(active_connections + $3::INT, 0)
+		WHERE uuid = $1`, uuid, email, delta)
+	return err
 }
 
 func countOwnedXrayClients(ctx context.Context, store *Store, ownerUsername string) int {
@@ -177,9 +258,7 @@ func removeOwnerXrayClients(ctx context.Context, store *Store, ownerUsername str
 		}
 	}
 	if needRestart {
-		if err := xrayMgr.Restart(); err != nil {
-			log.Printf("xray owner cleanup: restart: %v", err)
-		}
+		xrayMgr.restartIfExternalRunning()
 	}
 }
 
@@ -220,9 +299,7 @@ func startXrayClientExpiryChecker(store *Store) {
 				log.Printf("xray expiry: removed expired client %q (%s) from inbound %s", m.Name, m.UUID, tag)
 			}
 			if needRestart {
-				if err := xrayMgr.Restart(); err != nil {
-					log.Printf("xray expiry: restart error: %v", err)
-				}
+				xrayMgr.restartIfExternalRunning()
 			}
 		}
 	}()
