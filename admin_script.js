@@ -1143,6 +1143,85 @@ function toggleUdpgwFields(on) {
   el.style.pointerEvents = on ? "" : "none";
 }
 
+
+const XRAY_NATIVE_TUNING_DEFAULTS = {
+  safe: {
+    mux_max_sessions: 128,
+    mux_global_sessions: 32768,
+    mux_udp_idle_ms: 15000,
+    mux_udp_read_buffer: 262144,
+    mux_udp_write_buffer: 262144,
+    xhttp_max_sessions: 16384,
+    xhttp_buffered_posts: 64,
+    xhttp_queue_timeout_ms: 250,
+    xhttp_flush_ms: 5,
+    xhttp_flush_bytes: 131072,
+    h2_max_concurrent_streams: 1024,
+    h2_upload_buffer_conn: 1048576,
+    h2_upload_buffer_stream: 262144,
+    trace_packets: false,
+  },
+  "2k": {
+    mux_max_sessions: 128,
+    mux_global_sessions: 32768,
+    mux_udp_idle_ms: 15000,
+    mux_udp_read_buffer: 262144,
+    mux_udp_write_buffer: 262144,
+    xhttp_max_sessions: 16384,
+    xhttp_buffered_posts: 64,
+    xhttp_queue_timeout_ms: 250,
+    xhttp_flush_ms: 5,
+    xhttp_flush_bytes: 131072,
+    h2_max_concurrent_streams: 1024,
+    h2_upload_buffer_conn: 1048576,
+    h2_upload_buffer_stream: 262144,
+    trace_packets: false,
+  },
+};
+
+const XRAY_NATIVE_TUNING_FIELDS = {
+  mux_max_sessions: "cfgXrayMuxMaxSessions",
+  mux_global_sessions: "cfgXrayMuxGlobalSessions",
+  mux_udp_idle_ms: "cfgXrayMuxUdpIdleMs",
+  mux_udp_read_buffer: "cfgXrayMuxUdpRbuf",
+  mux_udp_write_buffer: "cfgXrayMuxUdpWbuf",
+  xhttp_max_sessions: "cfgXrayXhttpMaxSessions",
+  xhttp_buffered_posts: "cfgXrayXhttpBufferedPosts",
+  xhttp_queue_timeout_ms: "cfgXrayXhttpQueueTimeoutMs",
+  xhttp_flush_ms: "cfgXrayXhttpFlushMs",
+  xhttp_flush_bytes: "cfgXrayXhttpFlushBytes",
+  h2_max_concurrent_streams: "cfgXrayH2MaxStreams",
+  h2_upload_buffer_conn: "cfgXrayH2UploadConn",
+  h2_upload_buffer_stream: "cfgXrayH2UploadStream",
+};
+
+function setXrayNativeTuningDefaults(profile = "2k") {
+  const t = XRAY_NATIVE_TUNING_DEFAULTS[profile] || XRAY_NATIVE_TUNING_DEFAULTS.safe;
+  writeXrayNativeTuning(t);
+}
+
+function writeXrayNativeTuning(t = {}) {
+  const defaults = XRAY_NATIVE_TUNING_DEFAULTS.safe;
+  Object.entries(XRAY_NATIVE_TUNING_FIELDS).forEach(([key, id]) => {
+    const el = document.getElementById(id);
+    if (el) el.value = Number(t[key] || defaults[key] || 0);
+  });
+  const trace = document.getElementById("cfgXrayTracePackets");
+  if (trace) trace.checked = !!t.trace_packets;
+}
+
+function readXrayNativeTuning() {
+  const out = {};
+  Object.entries(XRAY_NATIVE_TUNING_FIELDS).forEach(([key, id]) => {
+    const el = document.getElementById(id);
+    out[key] = parseInt(el?.value || "0", 10) || 0;
+  });
+  out.trace_packets = !!document.getElementById("cfgXrayTracePackets")?.checked;
+  return out;
+}
+
+window.setXrayNativeTuningDefaults = setXrayNativeTuningDefaults;
+
 async function loadServerConfig() {
   const st = document.getElementById("srvCfgStatus");
   st.textContent = "Loading…";
@@ -1211,6 +1290,8 @@ async function loadServerConfig() {
     // Xray
     const x = c.xray || {};
     document.getElementById("cfgXrayEnabled").checked = !!x.enabled;
+    if (document.getElementById("cfgXrayMode")) document.getElementById("cfgXrayMode").value = x.mode || (x.native === false ? "external" : "native");
+    writeXrayNativeTuning(x.native_tuning || XRAY_NATIVE_TUNING_DEFAULTS.safe);
 
     st.textContent = "Config loaded.";
   } catch (e) {
@@ -1276,8 +1357,12 @@ async function saveServerConfig() {
     tls_forwarders: tlsArr,
     xray: {
       enabled:     document.getElementById("cfgXrayEnabled").checked,
+      mode:        document.getElementById("cfgXrayMode")?.value || "native",
+      native:      (document.getElementById("cfgXrayMode")?.value || "native") !== "external",
       bin_path:    "/opt/sshpanel/xray",
       config_file: "/opt/sshpanel/xray_config.json",
+      native_config_file: "/opt/sshpanel/xray_native_config.json",
+      native_tuning: readXrayNativeTuning(),
     },
   };
 

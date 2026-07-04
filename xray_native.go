@@ -9,11 +9,12 @@ package main
 //
 // Native emulator scope:
 //   - Protocols : VLESS and VMess AEAD (TCP + UDP commands)
+//   - VLESS Mux : Mux.Cool child TCP/UDP sessions, including XUDP metadata
 //   - Transports: raw TCP, WebSocket (RFC 6455), XHTTP/SplitHTTP
 //   - Security  : TLS, none
 //
-// Mux, REALITY, gRPC and HTTPUpgrade are still deferred; unsupported commands
-// are rejected explicitly instead of silently falling back.
+// REALITY, gRPC and HTTPUpgrade are still deferred; unsupported commands are
+// rejected explicitly instead of silently falling back.
 //
 // Native mode has its own DB-backed config/runtime path. It does not spawn or
 // query the external xray binary and does not require /opt/sshpanel/xray to be
@@ -34,7 +35,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -160,13 +160,13 @@ func (s *nativeXrayServer) start(configFile string) error {
 				serveLn = tls.NewListener(ln, ib.tlsConfig)
 			}
 			opened = append(opened, serveLn)
-			go ib.serveXHTTPListener(serveLn)
+			xrayGo(fmt.Sprintf("native xray xhttp listener %s", addr), func() { ib.serveXHTTPListener(serveLn) })
 		} else {
 			opened = append(opened, serveLn)
-			go ib.acceptLoop(serveLn)
+			xrayGo(fmt.Sprintf("native xray accept loop %s", addr), func() { ib.acceptLoop(serveLn) })
 		}
 		active[ib.tag] = ib
-		log.Printf("native xray: serving %s/%s on %s (inbound %q, security=%s, %d clients)",
+		xrayLogf("native xray: serving %s/%s on %s (inbound %q, security=%s, %d clients)",
 			ib.protocol, ib.transport, addr, ib.tag, orNone(ib.security), ib.clientCount())
 	}
 
@@ -189,25 +189,27 @@ func (s *nativeXrayServer) stop() {
 	s.listeners = nil
 	s.inboundsByTag = nil
 	s.running = false
-	log.Printf("native xray: stopped")
+	xrayLogf("native xray: stopped")
 }
 
 func (ib *nativeInbound) acceptLoop(ln net.Listener) {
+	defer xrayRecover(fmt.Sprintf("native xray accept loop inbound=%q", ib.tag))
 	for {
 		c, err := ln.Accept()
 		if err != nil {
 			if isListenerClosed(err) {
 				return
 			}
-			log.Printf("native xray: accept error on %s: %v", ln.Addr(), err)
+			xrayLogf("native xray: accept error on %s: %v", ln.Addr(), err)
 			continue
 		}
-		go ib.serve(c)
+		xrayGo(fmt.Sprintf("native xray connection remote=%s", c.RemoteAddr()), func() { ib.serve(c) })
 	}
 }
 
 // serve terminates TLS + transport, then dispatches on protocol.
 func (ib *nativeInbound) serve(raw net.Conn) {
+	defer xrayRecover(fmt.Sprintf("native xray serve inbound=%q remote=%s", ib.tag, raw.RemoteAddr()))
 	defer raw.Close()
 
 	if tc, ok := raw.(*net.TCPConn); ok {
@@ -222,7 +224,7 @@ func (ib *nativeInbound) serve(raw net.Conn) {
 		tconn := tls.Server(raw, ib.tlsConfig)
 		_ = tconn.SetDeadline(time.Now().Add(tlsHandshakeTimeout))
 		if err := tconn.Handshake(); err != nil {
-			log.Printf("native xray: tls handshake from %s failed: %v", raw.RemoteAddr(), err)
+			xrayLogf("native xray: tls handshake from %s failed: %v", raw.RemoteAddr(), err)
 			return
 		}
 		_ = tconn.SetDeadline(time.Time{})
@@ -237,15 +239,15 @@ func (ib *nativeInbound) serve(raw net.Conn) {
 	case "ws", "websocket":
 		ws, err := wsServerHandshake(conn, ib.path)
 		if err != nil {
-			log.Printf("native xray: ws handshake from %s failed: %v", raw.RemoteAddr(), err)
+			xrayLogf("native xray: ws handshake from %s failed: %v", raw.RemoteAddr(), err)
 			return
 		}
 		stream = ws
 	case "xhttp", "splithttp":
-		log.Printf("native xray: inbound %q got raw connection for XHTTP; this transport is served by http.Server", ib.tag)
+		xrayLogf("native xray: inbound %q got raw connection for XHTTP; this transport is served by http.Server", ib.tag)
 		return
 	default:
-		log.Printf("native xray: inbound %q transport %q not supported yet; dropping conn from %s",
+		xrayLogf("native xray: inbound %q transport %q not supported yet; dropping conn from %s",
 			ib.tag, ib.transport, raw.RemoteAddr())
 		return
 	}
@@ -257,7 +259,7 @@ func (ib *nativeInbound) serve(raw net.Conn) {
 	case "vmess":
 		ib.handleVMess(stream, raw.RemoteAddr())
 	default:
-		log.Printf("native xray: inbound %q protocol %q not supported yet; dropping conn from %s",
+		xrayLogf("native xray: inbound %q protocol %q not supported yet; dropping conn from %s",
 			ib.tag, ib.protocol, raw.RemoteAddr())
 	}
 }
@@ -270,9 +272,12 @@ func (ib *nativeInbound) serve(raw net.Conn) {
 //   1  byte  addon length M
 //   M  bytes addons (flow etc.) — skipped
 //   1  byte  command (1=TCP, 2=UDP, 3=Mux)
-//   2  bytes port (big endian)
-//   1  byte  address type (1=IPv4, 2=domain, 3=IPv6)
-//   ...      address
+//   for TCP/UDP only:
+//     2  bytes port (big endian)
+//     1  byte  address type (1=IPv4, 2=domain, 3=IPv6)
+//     ...      address
+//   for Mux:
+//     ...      Mux.Cool/XUDP frames immediately after the command byte
 //   ...      payload
 // Response (server -> client): 1 byte version echo, 1 byte addon length (0).
 
@@ -287,12 +292,17 @@ const (
 )
 
 func (ib *nativeInbound) handleVLESS(stream net.Conn, remote net.Addr) {
-	log.Printf("native xray: vless handshake start inbound=%q transport=%s remote=%s", ib.tag, ib.transport, remote)
+	defer xrayRecover(fmt.Sprintf("native xray VLESS inbound=%q remote=%s", ib.tag, remote))
+	if ib.isXHTTP() {
+		xrayTracef("native xray: vless handshake start inbound=%q transport=%s remote=%s", ib.tag, ib.transport, remote)
+	} else {
+		xrayLogf("native xray: vless handshake start inbound=%q transport=%s remote=%s", ib.tag, ib.transport, remote)
+	}
 	_ = stream.SetReadDeadline(time.Now().Add(30 * time.Second))
 
 	head := make([]byte, 1+16+1) // version + uuid + addonLen
 	if _, err := io.ReadFull(stream, head); err != nil {
-		log.Printf("native xray: vless handshake failed inbound=%q transport=%s remote=%s: %v", ib.tag, ib.transport, remote, err)
+		ib.logVLESSReadFailure("handshake", remote, "", err)
 		return
 	}
 	version := head[0]
@@ -301,39 +311,59 @@ func (ib *nativeInbound) handleVLESS(stream net.Conn, remote net.Addr) {
 
 	client := ib.getNativeClient(id)
 	if client == nil {
-		log.Printf("native xray: inbound %q rejected unknown VLESS uuid from %s", ib.tag, remote)
+		xrayLogf("native xray: inbound %q rejected unknown VLESS uuid from %s", ib.tag, remote)
 		return
 	}
 
 	if addonLen := int(head[17]); addonLen > 0 {
 		if _, err := io.CopyN(io.Discard, stream, int64(addonLen)); err != nil {
-			log.Printf("native xray: vless addon read failed inbound=%q user=%s: %v", ib.tag, client.email, err)
+			xrayLogf("native xray: vless addon read failed inbound=%q user=%s: %v", ib.tag, client.email, err)
 			return
 		}
 	}
 
 	var cmd [1]byte
 	if _, err := io.ReadFull(stream, cmd[:]); err != nil {
-		log.Printf("native xray: vless command read failed inbound=%q user=%s: %v", ib.tag, client.email, err)
+		ib.logVLESSReadFailure("command", remote, client.email, err)
 		return
 	}
-	var portBuf [2]byte
-	if _, err := io.ReadFull(stream, portBuf[:]); err != nil {
-		log.Printf("native xray: vless port read failed inbound=%q user=%s: %v", ib.tag, client.email, err)
-		return
-	}
-	port := binary.BigEndian.Uint16(portBuf[:])
 
-	host, err := readProxyAddress(stream)
-	if err != nil {
-		log.Printf("native xray: inbound %q VLESS bad address from %s: %v", ib.tag, remote, err)
-		return
+	var host string
+	var port uint16
+	if cmd[0] == vlessCmdTCP || cmd[0] == vlessCmdUDP {
+		var portBuf [2]byte
+		if _, err := io.ReadFull(stream, portBuf[:]); err != nil {
+			xrayLogf("native xray: vless port read failed inbound=%q user=%s: %v", ib.tag, client.email, err)
+			return
+		}
+		port = binary.BigEndian.Uint16(portBuf[:])
+
+		var err error
+		host, err = readProxyAddress(stream)
+		if err != nil {
+			xrayLogf("native xray: inbound %q VLESS bad address from %s: %v", ib.tag, remote, err)
+			return
+		}
+		if isNativeDNSSinkTarget(host) {
+			_ = stream.SetReadDeadline(time.Time{})
+			_ = stream.SetWriteDeadline(time.Now().Add(time.Second))
+			_, _ = stream.Write([]byte{version, 0})
+			xrayTracef("native xray: inbound %q fast-ignored DNS sink target cmd=%d user=%s host=%q port=%d remote=%s", ib.tag, cmd[0], client.email, host, port, remote)
+			return
+		}
+		if invalidNativeDestination(host, port) {
+			xrayTracef("native xray: inbound %q rejected invalid VLESS target cmd=%d user=%s host=%q port=%d remote=%s", ib.tag, cmd[0], client.email, host, port, remote)
+			return
+		}
 	}
 	_ = stream.SetReadDeadline(time.Time{})
 
-	// VLESS response header must be sent before relaying payload.
+	// VLESS response header must be sent before relaying payload. CommandMux is
+	// special: official Xray does not read a target from the VLESS header for it;
+	// the following bytes are Mux.Cool/XUDP frames. Reading port/address here
+	// deadlocks muxed UDP clients and shows up as QUIC/YouTube stalls.
 	if _, err := stream.Write([]byte{version, 0}); err != nil {
-		log.Printf("native xray: vless response write failed inbound=%q user=%s: %v", ib.tag, client.email, err)
+		xrayLogf("native xray: vless response write failed inbound=%q user=%s: %v", ib.tag, client.email, err)
 		return
 	}
 
@@ -341,22 +371,77 @@ func (ib *nativeInbound) handleVLESS(stream net.Conn, remote net.Addr) {
 	case vlessCmdTCP:
 		backend, target, err := ib.nativeDialTCP(host, port)
 		if err != nil {
-			log.Printf("native xray: inbound %q VLESS TCP dial %s failed: %v", ib.tag, target, err)
+			xrayLogf("native xray: inbound %q VLESS TCP dial %s failed: %v", ib.tag, target, err)
 			return
 		}
-		log.Printf("native xray: vless/tcp user=%s src=%s -> %s (inbound %q)", client.email, backend.LocalAddr(), target, ib.tag)
+		ib.nativeSuccessLogf("native xray: vless/tcp user=%s src=%s -> %s (inbound %q)", client.email, backend.LocalAddr(), target, ib.tag)
 		nativeTunnel(stream, backend, client.uuid, client.email, ib.upLimiter(), ib.downLimiter())
 	case vlessCmdUDP:
 		backend, target, err := ib.nativeDialUDP(host, port)
 		if err != nil {
-			log.Printf("native xray: inbound %q VLESS UDP dial %s failed: %v", ib.tag, target, err)
+			xrayLogf("native xray: inbound %q VLESS UDP dial %s failed: %v", ib.tag, target, err)
 			return
 		}
-		log.Printf("native xray: vless/udp user=%s src=%s -> %s (inbound %q)", client.email, backend.LocalAddr(), target, ib.tag)
+		ib.nativeSuccessLogf("native xray: vless/udp user=%s src=%s -> %s (inbound %q)", client.email, backend.LocalAddr(), target, ib.tag)
 		nativeVLESSUDPTunnel(stream, backend, client.uuid, client.email, ib.upLimiter(), ib.downLimiter())
+	case vlessCmdMux:
+		ib.nativeSuccessLogf("native xray: vless/mux user=%s remote=%s (inbound %q)", client.email, remote, ib.tag)
+		ib.nativeVLESSMuxTunnel(stream, client.uuid, client.email)
 	default:
-		log.Printf("native xray: inbound %q VLESS command %d not supported yet", ib.tag, cmd[0])
+		xrayLogf("native xray: inbound %q VLESS command %d not supported yet", ib.tag, cmd[0])
 	}
+}
+
+func (ib *nativeInbound) logVLESSReadFailure(stage string, remote net.Addr, email string, err error) {
+	if ib.isXHTTP() && isNativeDeadlineError(err) {
+		if email == "" {
+			xrayTracef("native xray: vless %s timed out inbound=%q transport=%s remote=%s: %v", stage, ib.tag, ib.transport, remote, err)
+		} else {
+			xrayTracef("native xray: vless %s timed out inbound=%q transport=%s user=%s remote=%s: %v", stage, ib.tag, ib.transport, email, remote, err)
+		}
+		return
+	}
+	if email == "" {
+		xrayLogf("native xray: vless %s failed inbound=%q transport=%s remote=%s: %v", stage, ib.tag, ib.transport, remote, err)
+	} else {
+		xrayLogf("native xray: vless %s failed inbound=%q transport=%s user=%s remote=%s: %v", stage, ib.tag, ib.transport, email, remote, err)
+	}
+}
+
+func isNativeDeadlineError(err error) bool {
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		return true
+	}
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
+}
+
+func invalidNativeDestination(host string, port uint16) bool {
+	host = strings.TrimSpace(normalizeNativeTargetHost(host))
+	if host == "" || port == 0 {
+		return true
+	}
+	if ip := net.ParseIP(stripNativeIPZone(host)); ip != nil {
+		return ip.IsUnspecified()
+	}
+	return false
+}
+
+func isNativeDNSSinkTarget(host string) bool {
+	host = strings.TrimSpace(normalizeNativeTargetHost(host))
+	if host == "" {
+		return false
+	}
+	ip := net.ParseIP(stripNativeIPZone(host))
+	return ip != nil && ip.IsUnspecified()
+}
+
+func (ib *nativeInbound) nativeSuccessLogf(format string, args ...interface{}) {
+	if ib != nil && ib.isXHTTP() {
+		xrayTracef(format, args...)
+		return
+	}
+	xrayLogf(format, args...)
 }
 
 // readProxyAddress reads a VMess/VLESS-style address (type byte + address).
@@ -445,13 +530,13 @@ func nativeDialTargetWithSource(network, host string, port uint16, sourceHost st
 		cancel()
 		if err == nil {
 			if i > 0 && len(attempts) > 1 {
-				log.Printf("native xray: outbound dial recovered target=%s network=%s using auto source after bound source failed", target, dialNetwork)
+				xrayLogf("native xray: outbound dial recovered target=%s network=%s using auto source after bound source failed", target, dialNetwork)
 			}
 			return conn, target, nil
 		}
 		lastErr = err
 		if local != nil {
-			log.Printf("native xray: outbound dial target=%s network=%s source=%s failed, retrying auto source: %v", target, dialNetwork, local.String(), err)
+			xrayLogf("native xray: outbound dial target=%s network=%s source=%s failed, retrying auto source: %v", target, dialNetwork, local.String(), err)
 		}
 	}
 	return nil, target, lastErr
@@ -537,31 +622,36 @@ func normalizeNativeTargetHost(raw string) string {
 func nativeTunnel(client io.ReadWriteCloser, backend net.Conn, uuid, email string, up, down *rate.Limiter) {
 	xrayMgr.recordNativeConnect(uuid, email)
 	defer xrayMgr.recordNativeDisconnect(uuid, email)
+	defer xrayRecover(fmt.Sprintf("native xray TCP tunnel user=%s", email))
+
 	upMeter := &trafficMeter{uuid: uuid, email: email, uplink: true}
 	downMeter := &trafficMeter{uuid: uuid, email: email, uplink: false}
 
 	var wg sync.WaitGroup
+	var closeOnce sync.Once
 	closeAll := func() {
-		_ = backend.Close()
-		_ = client.Close()
+		closeOnce.Do(func() {
+			_ = backend.Close()
+			_ = client.Close()
+		})
 	}
 
 	wg.Add(1)
-	go func() { // client -> backend (uplink)
+	xrayGo("native xray TCP uplink", func() { // client -> backend
 		defer wg.Done()
+		defer closeAll()
 		_, _ = copyWithRateLimit(meteredWriter{w: backend, meter: upMeter}, client, up)
 		if cw, ok := backend.(interface{ CloseWrite() error }); ok {
 			_ = cw.CloseWrite()
 		}
-		closeAll()
-	}()
+	})
 
 	wg.Add(1)
-	go func() { // backend -> client (downlink)
+	xrayGo("native xray TCP downlink", func() { // backend -> client
 		defer wg.Done()
+		defer closeAll()
 		_, _ = copyWithRateLimit(meteredWriter{w: client, meter: downMeter}, backend, down)
-		closeAll()
-	}()
+	})
 
 	wg.Wait()
 	upMeter.flush()
@@ -853,7 +943,7 @@ func parseNativeInbounds(configFile string) ([]*nativeInbound, error) {
 		}
 		port, ok := parseSinglePort(in.Port)
 		if !ok {
-			log.Printf("native xray: inbound %q has unsupported port form; skipping", in.Tag)
+			xrayLogf("native xray: inbound %q has unsupported port form; skipping", in.Tag)
 			continue
 		}
 
@@ -894,7 +984,7 @@ func parseNativeInbounds(configFile string) ([]*nativeInbound, error) {
 			}
 			ib.xhttpMaxBufferedPosts = xh.ScMaxBufferedPosts
 			if ib.xhttpMaxBufferedPosts <= 0 {
-				ib.xhttpMaxBufferedPosts = 30
+				ib.xhttpMaxBufferedPosts = nativeXHTTPBufferedPostLimit()
 			}
 			ib.xhttpSessions = make(map[string]*nativeXHTTPSession)
 		}
@@ -904,7 +994,7 @@ func parseNativeInbounds(configFile string) ([]*nativeInbound, error) {
 		if ib.security == "tls" {
 			tc, err := buildInboundTLS(in)
 			if err != nil {
-				log.Printf("native xray: inbound %q TLS disabled: %v; skipping", in.Tag, err)
+				xrayLogf("native xray: inbound %q TLS disabled: %v; skipping", in.Tag, err)
 				continue
 			}
 			ib.tlsConfig = tc
@@ -920,24 +1010,24 @@ func parseNativeInbounds(configFile string) ([]*nativeInbound, error) {
 				raw = c.Password // some protocols reuse password as id
 			}
 			if err := ib.addNativeClient(proto, raw, c.Email); err != nil {
-				log.Printf("native xray: inbound %q skipping client %q: %v", in.Tag, raw, err)
+				xrayLogf("native xray: inbound %q skipping client %q: %v", in.Tag, raw, err)
 			}
 		}
 		if statsStore != nil && in.Tag != "" {
 			metas, err := statsStore.ListXrayClientsByInbound(context.Background(), in.Tag)
 			if err != nil {
-				log.Printf("native xray: inbound %q database clients unavailable: %v", in.Tag, err)
+				xrayLogf("native xray: inbound %q database clients unavailable: %v", in.Tag, err)
 			} else {
 				for _, m := range metas {
 					if err := ib.addNativeClient(proto, m.UUID, firstNonEmpty(m.Email, m.Name, m.UUID)); err != nil {
-						log.Printf("native xray: inbound %q skipping DB client %q: %v", in.Tag, m.UUID, err)
+						xrayLogf("native xray: inbound %q skipping DB client %q: %v", in.Tag, m.UUID, err)
 					}
 				}
 			}
 		}
 
 		if ib.clientCount() == 0 {
-			log.Printf("native xray: inbound %q has no valid clients; skipping", in.Tag)
+			xrayLogf("native xray: inbound %q has no valid clients; skipping", in.Tag)
 			continue
 		}
 		out = append(out, ib)

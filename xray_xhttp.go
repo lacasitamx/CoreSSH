@@ -2,11 +2,11 @@ package main
 
 import (
 	"container/heap"
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -98,7 +98,12 @@ func mergeNativeXHTTPSettings(primary, fallback nativeXHTTPSettingsJSON) nativeX
 }
 
 func (ib *nativeInbound) serveXHTTPListener(ln net.Listener) {
-	h2s := &http2.Server{}
+	defer xrayRecover(fmt.Sprintf("native xray XHTTP listener inbound=%q addr=%s", ib.tag, ln.Addr()))
+	h2s := &http2.Server{
+		MaxConcurrentStreams:         uint32(nativeH2MaxConcurrentStreams()),
+		MaxUploadBufferPerConnection: int32(nativeH2UploadBufferConn()),
+		MaxUploadBufferPerStream:     int32(nativeH2UploadBufferStream()),
+	}
 	handler := http.Handler(ib)
 	// Official Xray accepts plaintext HTTP/1.1 and h2c on non-TLS XHTTP
 	// listeners, and negotiates h2/http1 through ALPN on TLS listeners. Without
@@ -117,7 +122,7 @@ func (ib *nativeInbound) serveXHTTPListener(ln net.Listener) {
 		_ = http2.ConfigureServer(srv, h2s)
 	}
 	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) && !isListenerClosed(err) {
-		log.Printf("native xray: XHTTP server for inbound %q stopped: %v", ib.tag, err)
+		xrayLogf("native xray: XHTTP server for inbound %q stopped: %v", ib.tag, err)
 	}
 }
 
@@ -133,19 +138,20 @@ func (ib *nativeInbound) xhttpServerMaxHeaderBytes() int {
 // ServeHTTP terminates the XHTTP/SplitHTTP transport and exposes the decoded
 // byte stream to the VLESS/VMess handlers as a net.Conn.
 func (ib *nativeInbound) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	defer xrayRecover(fmt.Sprintf("native xray XHTTP request inbound=%q method=%s path=%q remote=%s", ib.tag, r.Method, r.URL.RequestURI(), r.RemoteAddr))
 	if !ib.isXHTTP() {
-		log.Printf("native xray: xhttp reject inbound=%q reason=not-xhttp method=%s path=%q host=%q remote=%s", ib.tag, r.Method, r.URL.RequestURI(), r.Host, r.RemoteAddr)
+		xrayLogf("native xray: xhttp reject inbound=%q reason=not-xhttp method=%s path=%q host=%q remote=%s", ib.tag, r.Method, r.URL.RequestURI(), r.Host, r.RemoteAddr)
 		xhttpBadRequest(w)
 		return
 	}
 	if !ib.xhttpHostAllowed(r.Host) {
-		log.Printf("native xray: xhttp reject inbound=%q reason=host method=%s path=%q host=%q want=%q remote=%s", ib.tag, r.Method, r.URL.RequestURI(), r.Host, ib.xhttpHost, r.RemoteAddr)
+		xrayLogf("native xray: xhttp reject inbound=%q reason=host method=%s path=%q host=%q want=%q remote=%s", ib.tag, r.Method, r.URL.RequestURI(), r.Host, ib.xhttpHost, r.RemoteAddr)
 		xhttpBadRequest(w)
 		return
 	}
 	base, ok := ib.matchXHTTPPath(r.URL.Path)
 	if !ok {
-		log.Printf("native xray: xhttp reject inbound=%q reason=path method=%s path=%q want=%q host=%q remote=%s", ib.tag, r.Method, r.URL.RequestURI(), ib.path, r.Host, r.RemoteAddr)
+		xrayLogf("native xray: xhttp reject inbound=%q reason=path method=%s path=%q want=%q host=%q remote=%s", ib.tag, r.Method, r.URL.RequestURI(), ib.path, r.Host, r.RemoteAddr)
 		xhttpBadRequest(w)
 		return
 	}
@@ -158,7 +164,7 @@ func (ib *nativeInbound) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	sessionID, seqStr := ib.extractXHTTPMeta(r, base)
 	mode := ib.normalizedXHTTPMode()
-	log.Printf("native xray: xhttp request inbound=%q method=%s proto=%s path=%q host=%q session=%q seq=%q len=%d mode=%s remote=%s", ib.tag, r.Method, r.Proto, r.URL.RequestURI(), r.Host, sessionID, seqStr, r.ContentLength, mode, r.RemoteAddr)
+	xrayTracef("native xray: xhttp request inbound=%q method=%s proto=%s path=%q host=%q session=%q seq=%q len=%d mode=%s remote=%s", ib.tag, r.Method, r.Proto, r.URL.RequestURI(), r.Host, sessionID, seqStr, r.ContentLength, mode, r.RemoteAddr)
 
 	// Xray's SplitHTTP treats GET with a sequence id as an uplink packet, not as
 	// stream-down. Some clients use this when the upload payload is carried in
@@ -166,7 +172,10 @@ func (ib *nativeInbound) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// treated GET as download and dropped those packets, so normal sites such as
 	// fast.com could authenticate but then stall with no upstream data.
 	if r.Method == http.MethodGet && sessionID != "" && seqStr != "" {
-		sess := ib.upsertXHTTPSession(sessionID)
+		sess := ib.upsertXHTTPSession(w, sessionID)
+		if sess == nil {
+			return
+		}
 		ib.handleXHTTPPacketUpload(w, r, sess, seqStr)
 		return
 	}
@@ -179,7 +188,10 @@ func (ib *nativeInbound) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			xhttpBadRequest(w)
 			return
 		}
-		sess := ib.upsertXHTTPSession(sessionID)
+		sess := ib.upsertXHTTPSession(w, sessionID)
+		if sess == nil {
+			return
+		}
 		ib.handleXHTTPDownload(w, r, sess, sessionID)
 		return
 	}
@@ -203,7 +215,10 @@ func (ib *nativeInbound) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess := ib.upsertXHTTPSession(sessionID)
+	sess := ib.upsertXHTTPSession(w, sessionID)
+	if sess == nil {
+		return
+	}
 	if seqStr == "" {
 		ib.handleXHTTPStreamUpload(w, r, sess)
 		return
@@ -385,39 +400,70 @@ func extractXHTTPValue(r *http.Request, placement, key string) string {
 	return ""
 }
 
-func (ib *nativeInbound) upsertXHTTPSession(id string) *nativeXHTTPSession {
+func (ib *nativeInbound) upsertXHTTPSession(w http.ResponseWriter, id string) *nativeXHTTPSession {
 	ib.xhttpMu.Lock()
 	defer ib.xhttpMu.Unlock()
 	if ib.xhttpSessions == nil {
 		ib.xhttpSessions = make(map[string]*nativeXHTTPSession)
 	}
 	if s := ib.xhttpSessions[id]; s != nil {
+		s.touch()
 		return s
 	}
+	if max := ib.xhttpMaxActiveSessions(); max > 0 && len(ib.xhttpSessions) >= max {
+		xrayTracef("native xray: xhttp session rejected inbound=%q active=%d limit=%d", ib.tag, len(ib.xhttpSessions), max)
+		http.Error(w, "xhttp session limit reached", http.StatusTooManyRequests)
+		return nil
+	}
 	s := &nativeXHTTPSession{
-		id:    id,
-		queue: newNativeXHTTPUploadQueue(ib.xhttpMaxBufferedPosts),
-		done:  make(chan struct{}),
+		id:       id,
+		queue:    newNativeXHTTPUploadQueue(ib.xhttpMaxBufferedPosts),
+		done:     make(chan struct{}),
+		lastSeen: time.Now(),
 	}
 	ib.xhttpSessions[id] = s
-	log.Printf("native xray: xhttp session created inbound=%q session=%q", ib.tag, id)
-	go ib.reapUnconnectedXHTTPSession(id, s)
+	xrayTracef("native xray: xhttp session created inbound=%q session=%q active=%d", ib.tag, id, len(ib.xhttpSessions))
+	xrayGo(fmt.Sprintf("native xray XHTTP session reaper inbound=%q session=%q", ib.tag, id), func() { ib.reapUnconnectedXHTTPSession(id, s) })
 	return s
 }
 
+func (ib *nativeInbound) xhttpMaxActiveSessions() int {
+	if nativeXHTTPMaxSessionLimit() > 0 {
+		return nativeXHTTPMaxSessionLimit()
+	}
+	return defaultNativeXHTTPMaxSessions
+}
+
 func (ib *nativeInbound) reapUnconnectedXHTTPSession(id string, s *nativeXHTTPSession) {
-	t := time.NewTimer(30 * time.Second)
-	defer t.Stop()
-	select {
-	case <-t.C:
-		s.mu.Lock()
-		connected := s.connected
-		s.mu.Unlock()
-		if !connected {
-			ib.deleteXHTTPSession(id, s)
-			s.close()
+	// Keep the cheap unconnected cleanup, but also reap stale sessions that never
+	// receive their paired download/close because a mobile network or CDN path died.
+	unconnected := time.NewTimer(20 * time.Second)
+	stale := time.NewTicker(30 * time.Second)
+	defer unconnected.Stop()
+	defer stale.Stop()
+	for {
+		select {
+		case <-unconnected.C:
+			s.mu.Lock()
+			connected := s.connected
+			s.mu.Unlock()
+			if !connected {
+				ib.deleteXHTTPSession(id, s)
+				s.close()
+				return
+			}
+		case <-stale.C:
+			s.mu.Lock()
+			idle := time.Since(s.lastSeen)
+			s.mu.Unlock()
+			if idle > 5*time.Minute {
+				ib.deleteXHTTPSession(id, s)
+				s.close()
+				return
+			}
+		case <-s.done:
+			return
 		}
-	case <-s.done:
 	}
 }
 
@@ -430,13 +476,18 @@ func (ib *nativeInbound) deleteXHTTPSession(id string, s *nativeXHTTPSession) {
 }
 
 func (ib *nativeInbound) handleXHTTPStreamUpload(w http.ResponseWriter, r *http.Request, sess *nativeXHTTPSession) {
-	log.Printf("native xray: xhttp stream-up inbound=%q session=%q len=%d remote=%s", ib.tag, sess.id, r.ContentLength, r.RemoteAddr)
+	sess.touch()
+	xrayTracef("native xray: xhttp stream-up inbound=%q session=%q len=%d remote=%s", ib.tag, sess.id, r.ContentLength, r.RemoteAddr)
 	if ib.xhttpMode != "" && ib.xhttpMode != "auto" && ib.xhttpMode != "stream-up" && ib.xhttpMode != "stream-down" {
 		http.Error(w, "xhttp stream-up mode is not allowed", http.StatusBadRequest)
 		return
 	}
-	if err := sess.queue.push(nativeXHTTPPacket{Reader: r.Body}); err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
+	if err := sess.queue.pushContext(r.Context(), nativeXHTTPPacket{Reader: r.Body}, nativeXHTTPQueuePushTimeoutDuration()); err != nil {
+		status := http.StatusConflict
+		if errors.Is(err, errNativeXHTTPQueueFull) {
+			status = http.StatusTooManyRequests
+		}
+		http.Error(w, err.Error(), status)
 		return
 	}
 	w.Header().Set("X-Accel-Buffering", "no")
@@ -450,6 +501,7 @@ func (ib *nativeInbound) handleXHTTPStreamUpload(w http.ResponseWriter, r *http.
 }
 
 func (ib *nativeInbound) handleXHTTPPacketUpload(w http.ResponseWriter, r *http.Request, sess *nativeXHTTPSession, seqStr string) {
+	sess.touch()
 	if ib.xhttpMode != "" && ib.xhttpMode != "auto" && ib.xhttpMode != "packet-up" && ib.xhttpMode != "stream-down" {
 		http.Error(w, "xhttp packet-up mode is not allowed", http.StatusBadRequest)
 		return
@@ -464,10 +516,14 @@ func (ib *nativeInbound) handleXHTTPPacketUpload(w http.ResponseWriter, r *http.
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	log.Printf("native xray: xhttp packet-up inbound=%q session=%q seq=%d payload=%d remote=%s", ib.tag, sess.id, seq, len(payload), r.RemoteAddr)
-	if err := sess.queue.push(nativeXHTTPPacket{Payload: payload, Seq: seq}); err != nil {
-		log.Printf("native xray: xhttp packet-up push failed inbound=%q session=%q seq=%d: %v", ib.tag, sess.id, seq, err)
-		http.Error(w, err.Error(), http.StatusConflict)
+	xrayTracef("native xray: xhttp packet-up inbound=%q session=%q seq=%d payload=%d remote=%s", ib.tag, sess.id, seq, len(payload), r.RemoteAddr)
+	if err := sess.queue.pushContext(r.Context(), nativeXHTTPPacket{Payload: payload, Seq: seq}, nativeXHTTPQueuePushTimeoutDuration()); err != nil {
+		status := http.StatusConflict
+		if errors.Is(err, errNativeXHTTPQueueFull) {
+			status = http.StatusTooManyRequests
+		}
+		xrayTracef("native xray: xhttp packet-up push failed inbound=%q session=%q seq=%d: %v", ib.tag, sess.id, seq, err)
+		http.Error(w, err.Error(), status)
 		return
 	}
 	if len(payload) == 0 {
@@ -576,7 +632,8 @@ func (ib *nativeInbound) xhttpMaxPostBytes() int64 {
 }
 
 func (ib *nativeInbound) handleXHTTPStreamOne(w http.ResponseWriter, r *http.Request) {
-	log.Printf("native xray: xhttp stream-one inbound=%q len=%d remote=%s", ib.tag, r.ContentLength, r.RemoteAddr)
+	defer xrayRecover(fmt.Sprintf("native xray XHTTP stream-one inbound=%q remote=%s", ib.tag, r.RemoteAddr))
+	xrayTracef("native xray: xhttp stream-one inbound=%q len=%d remote=%s", ib.tag, r.ContentLength, r.RemoteAddr)
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.Header().Set("Cache-Control", "no-store")
 	if !ib.xhttpNoSSEHeader {
@@ -586,12 +643,14 @@ func (ib *nativeInbound) handleXHTTPStreamOne(w http.ResponseWriter, r *http.Req
 	flushHTTP(w)
 
 	remote := remoteAddrFromHTTPRequest(r)
+	resp := newNativeXHTTPResponseWriter(w)
 	xc := &nativeXHTTPConn{
 		reader: r.Body,
-		writer: &nativeXHTTPResponseWriter{w: w},
+		writer: resp,
 		remote: remote,
 		local:  dummyLocalAddr(r),
 		onClose: func() {
+			resp.close()
 			_ = r.Body.Close()
 		},
 	}
@@ -600,7 +659,9 @@ func (ib *nativeInbound) handleXHTTPStreamOne(w http.ResponseWriter, r *http.Req
 }
 
 func (ib *nativeInbound) handleXHTTPDownload(w http.ResponseWriter, r *http.Request, sess *nativeXHTTPSession, sessionID string) {
-	log.Printf("native xray: xhttp stream-down inbound=%q session=%q proto=%s remote=%s", ib.tag, sessionID, r.Proto, r.RemoteAddr)
+	sess.touch()
+	defer xrayRecover(fmt.Sprintf("native xray XHTTP download inbound=%q session=%q remote=%s", ib.tag, sessionID, r.RemoteAddr))
+	xrayTracef("native xray: xhttp stream-down inbound=%q session=%q proto=%s remote=%s", ib.tag, sessionID, r.Proto, r.RemoteAddr)
 	sess.markConnected()
 	defer ib.deleteXHTTPSession(sessionID, sess)
 
@@ -614,27 +675,31 @@ func (ib *nativeInbound) handleXHTTPDownload(w http.ResponseWriter, r *http.Requ
 
 	remote := remoteAddrFromHTTPRequest(r)
 	var reader io.Reader = sess.queue
+	resp := newNativeXHTTPResponseWriter(w)
 	xc := &nativeXHTTPConn{
 		reader: reader,
-		writer: &nativeXHTTPResponseWriter{w: w},
+		writer: resp,
 		remote: remote,
 		local:  dummyLocalAddr(r),
 	}
-	xc.onClose = sess.close
+	xc.onClose = func() {
+		resp.close()
+		sess.close()
+	}
 
 	ib.dispatchXHTTPConn(xc, remote)
 	_ = xc.Close()
 }
 
 func (ib *nativeInbound) dispatchXHTTPConn(xc net.Conn, remote net.Addr) {
-	log.Printf("native xray: xhttp dispatch inbound=%q protocol=%s remote=%s", ib.tag, ib.protocol, remote)
+	xrayTracef("native xray: xhttp dispatch inbound=%q protocol=%s remote=%s", ib.tag, ib.protocol, remote)
 	switch ib.protocol {
 	case "vless":
 		ib.handleVLESS(xc, remote)
 	case "vmess":
 		ib.handleVMess(xc, remote)
 	default:
-		log.Printf("native xray: inbound %q XHTTP protocol %q not supported", ib.tag, ib.protocol)
+		xrayLogf("native xray: inbound %q XHTTP protocol %q not supported", ib.tag, ib.protocol)
 	}
 }
 
@@ -666,11 +731,19 @@ type nativeXHTTPSession struct {
 	closeOnce sync.Once
 	mu        sync.Mutex
 	connected bool
+	lastSeen  time.Time
+}
+
+func (s *nativeXHTTPSession) touch() {
+	s.mu.Lock()
+	s.lastSeen = time.Now()
+	s.mu.Unlock()
 }
 
 func (s *nativeXHTTPSession) markConnected() {
 	s.mu.Lock()
 	s.connected = true
+	s.lastSeen = time.Now()
 	s.mu.Unlock()
 }
 
@@ -736,9 +809,21 @@ func (c *nativeXHTTPConn) SetReadDeadline(t time.Time) error {
 func (c *nativeXHTTPConn) SetWriteDeadline(time.Time) error { return nil }
 
 type nativeXHTTPResponseWriter struct {
-	mu     sync.Mutex
-	w      http.ResponseWriter
-	closed bool
+	mu           sync.Mutex
+	w            http.ResponseWriter
+	closed       bool
+	pendingFlush bool
+	lastFlush    time.Time
+	buffered     int
+	flushTimer   *time.Timer
+	timerActive  bool
+}
+
+func newNativeXHTTPResponseWriter(w http.ResponseWriter) *nativeXHTTPResponseWriter {
+	// The handler writes/flushed headers before the proxy stream is dispatched.
+	// Starting lastFlush at now prevents the first tiny mux packet from forcing an
+	// immediate extra flush for every user.
+	return &nativeXHTTPResponseWriter{w: w, lastFlush: time.Now()}
 }
 
 func (w *nativeXHTTPResponseWriter) Write(p []byte) (int, error) {
@@ -748,15 +833,62 @@ func (w *nativeXHTTPResponseWriter) Write(p []byte) (int, error) {
 		return 0, io.ErrClosedPipe
 	}
 	n, err := w.w.Write(p)
+	if n > 0 {
+		w.buffered += n
+	}
 	if err == nil {
-		flushHTTP(w.w)
+		w.flushMaybeLocked(false)
 	}
 	return n, err
 }
 
+func (w *nativeXHTTPResponseWriter) flushMaybeLocked(force bool) {
+	now := time.Now()
+	if force || w.buffered >= nativeXHTTPFlushByteLimit() || now.Sub(w.lastFlush) >= nativeXHTTPFlushIntervalDuration() {
+		flushHTTP(w.w)
+		w.lastFlush = now
+		w.buffered = 0
+		w.pendingFlush = false
+		w.timerActive = false
+		return
+	}
+	if w.pendingFlush {
+		return
+	}
+	w.pendingFlush = true
+	if w.timerActive {
+		return
+	}
+	w.timerActive = true
+	if w.flushTimer == nil {
+		w.flushTimer = time.AfterFunc(nativeXHTTPFlushIntervalDuration(), w.fireFlushTimer)
+	} else {
+		w.flushTimer.Reset(nativeXHTTPFlushIntervalDuration())
+	}
+}
+
+func (w *nativeXHTTPResponseWriter) fireFlushTimer() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.timerActive = false
+	if w.closed || !w.pendingFlush {
+		return
+	}
+	flushHTTP(w.w)
+	w.lastFlush = time.Now()
+	w.buffered = 0
+	w.pendingFlush = false
+}
+
 func (w *nativeXHTTPResponseWriter) close() {
 	w.mu.Lock()
-	w.closed = true
+	if !w.closed {
+		if w.flushTimer != nil {
+			w.flushTimer.Stop()
+		}
+		w.flushMaybeLocked(true)
+		w.closed = true
+	}
 	w.mu.Unlock()
 }
 
@@ -789,12 +921,23 @@ func newNativeXHTTPUploadQueue(maxPackets int) *nativeXHTTPUploadQueue {
 	}
 }
 
-func (q *nativeXHTTPUploadQueue) push(p nativeXHTTPPacket) error {
+var errNativeXHTTPQueueFull = errors.New("xhttp upload queue full")
+
+func (q *nativeXHTTPUploadQueue) pushContext(ctx context.Context, p nativeXHTTPPacket, timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = nativeXHTTPQueuePushTimeoutDuration()
+	}
+	t := time.NewTimer(timeout)
+	defer t.Stop()
 	select {
 	case q.pushedPackets <- p:
 		return nil
 	case <-q.closed:
 		return io.ErrClosedPipe
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return errNativeXHTTPQueueFull
 	}
 }
 

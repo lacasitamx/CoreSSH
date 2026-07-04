@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"sync"
 	"time"
@@ -29,24 +28,29 @@ const (
 func nativeVLESSUDPTunnel(client io.ReadWriteCloser, backend net.Conn, uuid, email string, up, down *rate.Limiter) {
 	xrayMgr.recordNativeConnect(uuid, email)
 	defer xrayMgr.recordNativeDisconnect(uuid, email)
+	defer xrayRecover(fmt.Sprintf("native xray VLESS UDP tunnel user=%s", email))
 
 	upMeter := &trafficMeter{uuid: uuid, email: email, uplink: true}
 	downMeter := &trafficMeter{uuid: uuid, email: email, uplink: false}
 
 	var wg sync.WaitGroup
+	var closeOnce sync.Once
 	closeAll := func() {
-		_ = backend.Close()
-		_ = client.Close()
+		closeOnce.Do(func() {
+			_ = backend.Close()
+			_ = client.Close()
+		})
 	}
 
 	wg.Add(1)
-	go func() {
+	xrayGo("native xray VLESS UDP uplink", func() {
 		defer wg.Done()
+		defer closeAll()
 		for {
 			payload, err := readVLESSLengthPacket(client)
 			if err != nil {
 				if err != io.EOF {
-					log.Printf("native xray: VLESS UDP client read failed: %v", err)
+					xrayLogf("native xray: VLESS UDP client read failed: %v", err)
 				}
 				return
 			}
@@ -61,15 +65,16 @@ func nativeVLESSUDPTunnel(client io.ReadWriteCloser, backend net.Conn, uuid, ema
 				upMeter.add(n)
 			}
 			if err != nil {
-				log.Printf("native xray: VLESS UDP backend write failed: %v", err)
+				xrayLogf("native xray: VLESS UDP backend write failed: %v", err)
 				return
 			}
 		}
-	}()
+	})
 
 	wg.Add(1)
-	go func() {
+	xrayGo("native xray VLESS UDP downlink", func() {
 		defer wg.Done()
+		defer closeAll()
 		buf := make([]byte, nativeUDPBufferSize)
 		for {
 			_ = backend.SetReadDeadline(time.Now().Add(nativeUDPIdle))
@@ -79,7 +84,7 @@ func nativeVLESSUDPTunnel(client io.ReadWriteCloser, backend net.Conn, uuid, ema
 					return
 				}
 				if err != io.EOF {
-					log.Printf("native xray: VLESS UDP backend read failed: %v", err)
+					xrayLogf("native xray: VLESS UDP backend read failed: %v", err)
 				}
 				return
 			}
@@ -90,12 +95,12 @@ func nativeVLESSUDPTunnel(client io.ReadWriteCloser, backend net.Conn, uuid, ema
 				return
 			}
 			if err := writeVLESSLengthPacket(client, buf[:n]); err != nil {
-				log.Printf("native xray: VLESS UDP client write failed: %v", err)
+				xrayLogf("native xray: VLESS UDP client write failed: %v", err)
 				return
 			}
 			downMeter.add(n)
 		}
-	}()
+	})
 
 	wg.Wait()
 	upMeter.flush()
@@ -198,12 +203,12 @@ func writeVLESSLengthPacket(w io.Writer, payload []byte) error {
 	if len(payload) > nativeUDPMaxPacket {
 		return fmt.Errorf("udp packet too large: %d", len(payload))
 	}
-	var lenBuf [2]byte
-	binary.BigEndian.PutUint16(lenBuf[:], uint16(len(payload)))
-	if _, err := w.Write(lenBuf[:]); err != nil {
-		return err
-	}
-	_, err := w.Write(payload)
+	// One Write is important for XHTTP because the response writer flushes once per
+	// Write. Two writes per UDP packet doubles flush/syscall pressure.
+	frame := make([]byte, 0, 2+len(payload))
+	frame = appendUint16(frame, uint16(len(payload)))
+	frame = append(frame, payload...)
+	_, err := w.Write(frame)
 	return err
 }
 
@@ -299,24 +304,29 @@ func writeVLESSXUDPPacket(w io.Writer, payload []byte) error {
 func nativeVMessUDPTunnel(client nativeVMessStream, backend net.Conn, uuid, email string, up, down *rate.Limiter) {
 	xrayMgr.recordNativeConnect(uuid, email)
 	defer xrayMgr.recordNativeDisconnect(uuid, email)
+	defer xrayRecover(fmt.Sprintf("native xray VMess UDP tunnel user=%s", email))
 
 	upMeter := &trafficMeter{uuid: uuid, email: email, uplink: true}
 	downMeter := &trafficMeter{uuid: uuid, email: email, uplink: false}
 
 	var wg sync.WaitGroup
+	var closeOnce sync.Once
 	closeAll := func() {
-		_ = backend.Close()
-		_ = client.Close()
+		closeOnce.Do(func() {
+			_ = backend.Close()
+			_ = client.Close()
+		})
 	}
 
 	wg.Add(1)
-	go func() {
+	xrayGo("native xray VMess UDP uplink", func() {
 		defer wg.Done()
+		defer closeAll()
 		for {
 			pkt, err := client.ReadPacket()
 			if err != nil {
 				if err != io.EOF {
-					log.Printf("native xray: VMess UDP client read failed: %v", err)
+					xrayLogf("native xray: VMess UDP client read failed: %v", err)
 				}
 				return
 			}
@@ -331,15 +341,16 @@ func nativeVMessUDPTunnel(client nativeVMessStream, backend net.Conn, uuid, emai
 				upMeter.add(n)
 			}
 			if err != nil {
-				log.Printf("native xray: VMess UDP backend write failed: %v", err)
+				xrayLogf("native xray: VMess UDP backend write failed: %v", err)
 				return
 			}
 		}
-	}()
+	})
 
 	wg.Add(1)
-	go func() {
+	xrayGo("native xray VMess UDP downlink", func() {
 		defer wg.Done()
+		defer closeAll()
 		buf := make([]byte, nativeUDPBufferSize)
 		for {
 			_ = backend.SetReadDeadline(time.Now().Add(nativeUDPIdle))
@@ -349,7 +360,7 @@ func nativeVMessUDPTunnel(client nativeVMessStream, backend net.Conn, uuid, emai
 					return
 				}
 				if err != io.EOF {
-					log.Printf("native xray: VMess UDP backend read failed: %v", err)
+					xrayLogf("native xray: VMess UDP backend read failed: %v", err)
 				}
 				return
 			}
@@ -360,12 +371,12 @@ func nativeVMessUDPTunnel(client nativeVMessStream, backend net.Conn, uuid, emai
 				return
 			}
 			if err := client.WritePacket(buf[:n]); err != nil {
-				log.Printf("native xray: VMess UDP client write failed: %v", err)
+				xrayLogf("native xray: VMess UDP client write failed: %v", err)
 				return
 			}
 			downMeter.add(n)
 		}
-	}()
+	})
 
 	wg.Wait()
 	upMeter.flush()

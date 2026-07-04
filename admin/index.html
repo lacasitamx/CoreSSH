@@ -1188,6 +1188,30 @@
           </label>
           <div class="field" style="margin-top:8px;"><label>Runtime mode</label><select id="cfgXrayMode"><option value="native">Internal native emulator</option><option value="external">External xray binary</option></select></div>
           <div class="hint" style="margin-top:6px;color:var(--muted);">Native runs inside DragonCoreSSH. External uses /opt/sshpanel/xray with DB-backed /opt/sshpanel/xray_config.json and Stats API on 127.0.0.1:10085.</div>
+          <details style="margin-top:10px;" open>
+            <summary style="cursor:pointer;font-size:.76rem;font-weight:700;color:var(--text);">Native Xray scale tuning</summary>
+            <div class="grid2" style="margin-top:10px;gap:8px;">
+              <div class="field"><label>Mux sessions per connection</label><input type="number" min="1" id="cfgXrayMuxMaxSessions" placeholder="128"/></div>
+              <div class="field"><label>Global mux backend sessions</label><input type="number" min="1" id="cfgXrayMuxGlobalSessions" placeholder="32768"/></div>
+              <div class="field"><label>Mux UDP idle ms</label><input type="number" min="1000" id="cfgXrayMuxUdpIdleMs" placeholder="15000"/></div>
+              <div class="field"><label>Mux UDP read buffer bytes</label><input type="number" min="4096" id="cfgXrayMuxUdpRbuf" placeholder="262144"/></div>
+              <div class="field"><label>Mux UDP write buffer bytes</label><input type="number" min="4096" id="cfgXrayMuxUdpWbuf" placeholder="262144"/></div>
+              <div class="field"><label>XHTTP max active sessions</label><input type="number" min="1" id="cfgXrayXhttpMaxSessions" placeholder="16384"/></div>
+              <div class="field"><label>XHTTP buffered posts</label><input type="number" min="1" id="cfgXrayXhttpBufferedPosts" placeholder="64"/></div>
+              <div class="field"><label>XHTTP queue timeout ms</label><input type="number" min="10" id="cfgXrayXhttpQueueTimeoutMs" placeholder="250"/></div>
+              <div class="field"><label>XHTTP flush ms</label><input type="number" min="1" id="cfgXrayXhttpFlushMs" placeholder="5"/></div>
+              <div class="field"><label>XHTTP flush bytes</label><input type="number" min="1024" id="cfgXrayXhttpFlushBytes" placeholder="131072"/></div>
+              <div class="field"><label>HTTP/2 max streams</label><input type="number" min="1" id="cfgXrayH2MaxStreams" placeholder="1024"/></div>
+              <div class="field"><label>HTTP/2 upload buffer / conn</label><input type="number" min="65536" id="cfgXrayH2UploadConn" placeholder="1048576"/></div>
+              <div class="field"><label>HTTP/2 upload buffer / stream</label><input type="number" min="32768" id="cfgXrayH2UploadStream" placeholder="262144"/></div>
+              <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;grid-column:1/-1"><input type="checkbox" id="cfgXrayTracePackets"/> Trace every XHTTP/mux packet <span class="hint">debug only, slows QUIC</span></label>
+              <div class="card-actions" style="grid-column:1/-1;">
+                <button class="btn btn-ghost btn-sm" type="button" onclick="setXrayNativeTuningDefaults('2k')">Apply 2K defaults</button>
+                <button class="btn btn-ghost btn-sm" type="button" onclick="setXrayNativeTuningDefaults('safe')">Apply safe defaults</button>
+              </div>
+              <div class="hint" style="grid-column:1/-1;margin-top:-4px;">These values are saved in the panel config and applied live on restart/reload. No systemd Environment lines are needed.</div>
+            </div>
+          </details>
         </div>
 
       </div><!-- /right -->
@@ -1211,6 +1235,6 @@
 </div><!-- /shell -->
 </div><!-- /app -->
 
-<script defer src="assets/app.js?v=20260622dnsttfakednsfast"></script>
+<script defer src="assets/app.js?v=20260704xrayadmintune2"></script>
 </body>
 </html>

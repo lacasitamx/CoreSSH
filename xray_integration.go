@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -49,6 +48,10 @@ type XrayConfig struct {
 	// clients are preserved when the server has IPv6 connectivity. force_ipv4 is
 	// only kept as an explicit legacy override.
 	NativeIPStrategy string `json:"native_ip_strategy,omitempty"` // auto | force_ipv4
+
+	// NativeTuning exposes native-emulator scale/performance knobs in the admin panel.
+	// These replace the old XRAY_NATIVE_* systemd environment overrides.
+	NativeTuning *XrayNativeTuning `json:"native_tuning,omitempty"`
 }
 
 const (
@@ -94,6 +97,9 @@ func (c *XrayConfig) NormalizeDefaults() {
 	default:
 		c.NativeIPStrategy = xrayNativeIPStrategyAuto
 	}
+	tuning := normalizeNativeXrayTuning(c.NativeTuning)
+	c.NativeTuning = &tuning
+	applyNativeXrayTuning(c.NativeTuning)
 }
 
 func (c *XrayConfig) NativeForceIPv4() bool {
@@ -155,7 +161,12 @@ type xrayLogRing struct {
 	pos   int
 }
 
-const xrayLogCap = 200
+const (
+	xrayLogCap              = 5000
+	xrayForcedLogLevel      = "debug"
+	xrayForcedAccessLogPath = "/dev/stdout"
+	xrayForcedErrorLogPath  = "/dev/stderr"
+)
 
 func (r *xrayLogRing) add(line string) {
 	r.mu.Lock()
@@ -198,6 +209,38 @@ func (w xrayWriter) Write(p []byte) (int, error) {
 		}
 	}
 	return os.Stderr.Write(p)
+}
+
+// xrayLogf writes native/runtime Xray debug messages directly to stderr and
+// to the in-memory Xray log ring. It intentionally bypasses the global
+// standard logger because the panel can run in quiet mode and call
+// log.SetOutput(io.Discard). Xray debug logs must remain visible while
+// troubleshooting transport issues.
+func xrayLogf(format string, args ...interface{}) {
+	msg := strings.TrimRight(fmt.Sprintf(format, args...), "\n")
+	if strings.TrimSpace(msg) == "" {
+		return
+	}
+	ts := time.Now().Format("2006/01/02 15:04:05")
+	for _, line := range strings.Split(msg, "\n") {
+		if line == "" {
+			continue
+		}
+		full := ts + " " + line
+		xrayLogBuf.add(full)
+		_, _ = fmt.Fprintln(os.Stderr, full)
+	}
+}
+
+// xrayTracef is for very hot transport-level traces such as every XHTTP packet.
+// Leaving those on under many QUIC users can bottleneck on journald/stderr and
+// make the tunnel appear slow. Enable only when packet-level tracing is needed:
+// Enable packet-level tracing from Admin Panel -> Xray Native Scale -> Trace packets.
+func xrayTracef(format string, args ...interface{}) {
+	if !nativeTracePacketsEnabled() {
+		return
+	}
+	xrayLogf(format, args...)
 }
 
 // XrayManager manages the lifecycle of the external xray subprocess.
@@ -249,7 +292,7 @@ func initXrayManager(cfg *XrayConfig) {
 	xrayMgr.mu.Lock()
 	xrayMgr.cfg = cfg
 	if err := xrayMgr.bootstrapConfigStoreLocked(); err != nil {
-		log.Printf("xray: database config bootstrap failed: %v", err)
+		xrayLogf("xray: database config bootstrap failed: %v", err)
 	}
 	xrayMgr.mu.Unlock()
 
@@ -263,7 +306,7 @@ func initXrayManager(cfg *XrayConfig) {
 
 	if cfg.Enabled {
 		if err := xrayMgr.Start(); err != nil {
-			log.Printf("xray: auto-start failed: %v", err)
+			xrayLogf("xray: auto-start failed: %v", err)
 		}
 	}
 }
@@ -290,11 +333,16 @@ func (m *XrayManager) Start() error {
 	if m.cfg == nil {
 		return fmt.Errorf("xray not configured")
 	}
+	m.cfg.NormalizeDefaults()
 	if err := m.syncConfigFileFromStoreLocked(); err != nil {
 		m.lastErr = err.Error()
 		return err
 	}
 	configFile := m.activeConfigFileLocked()
+	if _, err := m.readConfigLocked(); err != nil && !os.IsNotExist(err) {
+		m.lastErr = err.Error()
+		return err
+	}
 
 	// Native mode: run the in-process emulator instead of the subprocess.
 	if m.cfg.UseNative() {
@@ -319,7 +367,7 @@ func (m *XrayManager) Start() error {
 	if changed, err := m.ensureStatsAPIConfigLocked(); err != nil {
 		return fmt.Errorf("xray stats api check failed: %w", err)
 	} else if changed {
-		log.Printf("xray: repaired Stats API support in config before start")
+		xrayLogf("xray: repaired Stats API support and forced debug logs in config before start")
 	}
 
 	args := []string{"run"}
@@ -350,10 +398,10 @@ func (m *XrayManager) Start() error {
 			m.lastErr = err.Error()
 		}
 		m.mu.Unlock()
-		log.Printf("xray: process exited: %v", err)
+		xrayLogf("xray: process exited: %v", err)
 	}()
 
-	log.Printf("xray: started (pid %d)", cmd.Process.Pid)
+	xrayLogf("xray: started (pid %d)", cmd.Process.Pid)
 	return nil
 }
 
@@ -386,7 +434,7 @@ func (m *XrayManager) Stop() error {
 		case <-time.After(2 * time.Second):
 		}
 	}
-	log.Printf("xray: stopped")
+	xrayLogf("xray: stopped")
 	return nil
 }
 
@@ -423,13 +471,13 @@ func (m *XrayManager) recordNativeConnect(uuid, email string) {
 	m.statsMu.Unlock()
 
 	if statsStore != nil && uuid != "" {
-		go func() {
+		xrayGo("native xray stats active increment", func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
 			if err := statsStore.UpdateXrayClientActive(ctx, uuid, email, 1); err != nil {
-				log.Printf("xray native stats: active +1 for %s failed: %v", uuid, err)
+				xrayLogf("xray native stats: active +1 for %s failed: %v", uuid, err)
 			}
-		}()
+		})
 	}
 }
 
@@ -453,13 +501,13 @@ func (m *XrayManager) recordNativeDisconnect(uuid, email string) {
 	m.statsMu.Unlock()
 
 	if statsStore != nil && uuid != "" {
-		go func() {
+		xrayGo("native xray stats active decrement", func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
 			if err := statsStore.UpdateXrayClientActive(ctx, uuid, email, -1); err != nil {
-				log.Printf("xray native stats: active -1 for %s failed: %v", uuid, err)
+				xrayLogf("xray native stats: active -1 for %s failed: %v", uuid, err)
 			}
-		}()
+		})
 	}
 }
 
@@ -511,13 +559,13 @@ func (m *XrayManager) startNativeStatsFlusher() {
 	m.nativeStatsFlushStarted = true
 	m.nativeDBMu.Unlock()
 
-	go func() {
+	xrayGo("native xray stats flusher", func() {
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
 			m.flushNativeStatsToDB()
 		}
-	}()
+	})
 }
 
 func (m *XrayManager) flushNativeStatsToDB() {
@@ -534,7 +582,7 @@ func (m *XrayManager) flushNativeStatsToDB() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := statsStore.AddXrayClientTrafficBatch(ctx, pending); err != nil {
-		log.Printf("xray native stats: db traffic flush failed: %v", err)
+		xrayLogf("xray native stats: db traffic flush failed: %v", err)
 		// Put deltas back so a transient DB failure does not lose accounting.
 		m.nativeDBMu.Lock()
 		if m.nativeTrafficPending == nil {
@@ -964,6 +1012,55 @@ func normalizeJSONIndent(data []byte) ([]byte, error) {
 	return json.MarshalIndent(raw, "", "  ")
 }
 
+func forceXrayDebugLogBytes(data []byte) ([]byte, bool, error) {
+	if !json.Valid(data) {
+		return nil, false, fmt.Errorf("invalid JSON")
+	}
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, false, fmt.Errorf("parse xray config: %w", err)
+	}
+	if raw == nil {
+		return nil, false, fmt.Errorf("xray config must be a JSON object")
+	}
+	changed := ensureXrayForcedDebugLogConfig(raw)
+	if !changed {
+		return data, false, nil
+	}
+	out, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return nil, false, err
+	}
+	return out, true, nil
+}
+
+func ensureXrayForcedDebugLogConfig(raw map[string]interface{}) bool {
+	changed := false
+	logObj := asObject(raw["log"])
+	if logObj == nil {
+		logObj = map[string]interface{}{}
+		raw["log"] = logObj
+		changed = true
+	}
+	if v, _ := logObj["access"].(string); v != xrayForcedAccessLogPath {
+		logObj["access"] = xrayForcedAccessLogPath
+		changed = true
+	}
+	if v, _ := logObj["error"].(string); v != xrayForcedErrorLogPath {
+		logObj["error"] = xrayForcedErrorLogPath
+		changed = true
+	}
+	if v, _ := logObj["loglevel"].(string); !strings.EqualFold(v, xrayForcedLogLevel) {
+		logObj["loglevel"] = xrayForcedLogLevel
+		changed = true
+	}
+	if v, _ := logObj["dnsLog"].(bool); !v {
+		logObj["dnsLog"] = true
+		changed = true
+	}
+	return changed
+}
+
 func (m *XrayManager) readConfigLocked() ([]byte, error) {
 	configFile := m.activeConfigFileLocked()
 	if m.cfg == nil || configFile == "" {
@@ -971,8 +1068,15 @@ func (m *XrayManager) readConfigLocked() ([]byte, error) {
 	}
 	if statsStore != nil {
 		if data, ok, err := statsStore.GetXrayConfig(context.Background(), m.configStoreKeyLocked()); err != nil {
-			log.Printf("xray: database config read failed, falling back to file: %v", err)
+			xrayLogf("xray: database config read failed, falling back to file: %v", err)
 		} else if ok {
+			if forced, changed, err := forceXrayDebugLogBytes(data); err != nil {
+				return nil, err
+			} else if changed {
+				data = forced
+				_ = statsStore.UpsertXrayConfig(context.Background(), m.configStoreKeyLocked(), forced)
+				xrayLogf("xray: forced debug log output in database config")
+			}
 			pretty, err := normalizeJSONIndent(data)
 			if err != nil {
 				return nil, err
@@ -981,13 +1085,30 @@ func (m *XrayManager) readConfigLocked() ([]byte, error) {
 			return pretty, nil
 		}
 	}
-	return os.ReadFile(configFile)
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		return nil, err
+	}
+	if forced, changed, err := forceXrayDebugLogBytes(data); err != nil {
+		return nil, err
+	} else if changed {
+		data = forced
+		_ = os.WriteFile(configFile, forced, 0o600)
+		xrayLogf("xray: forced debug log output in file config")
+	}
+	return data, nil
 }
 
 func (m *XrayManager) writeConfigLocked(data []byte) error {
 	configFile := m.activeConfigFileLocked()
 	if m.cfg == nil || configFile == "" {
 		return fmt.Errorf("xray config file not configured")
+	}
+	if forced, changed, err := forceXrayDebugLogBytes(data); err != nil {
+		return err
+	} else if changed {
+		data = forced
+		xrayLogf("xray: forced debug log output while saving config")
 	}
 	pretty, err := normalizeJSONIndent(data)
 	if err != nil {
@@ -1011,11 +1132,11 @@ func (m *XrayManager) importConfigClientsLocked(data []byte, source string) {
 	}
 	n, err := statsStore.ImportXrayClientsFromConfig(context.Background(), data)
 	if err != nil {
-		log.Printf("xray: import clients from %s failed: %v", source, err)
+		xrayLogf("xray: import clients from %s failed: %v", source, err)
 		return
 	}
 	if n > 0 {
-		log.Printf("xray: imported/synced %d client UUIDs from %s into database", n, source)
+		xrayLogf("xray: imported/synced %d client UUIDs from %s into database", n, source)
 	}
 }
 
@@ -1027,13 +1148,13 @@ func (m *XrayManager) importRuntimeConfigFileClientsLocked(source string) {
 	data, err := os.ReadFile(configFile)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			log.Printf("xray: read %s for client import failed: %v", configFile, err)
+			xrayLogf("xray: read %s for client import failed: %v", configFile, err)
 		}
 		return
 	}
 	pretty, err := normalizeJSONIndent(data)
 	if err != nil {
-		log.Printf("xray: cannot import clients from %s: invalid JSON: %v", configFile, err)
+		xrayLogf("xray: cannot import clients from %s: invalid JSON: %v", configFile, err)
 		return
 	}
 	m.importConfigClientsLocked(pretty, source)
@@ -1048,7 +1169,7 @@ func (m *XrayManager) restartIfExternalRunning() {
 		return
 	}
 	if err := m.Restart(); err != nil {
-		log.Printf("xray: external restart after client/config change failed: %v", err)
+		xrayLogf("xray: external restart after client/config change failed: %v", err)
 	}
 }
 
@@ -1069,6 +1190,15 @@ func (m *XrayManager) bootstrapConfigStoreLocked() error {
 	if data, ok, err := statsStore.GetXrayConfig(ctx, key); err != nil {
 		return err
 	} else if ok {
+		if forced, changed, err := forceXrayDebugLogBytes(data); err != nil {
+			return err
+		} else if changed {
+			data = forced
+			if err := statsStore.UpsertXrayConfig(ctx, key, forced); err != nil {
+				return err
+			}
+			xrayLogf("xray: forced debug log output during config bootstrap")
+		}
 		pretty, err := normalizeJSONIndent(data)
 		if err != nil {
 			return err
@@ -1086,6 +1216,12 @@ func (m *XrayManager) bootstrapConfigStoreLocked() error {
 			if migrated, migErr := m.seedNativeConfigFromExternalLocked(configFile); migErr != nil {
 				return migErr
 			} else if len(migrated) > 0 {
+				if forced, changed, err := forceXrayDebugLogBytes(migrated); err != nil {
+					return err
+				} else if changed {
+					migrated = forced
+					xrayLogf("xray: forced debug log output during native config migration")
+				}
 				pretty, err := normalizeJSONIndent(migrated)
 				if err != nil {
 					return err
@@ -1101,6 +1237,12 @@ func (m *XrayManager) bootstrapConfigStoreLocked() error {
 			return nil
 		}
 		return err
+	}
+	if forced, changed, err := forceXrayDebugLogBytes(data); err != nil {
+		return err
+	} else if changed {
+		data = forced
+		xrayLogf("xray: forced debug log output while importing runtime config")
 	}
 	pretty, err := normalizeJSONIndent(data)
 	if err != nil {
@@ -1128,7 +1270,7 @@ func (m *XrayManager) seedNativeConfigFromExternalLocked(nativeConfigFile string
 	if _, err := normalizeJSONIndent(data); err != nil {
 		return nil, err
 	}
-	log.Printf("xray native: cloned %s to independent native config %s once", ext, nativeConfigFile)
+	xrayLogf("xray native: cloned %s to independent native config %s once", ext, nativeConfigFile)
 	return data, nil
 }
 
@@ -1140,6 +1282,15 @@ func (m *XrayManager) syncConfigFileFromStoreLocked() error {
 	data, ok, err := statsStore.GetXrayConfig(context.Background(), m.configStoreKeyLocked())
 	if err != nil || !ok {
 		return err
+	}
+	if forced, changed, err := forceXrayDebugLogBytes(data); err != nil {
+		return err
+	} else if changed {
+		data = forced
+		if err := statsStore.UpsertXrayConfig(context.Background(), m.configStoreKeyLocked(), forced); err != nil {
+			return err
+		}
+		xrayLogf("xray: forced debug log output while syncing config")
 	}
 	pretty, err := normalizeJSONIndent(data)
 	if err != nil {
@@ -1166,7 +1317,7 @@ func (m *XrayManager) SetConfig(data []byte) error {
 		return err
 	}
 	if changed {
-		log.Printf("xray: added/repaired Stats API support while saving config")
+		xrayLogf("xray: added/repaired Stats API support and forced debug logs while saving config")
 	}
 	return m.writeConfigLocked(patched)
 }
@@ -1238,6 +1389,9 @@ func patchXrayStatsAPIBytes(data []byte) ([]byte, bool, error) {
 		return nil, false, fmt.Errorf("xray config must be a JSON object")
 	}
 	changed, _ := ensureXrayStatsAPIConfig(raw)
+	if ensureXrayForcedDebugLogConfig(raw) {
+		changed = true
+	}
 	if !changed {
 		return data, false, nil
 	}
@@ -1666,7 +1820,7 @@ func handleXrayStatus(w http.ResponseWriter, r *http.Request) {
 			wasRunning := xrayMgr.isRunningSnapshot()
 			if changed, err := xrayMgr.EnsureStatsAPIConfig(); err == nil && changed && wasRunning {
 				if err := xrayMgr.Restart(); err != nil {
-					log.Printf("xray: auto stats repair restart failed: %v", err)
+					xrayLogf("xray: auto stats repair restart failed: %v", err)
 				}
 			}
 		}
@@ -1992,7 +2146,7 @@ func (m *XrayManager) AddXrayClient(inboundTag, uuid, email string) error {
 	})
 	if err == nil && m.cfg != nil && m.cfg.UseNative() {
 		if hotErr := nativeXray.addClient(inboundTag, uuid, email); hotErr != nil {
-			log.Printf("native xray: hot-add client %s to %s failed: %v", uuid, inboundTag, hotErr)
+			xrayLogf("native xray: hot-add client %s to %s failed: %v", uuid, inboundTag, hotErr)
 		}
 	}
 	return err
@@ -2044,7 +2198,7 @@ func (m *XrayManager) RemoveXrayClient(inboundTag, uuid string) error {
 	})
 	if err == nil && m.cfg != nil && m.cfg.UseNative() {
 		if hotErr := nativeXray.removeClient(inboundTag, uuid); hotErr != nil {
-			log.Printf("native xray: hot-remove client %s from %s failed: %v", uuid, inboundTag, hotErr)
+			xrayLogf("native xray: hot-remove client %s from %s failed: %v", uuid, inboundTag, hotErr)
 		}
 	}
 	return err
@@ -2090,7 +2244,7 @@ func (m *XrayManager) UpdateXrayClientEmail(uuid, email string) error {
 	})
 	if err == nil && m.cfg != nil && m.cfg.UseNative() {
 		if hotErr := nativeXray.updateClientEmail(uuid, email); hotErr != nil {
-			log.Printf("native xray: hot-update client %s email failed: %v", uuid, hotErr)
+			xrayLogf("native xray: hot-update client %s email failed: %v", uuid, hotErr)
 		}
 	}
 	return err
@@ -2359,7 +2513,7 @@ func handleXrayClientAdd(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if err := statsStore.UpsertXrayClientMeta(r.Context(), meta); err != nil {
-			log.Printf("xray: save meta for %s: %v", req.UUID, err)
+			xrayLogf("xray: save meta for %s: %v", req.UUID, err)
 		}
 	}
 	xrayMgr.restartIfExternalRunning()
@@ -2445,7 +2599,7 @@ func handleXrayClientUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Email != "" {
 		if err := xrayMgr.UpdateXrayClientEmail(req.UUID, req.Email); err != nil {
-			log.Printf("xray: update config email for %s: %v", req.UUID, err)
+			xrayLogf("xray: update config email for %s: %v", req.UUID, err)
 		} else {
 			xrayMgr.restartIfExternalRunning()
 		}

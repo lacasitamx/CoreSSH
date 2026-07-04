@@ -115,6 +115,66 @@ func TestVLESSOverTCP(t *testing.T) {
 	}
 }
 
+func vlessDNSSinkHeader(id [16]byte, cmd byte, host net.IP, port uint16) []byte {
+	var b bytes.Buffer
+	b.WriteByte(0)
+	b.Write(id[:])
+	b.WriteByte(0)
+	b.WriteByte(cmd)
+	b.WriteByte(byte(port >> 8))
+	b.WriteByte(byte(port))
+	if ip4 := host.To4(); ip4 != nil {
+		b.WriteByte(atypIPv4)
+		b.Write(ip4)
+	} else {
+		b.WriteByte(atypIPv6)
+		b.Write(host.To16())
+	}
+	return b.Bytes()
+}
+
+func TestVLESSDNSSinkTargetFastIgnored(t *testing.T) {
+	_, port, id, stop := newTestInbound(t, "tcp", "")
+	defer stop()
+
+	conn, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", itoa(port)))
+	if err != nil {
+		t.Fatalf("dial inbound: %v", err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(2 * time.Second))
+
+	if _, err := conn.Write(vlessDNSSinkHeader(id, vlessCmdTCP, net.IPv4(0, 0, 0, 0), 0)); err != nil {
+		t.Fatalf("write sink header: %v", err)
+	}
+
+	resp := make([]byte, 2)
+	if _, err := io.ReadFull(conn, resp); err != nil {
+		t.Fatalf("read VLESS sink response: %v", err)
+	}
+	if resp[0] != 0 || resp[1] != 0 {
+		t.Fatalf("bad VLESS sink response: %v", resp)
+	}
+
+	buf := make([]byte, 1)
+	if _, err := conn.Read(buf); err == nil {
+		t.Fatalf("sink target should close immediately after response")
+	}
+}
+
+func TestNativeDNSSinkTargetDetection(t *testing.T) {
+	for _, host := range []string{"0.0.0.0", "::", "[::]", "::%lo"} {
+		if !isNativeDNSSinkTarget(host) {
+			t.Fatalf("%q should be detected as DNS sink", host)
+		}
+	}
+	for _, host := range []string{"", "127.0.0.1", "1.1.1.1", "example.com"} {
+		if isNativeDNSSinkTarget(host) {
+			t.Fatalf("%q should not be detected as DNS sink", host)
+		}
+	}
+}
+
 func TestVLESSRejectsUnknownUUID(t *testing.T) {
 	echoPort, stopEcho := startEchoServer(t)
 	defer stopEcho()
@@ -576,5 +636,245 @@ func TestNativeLocalAddrForIPv6Tunnel(t *testing.T) {
 
 	if local := nativeLocalAddrForDial("tcp", "2606:4700:4700::1111", "0.0.0.0"); local != nil {
 		t.Fatalf("must not bind IPv4 source to IPv6 target: %#v", local)
+	}
+}
+
+func startUDPEchoServer(t *testing.T) (int, func()) {
+	t.Helper()
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("udp echo listen: %v", err)
+	}
+	go func() {
+		buf := make([]byte, 64*1024)
+		for {
+			n, addr, err := pc.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			_, _ = pc.WriteTo(buf[:n], addr)
+		}
+	}()
+	return pc.LocalAddr().(*net.UDPAddr).Port, func() { pc.Close() }
+}
+
+func vlessMuxHeader(id [16]byte) []byte {
+	var b bytes.Buffer
+	b.WriteByte(0)
+	b.Write(id[:])
+	b.WriteByte(0)
+	b.WriteByte(vlessCmdMux)
+	return b.Bytes()
+}
+
+func buildMuxUDPFrame(sessionID uint16, host string, port int, payload []byte) []byte {
+	meta := []byte{byte(sessionID >> 8), byte(sessionID), nativeMuxStatusNew, nativeMuxOptionData, nativeMuxNetworkUDP}
+	meta = appendNativeMuxAddressPort(meta, host, uint16(port))
+	var out bytes.Buffer
+	binary.Write(&out, binary.BigEndian, uint16(len(meta)))
+	out.Write(meta)
+	binary.Write(&out, binary.BigEndian, uint16(len(payload)))
+	out.Write(payload)
+	return out.Bytes()
+}
+
+func buildMuxTCPFrame(sessionID uint16, host string, port int, payload []byte) []byte {
+	meta := []byte{byte(sessionID >> 8), byte(sessionID), nativeMuxStatusNew, nativeMuxOptionData, nativeMuxNetworkTCP}
+	meta = appendNativeMuxAddressPort(meta, host, uint16(port))
+	var out bytes.Buffer
+	binary.Write(&out, binary.BigEndian, uint16(len(meta)))
+	out.Write(meta)
+	binary.Write(&out, binary.BigEndian, uint16(len(payload)))
+	out.Write(payload)
+	return out.Bytes()
+}
+
+func buildMuxXUDPFrame(sessionID uint16, host string, port int, payload []byte, gid [8]byte) []byte {
+	meta := []byte{byte(sessionID >> 8), byte(sessionID), nativeMuxStatusNew, nativeMuxOptionData, nativeMuxNetworkUDP}
+	meta = appendNativeMuxAddressPort(meta, host, uint16(port))
+	meta = append(meta, gid[:]...)
+	var out bytes.Buffer
+	binary.Write(&out, binary.BigEndian, uint16(len(meta)))
+	out.Write(meta)
+	// Official Mux.Cool/XUDP carries GlobalID in the outer New metadata. The
+	// following packet block is the UDP datagram itself, not another XUDP metadata
+	// stream.
+	binary.Write(&out, binary.BigEndian, uint16(len(payload)))
+	out.Write(payload)
+	return out.Bytes()
+}
+
+func TestVLESSMuxUDPDoesNotStall(t *testing.T) {
+	udpPort, stopUDP := startUDPEchoServer(t)
+	defer stopUDP()
+	_, port, id, stop := newTestInbound(t, "tcp", "")
+	defer stop()
+
+	conn, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", itoa(port)))
+	if err != nil {
+		t.Fatalf("dial inbound: %v", err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	if _, err := conn.Write(vlessMuxHeader(id)); err != nil {
+		t.Fatalf("write mux header: %v", err)
+	}
+	resp := make([]byte, 2)
+	if _, err := io.ReadFull(conn, resp); err != nil {
+		t.Fatalf("read mux response header: %v", err)
+	}
+	if resp[0] != 0 || resp[1] != 0 {
+		t.Fatalf("bad mux vless response: %v", resp)
+	}
+
+	want := []byte("quic-over-mux")
+	if _, err := conn.Write(buildMuxUDPFrame(7, "127.0.0.1", udpPort, want)); err != nil {
+		t.Fatalf("write mux udp frame: %v", err)
+	}
+	meta, err := readNativeMuxMetadata(conn)
+	if err != nil {
+		t.Fatalf("read mux response meta: %v", err)
+	}
+	if meta.sessionID != 7 || meta.status != nativeMuxStatusKeep || meta.option&nativeMuxOptionData == 0 {
+		t.Fatalf("bad mux response metadata: %#v", meta)
+	}
+	got, err := readNativeMuxDataBlock(conn)
+	if err != nil {
+		t.Fatalf("read mux response payload: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mux udp echo mismatch: got %q want %q", got, want)
+	}
+}
+
+func TestVLESSMuxXUDPDoesNotStall(t *testing.T) {
+	udpPort, stopUDP := startUDPEchoServer(t)
+	defer stopUDP()
+	_, port, id, stop := newTestInbound(t, "tcp", "")
+	defer stop()
+
+	conn, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", itoa(port)))
+	if err != nil {
+		t.Fatalf("dial inbound: %v", err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	if _, err := conn.Write(vlessMuxHeader(id)); err != nil {
+		t.Fatalf("write mux header: %v", err)
+	}
+	resp := make([]byte, 2)
+	if _, err := io.ReadFull(conn, resp); err != nil {
+		t.Fatalf("read mux response header: %v", err)
+	}
+
+	want := []byte("quic-over-xudp")
+	gid := [8]byte{1, 2, 3, 4, 5, 6, 7, 8}
+	if _, err := conn.Write(buildMuxXUDPFrame(9, "127.0.0.1", udpPort, want, gid)); err != nil {
+		t.Fatalf("write mux xudp frame: %v", err)
+	}
+	meta, err := readNativeMuxMetadata(conn)
+	if err != nil {
+		t.Fatalf("read mux xudp response meta: %v", err)
+	}
+	if meta.sessionID != 9 || meta.status != nativeMuxStatusKeep || meta.option&nativeMuxOptionData == 0 {
+		t.Fatalf("bad mux xudp response metadata: %#v", meta)
+	}
+	if meta.host != "127.0.0.1" || int(meta.port) != udpPort {
+		t.Fatalf("xudp response did not preserve UDP endpoint: %#v", meta)
+	}
+	got, err := readNativeMuxDataBlock(conn)
+	if err != nil {
+		t.Fatalf("read xudp response payload: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mux xudp echo mismatch: got %q want %q", got, want)
+	}
+}
+
+func TestVLESSMuxXUDPPayloadLookingLikeMetadataDoesNotStall(t *testing.T) {
+	udpPort, stopUDP := startUDPEchoServer(t)
+	defer stopUDP()
+	_, port, id, stop := newTestInbound(t, "tcp", "")
+	defer stop()
+
+	conn, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", itoa(port)))
+	if err != nil {
+		t.Fatalf("dial inbound: %v", err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	if _, err := conn.Write(vlessMuxHeader(id)); err != nil {
+		t.Fatalf("write mux header: %v", err)
+	}
+	resp := make([]byte, 2)
+	if _, err := io.ReadFull(conn, resp); err != nil {
+		t.Fatalf("read mux response header: %v", err)
+	}
+
+	// This payload intentionally looks like old inner-XUDP metadata. Mux.Cool
+	// packet mode must still forward it as one UDP datagram and must not block
+	// waiting for another fake payload block.
+	want := []byte{0, 0, 2, 1, 'q', 'u', 'i', 'c'}
+	gid := [8]byte{8, 7, 6, 5, 4, 3, 2, 1}
+	if _, err := conn.Write(buildMuxXUDPFrame(10, "127.0.0.1", udpPort, want, gid)); err != nil {
+		t.Fatalf("write mux xudp frame: %v", err)
+	}
+	meta, err := readNativeMuxMetadata(conn)
+	if err != nil {
+		t.Fatalf("read mux xudp response meta: %v", err)
+	}
+	if meta.sessionID != 10 || meta.status != nativeMuxStatusKeep || meta.option&nativeMuxOptionData == 0 {
+		t.Fatalf("bad mux xudp response metadata: %#v", meta)
+	}
+	got, err := readNativeMuxDataBlock(conn)
+	if err != nil {
+		t.Fatalf("read xudp response payload: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mux xudp metadata-looking payload changed: got %q want %q", got, want)
+	}
+}
+
+func TestVLESSMuxTCPDoesNotStall(t *testing.T) {
+	tcpPort, stopTCP := startEchoServer(t)
+	defer stopTCP()
+	_, port, id, stop := newTestInbound(t, "tcp", "")
+	defer stop()
+
+	conn, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", itoa(port)))
+	if err != nil {
+		t.Fatalf("dial inbound: %v", err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	if _, err := conn.Write(vlessMuxHeader(id)); err != nil {
+		t.Fatalf("write mux header: %v", err)
+	}
+	resp := make([]byte, 2)
+	if _, err := io.ReadFull(conn, resp); err != nil {
+		t.Fatalf("read mux response header: %v", err)
+	}
+
+	want := []byte("tcp-over-mux")
+	if _, err := conn.Write(buildMuxTCPFrame(11, "127.0.0.1", tcpPort, want)); err != nil {
+		t.Fatalf("write mux tcp frame: %v", err)
+	}
+	meta, err := readNativeMuxMetadata(conn)
+	if err != nil {
+		t.Fatalf("read mux tcp response meta: %v", err)
+	}
+	if meta.sessionID != 11 || meta.status != nativeMuxStatusKeep || meta.option&nativeMuxOptionData == 0 {
+		t.Fatalf("bad mux tcp response metadata: %#v", meta)
+	}
+	got, err := readNativeMuxDataBlock(conn)
+	if err != nil {
+		t.Fatalf("read mux tcp response payload: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mux tcp echo mismatch: got %q want %q", got, want)
 	}
 }
