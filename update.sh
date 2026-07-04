@@ -289,6 +289,7 @@ build_binary() {
   export GOPATH=/tmp/gopath_sshpanel
   export GOCACHE=/tmp/gocache_sshpanel
   go mod download
+  go mod tidy
   go build -ldflags="-s -w" -o /tmp/sshpanel_new .
   info "  Build complete."
 }
