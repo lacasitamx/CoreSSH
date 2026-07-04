@@ -265,6 +265,7 @@ cd "$SCRIPT_DIR"
 export GOPATH=/tmp/gopath_sshpanel
 export GOCACHE=/tmp/gocache_sshpanel
 go mod download
+go mod tidy
 go build -ldflags="-s -w" -o "$INSTALL_DIR/sshpanel" .
 info "  Binary: $INSTALL_DIR/sshpanel"
 cp -r "$SCRIPT_DIR/admin/"* "$INSTALL_DIR/admin/"
