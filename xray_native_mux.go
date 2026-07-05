@@ -48,19 +48,12 @@ type nativeMuxPacket struct {
 	discard bool
 }
 
-// nativeMuxUplinkItem is one client->backend datagram/segment handed from the
-// shared mux read loop to a session's own uplink goroutine. The payload is a
-// private copy because the read loop reuses its scratch buffer immediately.
 type nativeMuxUplinkItem struct {
 	payload []byte
 	host    string
 	port    uint16
 }
 
-// nativeMuxUplinkQueue bounds how many un-written uplink items a single mux
-// session may buffer before the shared read loop applies backpressure. This
-// isolates a slow/backpressured backend to its own session instead of stalling
-// every other session multiplexed on the same client connection.
 const nativeMuxUplinkQueue = 64
 
 var nativeMuxFramePool = sync.Pool{
@@ -286,11 +279,6 @@ func (ib *nativeInbound) nativeVLESSMuxTunnel(stream io.ReadWriteCloser, uuid, e
 			mu.Unlock()
 
 			xrayTracef("native xray: vless/mux %s user=%s -> %s session=%d xudp=%v", nativeMuxNetworkName(meta.network), email, target, meta.sessionID, isXUDP)
-			// Dial and pump this session on its own goroutine so a slow-connecting
-			// target or a backpressured/rate-limited backend never blocks the shared
-			// read loop and therefore never stalls the other multiplexed sessions.
-			// The first payload is enqueued (a copy) before run() finishes dialing;
-			// the session's uplink loop writes it first once the backend is up.
 			ib2, host2, port2 := ib, targetHost, targetPort
 			xrayGo(fmt.Sprintf("native xray mux session=%d", s.id), func() { s.run(ib2, host2, port2) })
 			if len(pkt.payload) > 0 {
@@ -344,9 +332,6 @@ func (ib *nativeInbound) nativeVLESSMuxTunnel(stream io.ReadWriteCloser, uuid, e
 	}
 }
 
-// newNativeMuxSession allocates a session and reserves a global slot but does
-// NOT dial the backend. Dialing happens later in run() on the session's own
-// goroutine, so the shared mux read loop is never blocked by a slow connect.
 func (ib *nativeInbound) newNativeMuxSession(id uint16, network byte, host string, port uint16, xudp bool, globalID [8]byte, client io.Writer, writeMu *sync.Mutex, uuid, email string, onClose func(*nativeMuxSession)) (*nativeMuxSession, string, error) {
 	target := net.JoinHostPort(normalizeNativeTargetHost(host), strconv.Itoa(int(port)))
 	if invalidNativeDestination(host, port) {
@@ -378,15 +363,9 @@ func (ib *nativeInbound) newNativeMuxSession(id uint16, network byte, host strin
 	return s, target, nil
 }
 
-// run dials/opens the backend for a mux session, then pumps client->backend
-// data from the session's uplink channel. It owns the backend reader goroutine.
-// Because this runs off the shared read loop, a slow dial or a congested backend
-// only ever affects this one session.
 func (s *nativeMuxSession) run(ib *nativeInbound, host string, port uint16) {
 	defer xrayRecover(fmt.Sprintf("native xray mux run session=%d", s.id))
 
-	// Abort early if the session was torn down (client sent End, connection
-	// closed, or a duplicate New replaced it) before we even dialed.
 	select {
 	case <-s.closed:
 		s.failInit(false)
@@ -414,7 +393,6 @@ func (s *nativeMuxSession) run(ib *nativeInbound, host string, port uint16) {
 		s.udpTarget = udpTarget
 	}
 
-	// If the session was closed while dialing, tear the backend down now.
 	select {
 	case <-s.closed:
 		s.closeBackend()
@@ -426,10 +404,6 @@ func (s *nativeMuxSession) run(ib *nativeInbound, host string, port uint16) {
 	s.uplinkLoop()
 }
 
-// failInit reports a session that never came up: optionally notify the client
-// with an End(error) frame, remove it from the parent maps, and release the
-// slot. It must not be used once a backend reader is running (readBackendLoop's
-// deferred cleanup owns that path).
 func (s *nativeMuxSession) failInit(notifyClient bool) {
 	if notifyClient {
 		s.writeMu.Lock()
@@ -442,10 +416,6 @@ func (s *nativeMuxSession) failInit(notifyClient bool) {
 	s.closeBackend()
 }
 
-// enqueueUplink hands one client->backend datagram/segment to the session's
-// uplink goroutine. The payload is copied because the caller (the shared read
-// loop) reuses its scratch buffer on the next iteration. A send blocks only when
-// this one session's queue is full (per-session backpressure) or once closed.
 func (s *nativeMuxSession) enqueueUplink(payload []byte, host string, port uint16) {
 	if len(payload) == 0 {
 		return
@@ -458,12 +428,7 @@ func (s *nativeMuxSession) enqueueUplink(payload []byte, host string, port uint1
 	}
 }
 
-// uplinkLoop drains queued client->backend items until the session closes or a
-// backend write fails. Rate limiting and the blocking socket write now happen
-// here instead of in the shared read loop.
 func (s *nativeMuxSession) uplinkLoop() {
-	// upMeter is owned exclusively by this goroutine (writeBackendItem adds to it
-	// here), so it is flushed here too. readBackendLoop must not touch upMeter.
 	defer s.upMeter.flush()
 	for {
 		select {
@@ -506,10 +471,6 @@ func (ib *nativeInbound) nativeOpenMuxUDP(host string, port uint16) (net.PacketC
 	return pc, udpNetwork, udpTarget, target, nil
 }
 
-// writeBackendItem writes one uplink item to the backend. It returns false when
-// the session should be torn down (rate wait cancelled or a fatal write error).
-// A per-packet UDP sink/override-resolve failure is a soft skip and returns true
-// so the session keeps serving other datagrams.
 func (s *nativeMuxSession) writeBackendItem(item nativeMuxUplinkItem) bool {
 	payload := item.payload
 	if len(payload) == 0 {
@@ -548,6 +509,9 @@ func (s *nativeMuxSession) writeBackendItem(item nativeMuxUplinkItem) bool {
 		}
 		n, err = s.udp.WriteTo(payload, target)
 	}
+	if s.network == nativeMuxNetworkUDP && err == nil {
+		_ = s.udp.SetReadDeadline(time.Now().Add(nativeMuxUDPIdleTimeout()))
+	}
 	if n > 0 {
 		s.upMeter.add(n)
 	}
@@ -562,7 +526,6 @@ func (s *nativeMuxSession) readBackendLoop() {
 	defer xrayRecover(fmt.Sprintf("native xray mux backend loop session=%d", s.id))
 	sendEnd := true
 	defer func() {
-		// downMeter is owned by this goroutine; upMeter is flushed by uplinkLoop.
 		s.downMeter.flush()
 		if sendEnd {
 			s.writeMu.Lock()
@@ -653,9 +616,6 @@ func (s *nativeMuxSession) readUDPBackendLoop() bool {
 	}
 }
 
-// closeBackend tears the session down exactly once. It is safe to call
-// concurrently from the read loop, the uplink loop and the backend reader; the
-// previous select/default form could double-close s.closed and panic.
 func (s *nativeMuxSession) closeBackend() {
 	s.closeOnce.Do(func() {
 		close(s.closed)

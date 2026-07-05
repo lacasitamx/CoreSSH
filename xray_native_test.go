@@ -238,11 +238,6 @@ func TestVLESSOverWebSocket(t *testing.T) {
 	}
 }
 
-// TestVLESSOverWebSocketEarlyData guards the 0-RTT path: xray clients configured
-// with ?ed=N carry the VLESS request header base64url-encoded in the
-// Sec-WebSocket-Protocol header and send no first frame. Dropping it (as the
-// handshake did before) makes the server block waiting for a header that never
-// arrives as a frame, stalling every ed= WebSocket client.
 func TestVLESSOverWebSocketEarlyData(t *testing.T) {
 	echoPort, stopEcho := startEchoServer(t)
 	defer stopEcho()
@@ -256,7 +251,6 @@ func TestVLESSOverWebSocketEarlyData(t *testing.T) {
 	defer raw.Close()
 	raw.SetDeadline(time.Now().Add(5 * time.Second))
 
-	// Entire VLESS header + first payload live in the early-data header; no frame.
 	early := append(vlessHeader(id, echoPort), []byte("ping-ed")...)
 	proto := base64.RawURLEncoding.EncodeToString(early)
 
@@ -477,17 +471,6 @@ func TestVLESSOverXHTTPPacketUpGET(t *testing.T) {
 	}
 }
 
-// TestVLESSOverXHTTPOutOfOrderPacketUp is the regression guard for the burst
-// stall that made video/large downloads unusable ("download ~10MB, stall,
-// repeat"). Packet-up POSTs arrive out of order (highest sequence first) and each
-// POST is fully awaited before the next is sent — exactly what happens when the
-// client's concurrent-POST slots fill while a low sequence is still in flight.
-//
-// The old queue blocked each POST until the tunnel reader consumed that exact
-// payload, so a POST carrying seq=2 could never return before seq=0/1 arrived —
-// a deadlock that surfaced as periodic stalls. The xray-core-style queue acks
-// every POST as soon as it is buffered and reassembles server-side, so this test
-// completes quickly and the payload is delivered in order.
 func TestVLESSOverXHTTPOutOfOrderPacketUp(t *testing.T) {
 	echoPort, stopEcho := startEchoServer(t)
 	defer stopEcho()
@@ -543,14 +526,10 @@ func TestVLESSOverXHTTPOutOfOrderPacketUp(t *testing.T) {
 		t.Fatalf("xhttp GET did not open")
 	}
 
-	// Full uplink stream = VLESS header + body, split into 3 sequenced chunks.
 	full := append(vlessHeader(id, echoPort), []byte("reordered-payload-body")...)
 	third := len(full) / 3
 	chunks := [][]byte{full[:third], full[third : 2*third], full[2*third:]}
 
-	// Send the POSTs highest-seq-first, awaiting each response before the next.
-	// On the old block-until-consumed queue, the very first POST (seq 2) would
-	// hang until the 4s client timeout because seq 0/1 have not arrived yet.
 	for _, seq := range []int{2, 1, 0} {
 		start := time.Now()
 		postResp, err := client.Post(baseURL+"/"+itoa(seq), "application/octet-stream", bytes.NewReader(chunks[seq]))
@@ -1060,12 +1039,6 @@ func TestVLESSMuxTCPDoesNotStall(t *testing.T) {
 	}
 }
 
-// TestVLESSMuxSlowDialDoesNotBlockOtherSessions is the regression guard for the
-// head-of-line stall that made the panel proxy "hang with multiple users": a
-// single mux session whose target is slow to connect must not freeze the other
-// sessions multiplexed on the same client connection. Session 1 targets a
-// blackhole address (a connect that hangs until the 10s dial timeout); session 2
-// targets a live echo server and must respond promptly regardless.
 func TestVLESSMuxSlowDialDoesNotBlockOtherSessions(t *testing.T) {
 	tcpPort, stopTCP := startEchoServer(t)
 	defer stopTCP()
@@ -1087,21 +1060,14 @@ func TestVLESSMuxSlowDialDoesNotBlockOtherSessions(t *testing.T) {
 		t.Fatalf("read mux response header: %v", err)
 	}
 
-	// Session 1: blackhole target (TEST-NET-1, RFC 5737) — connect will hang for
-	// the full dial timeout. On the old synchronous read loop this alone blocked
-	// every subsequent frame for up to 10s.
 	if _, err := conn.Write(buildMuxTCPFrame(1, "192.0.2.1", 80, []byte("slow"))); err != nil {
 		t.Fatalf("write slow mux frame: %v", err)
 	}
-	// Session 2: live echo server. Must round-trip well within the 4s deadline,
-	// i.e. long before session 1's 10s dial timeout could ever return.
 	want := []byte("fast-session")
 	if _, err := conn.Write(buildMuxTCPFrame(2, "127.0.0.1", tcpPort, want)); err != nil {
 		t.Fatalf("write fast mux frame: %v", err)
 	}
 
-	// The blackhole session cannot produce data, so the first frame back must be
-	// session 2's echo.
 	meta, err := readNativeMuxMetadata(conn)
 	if err != nil {
 		t.Fatalf("read fast session response meta (head-of-line stall?): %v", err)
