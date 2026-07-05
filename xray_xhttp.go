@@ -144,13 +144,13 @@ func (ib *nativeInbound) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if !ib.xhttpHostAllowed(r.Host) {
 		xrayLogf("native xray: xhttp reject inbound=%q reason=host method=%s path=%q host=%q want=%q remote=%s", ib.tag, r.Method, r.URL.RequestURI(), r.Host, ib.xhttpHost, r.RemoteAddr)
-		xhttpBadRequest(w)
+		w.WriteHeader(http.StatusNotFound)
 		return
 	}
 	base, ok := ib.matchXHTTPPath(r.URL.Path)
 	if !ok {
 		xrayLogf("native xray: xhttp reject inbound=%q reason=path method=%s path=%q want=%q host=%q remote=%s", ib.tag, r.Method, r.URL.RequestURI(), ib.path, r.Host, r.RemoteAddr)
-		xhttpBadRequest(w)
+		w.WriteHeader(http.StatusNotFound)
 		return
 	}
 
@@ -164,45 +164,39 @@ func (ib *nativeInbound) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	mode := ib.normalizedXHTTPMode()
 	xrayTracef("native xray: xhttp request inbound=%q method=%s proto=%s path=%q host=%q session=%q seq=%q len=%d mode=%s remote=%s", ib.tag, r.Method, r.Proto, r.URL.RequestURI(), r.Host, sessionID, seqStr, r.ContentLength, mode, r.RemoteAddr)
 
-	// Xray's SplitHTTP treats GET with a sequence id as an uplink packet, not as
-	// stream-down. Some clients use this when the upload payload is carried in
-	// headers/cookies instead of the body. The previous native handler always
-	// treated GET as download and dropped those packets, so normal sites such as
-	// fast.com could authenticate but then stall with no upstream data.
-	if r.Method == http.MethodGet && sessionID != "" && seqStr != "" {
+	// Routing mirrors xray-core splithttp hub.go ServeHTTP exactly.
+	if sessionID == "" && mode != "" && mode != "auto" && mode != "stream-one" && mode != "stream-up" {
+		http.Error(w, "stream-one mode is not allowed", http.StatusBadRequest)
+		return
+	}
+
+	// GET carries uplink data only when it has a sequence id; every other method
+	// (POST/PUT/PATCH) is always an uplink request.
+	isUplinkRequest := true
+	if r.Method == http.MethodGet {
+		isUplinkRequest = seqStr != ""
+	}
+
+	if isUplinkRequest && sessionID != "" { // stream-up, packet-up
 		sess := ib.upsertXHTTPSession(w, sessionID)
 		if sess == nil {
+			return
+		}
+		if seqStr == "" {
+			ib.handleXHTTPStreamUpload(w, r, sess)
 			return
 		}
 		ib.handleXHTTPPacketUpload(w, r, sess, seqStr)
 		return
 	}
 
-	if r.Method == http.MethodGet || r.Method == http.MethodHead {
-		if sessionID == "" {
-			// Do not look like a fake web site. A plain browser request is not an
-			// XHTTP stream. External Xray normally answers this kind of access as a
-			// bad request because the required XHTTP metadata/padding is missing.
-			xhttpBadRequest(w)
-			return
-		}
-		sess := ib.upsertXHTTPSession(w, sessionID)
-		if sess == nil {
-			return
-		}
-		ib.handleXHTTPDownload(w, r, sess, sessionID)
-		return
-	}
-
-	if !isXHTTPUploadMethod(r.Method) {
-		w.Header().Set("Allow", "GET, POST, PUT, PATCH, OPTIONS")
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-
-	if sessionID == "" {
-		if mode != "auto" && mode != "stream-one" && mode != "stream-up" {
-			http.Error(w, "xhttp stream-one mode is not allowed", http.StatusBadRequest)
+	if r.Method == http.MethodGet || sessionID == "" { // stream-down, stream-one
+		if sessionID != "" {
+			sess := ib.upsertXHTTPSession(w, sessionID)
+			if sess == nil {
+				return
+			}
+			ib.handleXHTTPDownload(w, r, sess, sessionID)
 			return
 		}
 		if r.Body == nil || (r.ContentLength == 0 && len(r.TransferEncoding) == 0) {
@@ -213,15 +207,8 @@ func (ib *nativeInbound) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess := ib.upsertXHTTPSession(w, sessionID)
-	if sess == nil {
-		return
-	}
-	if seqStr == "" {
-		ib.handleXHTTPStreamUpload(w, r, sess)
-		return
-	}
-	ib.handleXHTTPPacketUpload(w, r, sess, seqStr)
+	w.Header().Set("Allow", "GET, POST, PUT, PATCH, OPTIONS")
+	w.WriteHeader(http.StatusMethodNotAllowed)
 }
 
 func xhttpBadRequest(w http.ResponseWriter) {
@@ -332,16 +319,14 @@ func (ib *nativeInbound) extractXHTTPMeta(r *http.Request, base string) (session
 	sessionKey := firstNonEmpty(ib.xhttpSessionKey, defaultXHTTPMetaKey(sessionPlacement, true))
 	seqKey := firstNonEmpty(ib.xhttpSeqKey, defaultXHTTPMetaKey(seqPlacement, false))
 
+	// Matches xray-core ExtractMetaFromRequest: split the path suffix after the
+	// base directly, without trimming empty segments, so segment indices line up
+	// exactly with what the client produced via appendToPath.
 	var parts []string
 	pathPart := 0
 	if sessionPlacement == xhttpPlacementPath || seqPlacement == xhttpPlacementPath {
-		rest := ""
 		if strings.HasPrefix(r.URL.Path, base) {
-			rest = r.URL.Path[len(base):]
-		}
-		rest = strings.Trim(rest, "/")
-		if rest != "" {
-			parts = strings.Split(rest, "/")
+			parts = strings.Split(r.URL.Path[len(base):], "/")
 		}
 	}
 
