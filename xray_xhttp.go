@@ -659,13 +659,12 @@ func (ib *nativeInbound) handleXHTTPDownload(w http.ResponseWriter, r *http.Requ
 	sess.touch()
 	defer xrayRecover(fmt.Sprintf("native xray XHTTP download inbound=%q session=%q remote=%s", ib.tag, sessionID, r.RemoteAddr))
 	xrayTracef("native xray: xhttp stream-down inbound=%q session=%q proto=%s remote=%s", ib.tag, sessionID, r.Proto, r.RemoteAddr)
-	if !sess.markConnected() {
-		// Another download is already streaming this session. Reject the duplicate
-		// GET without touching the live session so the first download keeps flowing.
-		xrayTracef("native xray: xhttp duplicate download rejected inbound=%q session=%q remote=%s", ib.tag, sessionID, r.RemoteAddr)
-		xhttpBadRequest(w)
-		return
-	}
+	// Do NOT reject a second download GET for the same session. xray-core does not,
+	// and rejecting one permanently breaks reconnects: when the client re-opens the
+	// downlink after a network hiccup (or H2 retries it) while the previous handler
+	// is still blocked on a now-dead socket, a 400 makes the client tear the whole
+	// session down and every retry keeps failing.
+	sess.markConnected()
 	defer ib.deleteXHTTPSession(sessionID, sess)
 
 	w.Header().Set("X-Accel-Buffering", "no")
@@ -743,21 +742,14 @@ func (s *nativeXHTTPSession) touch() {
 	s.mu.Unlock()
 }
 
-// markConnected attaches the single download (stream-down) reader to the
-// session. It returns false if a download is already attached: XHTTP has exactly
-// one downlink per session, and letting a second GET dispatch a second
-// VLESS/VMess reader over the same upload queue splits the decoded stream across
-// two HTTP responses and corrupts the tunnel (seen as the proxy "stopping
-// passing data" after a mobile-network reconnect).
-func (s *nativeXHTTPSession) markConnected() bool {
+// markConnected records that the download (stream-down) GET has attached, which
+// stops the unconnected-session reaper from expiring it. It does not reject a
+// second attach (xray-core does not either): rejecting breaks client reconnects.
+func (s *nativeXHTTPSession) markConnected() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.connected {
-		return false
-	}
 	s.connected = true
 	s.lastSeen = time.Now()
-	return true
+	s.mu.Unlock()
 }
 
 func (s *nativeXHTTPSession) close() {

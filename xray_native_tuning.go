@@ -34,11 +34,14 @@ const (
 	fixedNativeMuxUDPWriteBuffer = 256 * 1024 // mux UDP socket write buffer
 
 	// XHTTP: max tracked sessions (DoS guard) and the packet-up reorder buffer.
-	// defaultNativeXHTTPBufferedPosts matches xray-core's scMaxBufferedPosts
-	// default; the per-inbound scMaxBufferedPosts from the config still overrides
-	// it, exactly like upstream.
+	// The per-inbound scMaxBufferedPosts from the config still overrides this.
+	// xray-core's own default is 30 (its client sends POSTs near-in-order), but
+	// other clients (v2rayNG/nekobox/etc.) fan out many concurrent POSTs that can
+	// arrive well out of order; a small buffer then trips the reassembly-too-large
+	// teardown and stalls traffic. Keep a generous default so reordering is
+	// absorbed rather than fatal.
 	defaultNativeXHTTPMaxSessions   = 16384
-	defaultNativeXHTTPBufferedPosts = 30
+	defaultNativeXHTTPBufferedPosts = 512
 )
 
 var (
