@@ -29,49 +29,25 @@ function toggleUdpgwFields(on) {
 }
 
 
+// Only operator-safe knobs remain. Transport buffers (HTTP/2 flow control, XHTTP
+// reorder buffer, mux/UDP buffers) are fixed to xray-core defaults in the backend
+// and are no longer exposed here, so they cannot be misconfigured.
 const XRAY_NATIVE_TUNING_DEFAULTS = {
   safe: {
     runtime_gomaxprocs: 0,
-    mux_max_sessions: 64,
     mux_global_sessions: 8192,
-    mux_udp_idle_ms: 120000,
-    mux_udp_read_buffer: 131072,
-    mux_udp_write_buffer: 131072,
-    xhttp_max_sessions: 4096,
-    xhttp_buffered_posts: 128,
-    h2_max_concurrent_streams: 256,
-    h2_upload_buffer_conn: 1048576,
-    h2_upload_buffer_stream: 262144,
     trace_packets: false,
   },
   "2k": {
     runtime_gomaxprocs: 0,
-    mux_max_sessions: 128,
     mux_global_sessions: 32768,
-    mux_udp_idle_ms: 120000,
-    mux_udp_read_buffer: 262144,
-    mux_udp_write_buffer: 262144,
-    xhttp_max_sessions: 16384,
-    xhttp_buffered_posts: 256,
-    h2_max_concurrent_streams: 1024,
-    h2_upload_buffer_conn: 1048576,
-    h2_upload_buffer_stream: 262144,
     trace_packets: false,
   },
 };
 
 const XRAY_NATIVE_TUNING_FIELDS = {
   runtime_gomaxprocs: "cfgXrayRuntimeGomaxprocs",
-  mux_max_sessions: "cfgXrayMuxMaxSessions",
   mux_global_sessions: "cfgXrayMuxGlobalSessions",
-  mux_udp_idle_ms: "cfgXrayMuxUdpIdleMs",
-  mux_udp_read_buffer: "cfgXrayMuxUdpRbuf",
-  mux_udp_write_buffer: "cfgXrayMuxUdpWbuf",
-  xhttp_max_sessions: "cfgXrayXhttpMaxSessions",
-  xhttp_buffered_posts: "cfgXrayXhttpBufferedPosts",
-  h2_max_concurrent_streams: "cfgXrayH2MaxStreams",
-  h2_upload_buffer_conn: "cfgXrayH2UploadConn",
-  h2_upload_buffer_stream: "cfgXrayH2UploadStream",
 };
 
 function setXrayNativeTuningDefaults(profile = "2k") {

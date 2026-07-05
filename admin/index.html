@@ -1192,22 +1192,13 @@
             <summary style="cursor:pointer;font-size:.76rem;font-weight:700;color:var(--text);">Native Xray scale tuning</summary>
             <div class="grid2" style="margin-top:10px;gap:8px;">
               <div class="field"><label>Go CPU threads (GOMAXPROCS)</label><input type="number" min="0" id="cfgXrayRuntimeGomaxprocs" placeholder="0 = all CPU cores"/></div>
-              <div class="field"><label>Mux sessions per connection</label><input type="number" min="1" id="cfgXrayMuxMaxSessions" placeholder="128"/></div>
               <div class="field"><label>Global mux backend sessions</label><input type="number" min="1" id="cfgXrayMuxGlobalSessions" placeholder="32768"/></div>
-              <div class="field"><label>Mux UDP idle ms</label><input type="number" min="1000" id="cfgXrayMuxUdpIdleMs" placeholder="15000"/></div>
-              <div class="field"><label>Mux UDP read buffer bytes</label><input type="number" min="4096" id="cfgXrayMuxUdpRbuf" placeholder="262144"/></div>
-              <div class="field"><label>Mux UDP write buffer bytes</label><input type="number" min="4096" id="cfgXrayMuxUdpWbuf" placeholder="262144"/></div>
-              <div class="field"><label>XHTTP max active sessions</label><input type="number" min="1" id="cfgXrayXhttpMaxSessions" placeholder="16384"/></div>
-              <div class="field"><label>XHTTP buffered posts</label><input type="number" min="1" id="cfgXrayXhttpBufferedPosts" placeholder="64"/></div>
-              <div class="field"><label>HTTP/2 max streams</label><input type="number" min="1" id="cfgXrayH2MaxStreams" placeholder="1024"/></div>
-              <div class="field"><label>HTTP/2 upload buffer / conn</label><input type="number" min="65536" id="cfgXrayH2UploadConn" placeholder="1048576"/></div>
-              <div class="field"><label>HTTP/2 upload buffer / stream</label><input type="number" min="32768" id="cfgXrayH2UploadStream" placeholder="262144"/></div>
               <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;grid-column:1/-1"><input type="checkbox" id="cfgXrayTracePackets"/> Trace every XHTTP/mux packet <span class="hint">debug only, slows QUIC</span></label>
               <div class="card-actions" style="grid-column:1/-1;">
                 <button class="btn btn-ghost btn-sm" type="button" onclick="setXrayNativeTuningDefaults('2k')">Apply 2K defaults</button>
                 <button class="btn btn-ghost btn-sm" type="button" onclick="setXrayNativeTuningDefaults('safe')">Apply safe defaults</button>
               </div>
-              <div class="hint" style="grid-column:1/-1;margin-top:-4px;">These values are saved in the panel config and applied live on restart/reload. Go CPU threads = 0 means all detected CPU cores. No systemd Environment lines are needed.</div>
+              <div class="hint" style="grid-column:1/-1;margin-top:-4px;">Transport buffers (HTTP/2 flow control, XHTTP reorder buffer, mux/UDP buffers) are fixed to xray-core defaults and no longer tunable, so they can't be misconfigured. Go CPU threads = 0 means all detected cores. Saved in the panel config and applied live on restart/reload.</div>
             </div>
           </details>
         </div>

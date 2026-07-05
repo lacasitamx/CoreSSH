@@ -6,53 +6,45 @@ import (
 	"time"
 )
 
-// XrayNativeTuning contains native-emulator performance limits that are edited
-// from the admin panel and saved in config.json under xray.native_tuning.
-// Values are process/runtime settings, not generated Xray JSON settings.
+// XrayNativeTuning holds the few operator-facing knobs for the in-process native
+// Xray. Transport-shaping parameters (HTTP/2 flow control, the XHTTP reorder
+// buffer, mux/UDP socket buffers) are intentionally NOT exposed: they are pinned
+// to xray-core / Go defaults so they cannot be misconfigured into breakage. Only
+// safe operational controls remain here: CPU parallelism, a global mux-session
+// DoS cap, and a packet-level trace toggle for debugging.
 type XrayNativeTuning struct {
-	// RuntimeGOMAXPROCS controls Go CPU parallelism for the in-process native Xray.
-	// 0 or negative means use all detected CPU cores.
-	RuntimeGOMAXPROCS      int  `json:"runtime_gomaxprocs,omitempty"`
-	MuxMaxSessions         int  `json:"mux_max_sessions,omitempty"`
-	MuxGlobalSessions      int  `json:"mux_global_sessions,omitempty"`
-	MuxUDPIdleMS           int  `json:"mux_udp_idle_ms,omitempty"`
-	MuxUDPReadBuffer       int  `json:"mux_udp_read_buffer,omitempty"`
-	MuxUDPWriteBuffer      int  `json:"mux_udp_write_buffer,omitempty"`
-	XHTTPMaxSessions       int  `json:"xhttp_max_sessions,omitempty"`
-	XHTTPBufferedPosts     int  `json:"xhttp_buffered_posts,omitempty"`
-	H2MaxConcurrentStreams int  `json:"h2_max_concurrent_streams,omitempty"`
-	H2UploadBufferConn     int  `json:"h2_upload_buffer_conn,omitempty"`
-	H2UploadBufferStream   int  `json:"h2_upload_buffer_stream,omitempty"`
-	TracePackets           bool `json:"trace_packets,omitempty"`
+	// RuntimeGOMAXPROCS controls Go CPU parallelism. 0 or negative = all cores.
+	RuntimeGOMAXPROCS int `json:"runtime_gomaxprocs,omitempty"`
+	// MuxGlobalSessions caps total concurrent mux child sessions across every
+	// client connection (a DoS guard for the multi-tenant panel). 0 = default.
+	MuxGlobalSessions int `json:"mux_global_sessions,omitempty"`
+	// TracePackets enables very verbose per-packet XHTTP/mux logging. Debug only.
+	TracePackets bool `json:"trace_packets,omitempty"`
 }
 
 const (
-	defaultNativeRuntimeGOMAXPROCS      = 0
-	defaultNativeMuxMaxSessions         = 128
-	defaultNativeMuxGlobalSessions      = 32768
-	defaultNativeMuxUDPIdleMS           = 120000
-	defaultNativeMuxUDPReadBuffer       = 256 * 1024
-	defaultNativeMuxUDPWriteBuffer      = 256 * 1024
-	defaultNativeXHTTPMaxSessions       = 16384
-	defaultNativeXHTTPBufferedPosts     = 256
-	defaultNativeH2MaxConcurrentStreams = 1024
-	defaultNativeH2UploadBufferConn     = 1 * 1024 * 1024
-	defaultNativeH2UploadBufferStream   = 256 * 1024
+	defaultNativeRuntimeGOMAXPROCS = 0
+	defaultNativeMuxGlobalSessions = 32768
+
+	// Fixed transport defaults, aligned with xray-core / Go's net/http2. These are
+	// deliberately not operator-tunable: wrong values silently break data flow.
+	fixedNativeMuxMaxSessions    = 128        // per-connection mux child-session guard
+	fixedNativeMuxUDPIdleMS      = 120000     // mux UDP backend idle cleanup (ms)
+	fixedNativeMuxUDPReadBuffer  = 256 * 1024 // mux UDP socket read buffer
+	fixedNativeMuxUDPWriteBuffer = 256 * 1024 // mux UDP socket write buffer
+
+	// XHTTP: max tracked sessions (DoS guard) and the packet-up reorder buffer.
+	// defaultNativeXHTTPBufferedPosts matches xray-core's scMaxBufferedPosts
+	// default; the per-inbound scMaxBufferedPosts from the config still overrides
+	// it, exactly like upstream.
+	defaultNativeXHTTPMaxSessions   = 16384
+	defaultNativeXHTTPBufferedPosts = 30
 )
 
 var (
-	nativeTuneRuntimeGOMAXPROCS      atomic.Int64
-	nativeTuneMuxMaxSessions         atomic.Int64
-	nativeTuneMuxGlobalSessions      atomic.Int64
-	nativeTuneMuxUDPIdleMS           atomic.Int64
-	nativeTuneMuxUDPReadBuffer       atomic.Int64
-	nativeTuneMuxUDPWriteBuffer      atomic.Int64
-	nativeTuneXHTTPMaxSessions       atomic.Int64
-	nativeTuneXHTTPBufferedPosts     atomic.Int64
-	nativeTuneH2MaxConcurrentStreams atomic.Int64
-	nativeTuneH2UploadBufferConn     atomic.Int64
-	nativeTuneH2UploadBufferStream   atomic.Int64
-	nativeTuneTracePackets           atomic.Bool
+	nativeTuneRuntimeGOMAXPROCS atomic.Int64
+	nativeTuneMuxGlobalSessions atomic.Int64
+	nativeTuneTracePackets      atomic.Bool
 )
 
 func init() {
@@ -67,35 +59,8 @@ func normalizeNativeXrayTuning(t *XrayNativeTuning) XrayNativeTuning {
 	if out.RuntimeGOMAXPROCS < 0 {
 		out.RuntimeGOMAXPROCS = defaultNativeRuntimeGOMAXPROCS
 	}
-	if out.MuxMaxSessions <= 0 {
-		out.MuxMaxSessions = defaultNativeMuxMaxSessions
-	}
 	if out.MuxGlobalSessions <= 0 {
 		out.MuxGlobalSessions = defaultNativeMuxGlobalSessions
-	}
-	if out.MuxUDPIdleMS <= 0 {
-		out.MuxUDPIdleMS = defaultNativeMuxUDPIdleMS
-	}
-	if out.MuxUDPReadBuffer <= 0 {
-		out.MuxUDPReadBuffer = defaultNativeMuxUDPReadBuffer
-	}
-	if out.MuxUDPWriteBuffer <= 0 {
-		out.MuxUDPWriteBuffer = defaultNativeMuxUDPWriteBuffer
-	}
-	if out.XHTTPMaxSessions <= 0 {
-		out.XHTTPMaxSessions = defaultNativeXHTTPMaxSessions
-	}
-	if out.XHTTPBufferedPosts <= 0 {
-		out.XHTTPBufferedPosts = defaultNativeXHTTPBufferedPosts
-	}
-	if out.H2MaxConcurrentStreams <= 0 {
-		out.H2MaxConcurrentStreams = defaultNativeH2MaxConcurrentStreams
-	}
-	if out.H2UploadBufferConn <= 0 {
-		out.H2UploadBufferConn = defaultNativeH2UploadBufferConn
-	}
-	if out.H2UploadBufferStream <= 0 {
-		out.H2UploadBufferStream = defaultNativeH2UploadBufferStream
 	}
 	return out
 }
@@ -111,31 +76,22 @@ func applyNativeXrayTuning(t *XrayNativeTuning) XrayNativeTuning {
 	}
 	runtime.GOMAXPROCS(gomax)
 	nativeTuneRuntimeGOMAXPROCS.Store(int64(gomax))
-	nativeTuneMuxMaxSessions.Store(int64(out.MuxMaxSessions))
 	nativeTuneMuxGlobalSessions.Store(int64(out.MuxGlobalSessions))
-	nativeTuneMuxUDPIdleMS.Store(int64(out.MuxUDPIdleMS))
-	nativeTuneMuxUDPReadBuffer.Store(int64(out.MuxUDPReadBuffer))
-	nativeTuneMuxUDPWriteBuffer.Store(int64(out.MuxUDPWriteBuffer))
-	nativeTuneXHTTPMaxSessions.Store(int64(out.XHTTPMaxSessions))
-	nativeTuneXHTTPBufferedPosts.Store(int64(out.XHTTPBufferedPosts))
-	nativeTuneH2MaxConcurrentStreams.Store(int64(out.H2MaxConcurrentStreams))
-	nativeTuneH2UploadBufferConn.Store(int64(out.H2UploadBufferConn))
-	nativeTuneH2UploadBufferStream.Store(int64(out.H2UploadBufferStream))
 	nativeTuneTracePackets.Store(out.TracePackets)
 	return out
 }
 
+// Operator-tunable values.
 func nativeRuntimeGOMAXPROCS() int     { return int(nativeTuneRuntimeGOMAXPROCS.Load()) }
-func nativeMuxMaxSessionLimit() int    { return int(nativeTuneMuxMaxSessions.Load()) }
 func nativeMuxGlobalSessionLimit() int { return int(nativeTuneMuxGlobalSessions.Load()) }
+func nativeTracePacketsEnabled() bool  { return nativeTuneTracePackets.Load() }
+
+// Fixed transport limits (see the const block for rationale).
+func nativeMuxMaxSessionLimit() int     { return fixedNativeMuxMaxSessions }
+func nativeMuxUDPReadBufferSize() int   { return fixedNativeMuxUDPReadBuffer }
+func nativeMuxUDPWriteBufferSize() int  { return fixedNativeMuxUDPWriteBuffer }
+func nativeXHTTPMaxSessionLimit() int   { return defaultNativeXHTTPMaxSessions }
+func nativeXHTTPBufferedPostLimit() int { return defaultNativeXHTTPBufferedPosts }
 func nativeMuxUDPIdleTimeout() time.Duration {
-	return time.Duration(nativeTuneMuxUDPIdleMS.Load()) * time.Millisecond
+	return fixedNativeMuxUDPIdleMS * time.Millisecond
 }
-func nativeMuxUDPReadBufferSize() int   { return int(nativeTuneMuxUDPReadBuffer.Load()) }
-func nativeMuxUDPWriteBufferSize() int  { return int(nativeTuneMuxUDPWriteBuffer.Load()) }
-func nativeXHTTPMaxSessionLimit() int   { return int(nativeTuneXHTTPMaxSessions.Load()) }
-func nativeXHTTPBufferedPostLimit() int { return int(nativeTuneXHTTPBufferedPosts.Load()) }
-func nativeH2MaxConcurrentStreams() int { return int(nativeTuneH2MaxConcurrentStreams.Load()) }
-func nativeH2UploadBufferConn() int     { return int(nativeTuneH2UploadBufferConn.Load()) }
-func nativeH2UploadBufferStream() int   { return int(nativeTuneH2UploadBufferStream.Load()) }
-func nativeTracePacketsEnabled() bool   { return nativeTuneTracePackets.Load() }

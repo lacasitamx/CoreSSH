@@ -99,11 +99,9 @@ func mergeNativeXHTTPSettings(primary, fallback nativeXHTTPSettingsJSON) nativeX
 
 func (ib *nativeInbound) serveXHTTPListener(ln net.Listener) {
 	defer xrayRecover(fmt.Sprintf("native xray XHTTP listener inbound=%q addr=%s", ib.tag, ln.Addr()))
-	h2s := &http2.Server{
-		MaxConcurrentStreams:         uint32(nativeH2MaxConcurrentStreams()),
-		MaxUploadBufferPerConnection: int32(nativeH2UploadBufferConn()),
-		MaxUploadBufferPerStream:     int32(nativeH2UploadBufferStream()),
-	}
+	// Match xray-core: let net/http's HTTP/2 use its own defaults for flow
+	// control, stream limits and upload buffers instead of overriding them.
+	h2s := &http2.Server{}
 	handler := http.Handler(ib)
 	// Official Xray accepts plaintext HTTP/1.1 and h2c on non-TLS XHTTP
 	// listeners, and negotiates h2/http1 through ALPN on TLS listeners. Without
