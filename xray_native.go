@@ -668,7 +668,7 @@ type trafficMeter struct {
 	n      int64
 }
 
-const trafficFlushThreshold = 64 * 1024
+const trafficFlushThreshold = 1024 * 1024
 
 func (t *trafficMeter) add(n int) {
 	t.n += int64(n)

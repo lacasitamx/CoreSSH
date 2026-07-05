@@ -397,6 +397,107 @@ func TestVLESSOverXHTTPPacketUpGET(t *testing.T) {
 	}
 }
 
+// TestVLESSOverXHTTPOutOfOrderPacketUp is the regression guard for the burst
+// stall that made video/large downloads unusable ("download ~10MB, stall,
+// repeat"). Packet-up POSTs arrive out of order (highest sequence first) and each
+// POST is fully awaited before the next is sent — exactly what happens when the
+// client's concurrent-POST slots fill while a low sequence is still in flight.
+//
+// The old queue blocked each POST until the tunnel reader consumed that exact
+// payload, so a POST carrying seq=2 could never return before seq=0/1 arrived —
+// a deadlock that surfaced as periodic stalls. The xray-core-style queue acks
+// every POST as soon as it is buffered and reassembles server-side, so this test
+// completes quickly and the payload is delivered in order.
+func TestVLESSOverXHTTPOutOfOrderPacketUp(t *testing.T) {
+	echoPort, stopEcho := startEchoServer(t)
+	defer stopEcho()
+
+	var id [16]byte
+	if _, err := rand.Read(id[:]); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	ib := &nativeInbound{
+		tag:                   "test-xhttp-reorder",
+		protocol:              "vless",
+		transport:             "xhttp",
+		path:                  normalizeXHTTPPath("/xhttp"),
+		xhttpMode:             "packet-up",
+		xhttpMaxEachPostBytes: 1_000_000,
+		xhttpMaxBufferedPosts: 30,
+		xhttpSessions:         make(map[string]*nativeXHTTPSession),
+		clientsByID:           map[[16]byte]*nativeXrayClient{id: {id: id, uuid: "test", email: "test@t"}},
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("xhttp listen: %v", err)
+	}
+	defer ln.Close()
+	go ib.serveXHTTPListener(ln)
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	client := &http.Client{Timeout: 4 * time.Second}
+	session := "session-reorder"
+	baseURL := "http://" + net.JoinHostPort("127.0.0.1", itoa(port)) + "/xhttp/" + session
+
+	respCh := make(chan *http.Response, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		resp, err := client.Get(baseURL)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		respCh <- resp
+	}()
+
+	var resp *http.Response
+	select {
+	case resp = <-respCh:
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("xhttp GET status: %s", resp.Status)
+		}
+	case err := <-errCh:
+		t.Fatalf("xhttp GET: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatalf("xhttp GET did not open")
+	}
+
+	// Full uplink stream = VLESS header + body, split into 3 sequenced chunks.
+	full := append(vlessHeader(id, echoPort), []byte("reordered-payload-body")...)
+	third := len(full) / 3
+	chunks := [][]byte{full[:third], full[third : 2*third], full[2*third:]}
+
+	// Send the POSTs highest-seq-first, awaiting each response before the next.
+	// On the old block-until-consumed queue, the very first POST (seq 2) would
+	// hang until the 4s client timeout because seq 0/1 have not arrived yet.
+	for _, seq := range []int{2, 1, 0} {
+		start := time.Now()
+		postResp, err := client.Post(baseURL+"/"+itoa(seq), "application/octet-stream", bytes.NewReader(chunks[seq]))
+		if err != nil {
+			t.Fatalf("xhttp POST seq=%d (head-of-line stall?): %v", seq, err)
+		}
+		postResp.Body.Close()
+		if postResp.StatusCode != http.StatusOK {
+			t.Fatalf("xhttp POST seq=%d status: %s", seq, postResp.Status)
+		}
+		if elapsed := time.Since(start); elapsed > 2*time.Second {
+			t.Fatalf("xhttp POST seq=%d took %v; expected an immediate ack (not blocked on consumption)", seq, elapsed)
+		}
+	}
+
+	got := make([]byte, 2+len("reordered-payload-body"))
+	if _, err := io.ReadFull(resp.Body, got); err != nil {
+		t.Fatalf("xhttp read response: %v", err)
+	}
+	if got[0] != 0 {
+		t.Fatalf("bad xhttp vless response: %v", got[:2])
+	}
+	if string(got[2:]) != "reordered-payload-body" {
+		t.Fatalf("xhttp reassembled echo mismatch: got %q", got[2:])
+	}
+}
+
 func TestXHTTPRejectsBrowserGETWithoutSession(t *testing.T) {
 	var id [16]byte
 	if _, err := rand.Read(id[:]); err != nil {
@@ -876,5 +977,63 @@ func TestVLESSMuxTCPDoesNotStall(t *testing.T) {
 	}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("mux tcp echo mismatch: got %q want %q", got, want)
+	}
+}
+
+// TestVLESSMuxSlowDialDoesNotBlockOtherSessions is the regression guard for the
+// head-of-line stall that made the panel proxy "hang with multiple users": a
+// single mux session whose target is slow to connect must not freeze the other
+// sessions multiplexed on the same client connection. Session 1 targets a
+// blackhole address (a connect that hangs until the 10s dial timeout); session 2
+// targets a live echo server and must respond promptly regardless.
+func TestVLESSMuxSlowDialDoesNotBlockOtherSessions(t *testing.T) {
+	tcpPort, stopTCP := startEchoServer(t)
+	defer stopTCP()
+	_, port, id, stop := newTestInbound(t, "tcp", "")
+	defer stop()
+
+	conn, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", itoa(port)))
+	if err != nil {
+		t.Fatalf("dial inbound: %v", err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(4 * time.Second))
+
+	if _, err := conn.Write(vlessMuxHeader(id)); err != nil {
+		t.Fatalf("write mux header: %v", err)
+	}
+	resp := make([]byte, 2)
+	if _, err := io.ReadFull(conn, resp); err != nil {
+		t.Fatalf("read mux response header: %v", err)
+	}
+
+	// Session 1: blackhole target (TEST-NET-1, RFC 5737) — connect will hang for
+	// the full dial timeout. On the old synchronous read loop this alone blocked
+	// every subsequent frame for up to 10s.
+	if _, err := conn.Write(buildMuxTCPFrame(1, "192.0.2.1", 80, []byte("slow"))); err != nil {
+		t.Fatalf("write slow mux frame: %v", err)
+	}
+	// Session 2: live echo server. Must round-trip well within the 4s deadline,
+	// i.e. long before session 1's 10s dial timeout could ever return.
+	want := []byte("fast-session")
+	if _, err := conn.Write(buildMuxTCPFrame(2, "127.0.0.1", tcpPort, want)); err != nil {
+		t.Fatalf("write fast mux frame: %v", err)
+	}
+
+	// The blackhole session cannot produce data, so the first frame back must be
+	// session 2's echo.
+	meta, err := readNativeMuxMetadata(conn)
+	if err != nil {
+		t.Fatalf("read fast session response meta (head-of-line stall?): %v", err)
+	}
+	if meta.sessionID != 2 || meta.status != nativeMuxStatusKeep || meta.option&nativeMuxOptionData == 0 {
+		t.Fatalf("expected session 2 keep-data frame, got: %#v", meta)
+	}
+	got, err := readNativeMuxDataBlock(conn)
+	if err != nil {
+		t.Fatalf("read fast session payload: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("fast session echo mismatch: got %q want %q", got, want)
 	}
 }

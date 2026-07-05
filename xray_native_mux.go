@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -47,6 +48,28 @@ type nativeMuxPacket struct {
 	discard bool
 }
 
+// nativeMuxUplinkItem is one client->backend datagram/segment handed from the
+// shared mux read loop to a session's own uplink goroutine. The payload is a
+// private copy because the read loop reuses its scratch buffer immediately.
+type nativeMuxUplinkItem struct {
+	payload []byte
+	host    string
+	port    uint16
+}
+
+// nativeMuxUplinkQueue bounds how many un-written uplink items a single mux
+// session may buffer before the shared read loop applies backpressure. This
+// isolates a slow/backpressured backend to its own session instead of stalling
+// every other session multiplexed on the same client connection.
+const nativeMuxUplinkQueue = 64
+
+var nativeMuxFramePool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 0, 2+512+2+nativeUDPMaxPacket)
+		return &b
+	},
+}
+
 type nativeMuxSession struct {
 	id      uint16
 	network byte
@@ -72,7 +95,11 @@ type nativeMuxSession struct {
 	upMeter     *trafficMeter
 	downMeter   *trafficMeter
 
+	uplink      chan nativeMuxUplinkItem
 	closed      chan struct{}
+	closeOnce   sync.Once
+	ctx         context.Context
+	cancel      context.CancelFunc
 	onClose     func(*nativeMuxSession)
 	releaseSlot func()
 	globalID    [8]byte
@@ -110,6 +137,7 @@ func (ib *nativeInbound) nativeVLESSMuxTunnel(stream io.ReadWriteCloser, uuid, e
 	writeMu := &sync.Mutex{}
 	sessions := make(map[uint16]*nativeMuxSession)
 	xudpSessions := make(map[[8]byte]*nativeMuxSession)
+	readScratch := make([]byte, 0, nativeUDPMaxPacket)
 	var mu sync.Mutex
 
 	removeSession := func(s *nativeMuxSession) {
@@ -170,12 +198,12 @@ func (ib *nativeInbound) nativeVLESSMuxTunnel(stream io.ReadWriteCloser, uuid, e
 		switch meta.status {
 		case nativeMuxStatusKeepAlive:
 			if meta.option&nativeMuxOptionData != 0 {
-				_, _ = readNativeMuxDataBlock(stream)
+				_, readScratch, _ = readNativeMuxDataBlockScratch(stream, readScratch)
 			}
 
 		case nativeMuxStatusEnd:
 			if meta.option&nativeMuxOptionData != 0 {
-				_, _ = readNativeMuxDataBlock(stream)
+				_, readScratch, _ = readNativeMuxDataBlockScratch(stream, readScratch)
 			}
 			closeSession(meta.sessionID)
 
@@ -183,7 +211,7 @@ func (ib *nativeInbound) nativeVLESSMuxTunnel(stream io.ReadWriteCloser, uuid, e
 			if meta.network != nativeMuxNetworkTCP && meta.network != nativeMuxNetworkUDP {
 				xrayLogf("native xray: VLESS mux session %d unsupported network %d", meta.sessionID, meta.network)
 				if meta.option&nativeMuxOptionData != 0 {
-					_, _ = readNativeMuxDataBlock(stream)
+					_, readScratch, _ = readNativeMuxDataBlockScratch(stream, readScratch)
 				}
 				continue
 			}
@@ -228,7 +256,7 @@ func (ib *nativeInbound) nativeVLESSMuxTunnel(stream io.ReadWriteCloser, uuid, e
 			}
 
 			if meta.option&nativeMuxOptionData != 0 {
-				pkt.payload, err = readNativeMuxDataBlock(stream)
+				pkt.payload, readScratch, err = readNativeMuxDataBlockScratch(stream, readScratch)
 				if err != nil {
 					xrayLogf("native xray: VLESS mux first packet read failed session=%d: %v", meta.sessionID, err)
 					continue
@@ -237,7 +265,10 @@ func (ib *nativeInbound) nativeVLESSMuxTunnel(stream io.ReadWriteCloser, uuid, e
 
 			s, target, err := ib.newNativeMuxSession(meta.sessionID, meta.network, targetHost, targetPort, isXUDP, meta.globalID, stream, writeMu, uuid, email, removeSession)
 			if err != nil {
-				xrayLogf("native xray: VLESS mux dial %s failed: %v", target, err)
+				xrayLogf("native xray: VLESS mux session %s setup failed: %v", target, err)
+				writeMu.Lock()
+				_ = writeNativeMuxEnd(stream, meta.sessionID, true)
+				writeMu.Unlock()
 				continue
 			}
 
@@ -255,9 +286,15 @@ func (ib *nativeInbound) nativeVLESSMuxTunnel(stream io.ReadWriteCloser, uuid, e
 			mu.Unlock()
 
 			xrayTracef("native xray: vless/mux %s user=%s -> %s session=%d xudp=%v", nativeMuxNetworkName(meta.network), email, target, meta.sessionID, isXUDP)
-			xrayGo(fmt.Sprintf("native xray mux backend session=%d", s.id), func() { s.readBackendLoop() })
+			// Dial and pump this session on its own goroutine so a slow-connecting
+			// target or a backpressured/rate-limited backend never blocks the shared
+			// read loop and therefore never stalls the other multiplexed sessions.
+			// The first payload is enqueued (a copy) before run() finishes dialing;
+			// the session's uplink loop writes it first once the backend is up.
+			ib2, host2, port2 := ib, targetHost, targetPort
+			xrayGo(fmt.Sprintf("native xray mux session=%d", s.id), func() { s.run(ib2, host2, port2) })
 			if len(pkt.payload) > 0 {
-				s.writeBackend(pkt.payload, pkt.host, pkt.port)
+				s.enqueueUplink(pkt.payload, pkt.host, pkt.port)
 			}
 
 		case nativeMuxStatusKeep:
@@ -271,7 +308,7 @@ func (ib *nativeInbound) nativeVLESSMuxTunnel(stream io.ReadWriteCloser, uuid, e
 				continue
 			}
 			pkt := nativeMuxPacket{}
-			pkt.payload, err = readNativeMuxDataBlock(stream)
+			pkt.payload, readScratch, err = readNativeMuxDataBlockScratch(stream, readScratch)
 			if err != nil {
 				xrayLogf("native xray: VLESS mux keep packet read failed session=%d: %v", meta.sessionID, err)
 				if s != nil {
@@ -295,26 +332,28 @@ func (ib *nativeInbound) nativeVLESSMuxTunnel(stream io.ReadWriteCloser, uuid, e
 				pkt.port = meta.port
 			}
 			if len(pkt.payload) > 0 {
-				s.writeBackend(pkt.payload, pkt.host, pkt.port)
+				s.enqueueUplink(pkt.payload, pkt.host, pkt.port)
 			}
 
 		default:
 			xrayLogf("native xray: VLESS mux unknown status %d", meta.status)
 			if meta.option&nativeMuxOptionData != 0 {
-				_, _ = readNativeMuxDataBlock(stream)
+				_, readScratch, _ = readNativeMuxDataBlockScratch(stream, readScratch)
 			}
 		}
 	}
 }
 
+// newNativeMuxSession allocates a session and reserves a global slot but does
+// NOT dial the backend. Dialing happens later in run() on the session's own
+// goroutine, so the shared mux read loop is never blocked by a slow connect.
 func (ib *nativeInbound) newNativeMuxSession(id uint16, network byte, host string, port uint16, xudp bool, globalID [8]byte, client io.Writer, writeMu *sync.Mutex, uuid, email string, onClose func(*nativeMuxSession)) (*nativeMuxSession, string, error) {
+	target := net.JoinHostPort(normalizeNativeTargetHost(host), strconv.Itoa(int(port)))
 	if invalidNativeDestination(host, port) {
-		target := net.JoinHostPort(normalizeNativeTargetHost(host), strconv.Itoa(int(port)))
 		return nil, target, fmt.Errorf("invalid destination")
 	}
 	releaseSlot, ok := acquireNativeMuxGlobalSlot()
 	if !ok {
-		target := net.JoinHostPort(normalizeNativeTargetHost(host), strconv.Itoa(int(port)))
 		return nil, target, fmt.Errorf("global mux session limit reached")
 	}
 	s := &nativeMuxSession{
@@ -329,31 +368,114 @@ func (ib *nativeInbound) newNativeMuxSession(id uint16, network byte, host strin
 		downLimiter: ib.downLimiter(),
 		upMeter:     &trafficMeter{uuid: uuid, email: email, uplink: true},
 		downMeter:   &trafficMeter{uuid: uuid, email: email, uplink: false},
+		uplink:      make(chan nativeMuxUplinkItem, nativeMuxUplinkQueue),
 		closed:      make(chan struct{}),
 		onClose:     onClose,
 		releaseSlot: releaseSlot,
 		globalID:    globalID,
 	}
+	s.ctx, s.cancel = context.WithCancel(context.Background())
+	return s, target, nil
+}
 
-	if network == nativeMuxNetworkTCP {
+// run dials/opens the backend for a mux session, then pumps client->backend
+// data from the session's uplink channel. It owns the backend reader goroutine.
+// Because this runs off the shared read loop, a slow dial or a congested backend
+// only ever affects this one session.
+func (s *nativeMuxSession) run(ib *nativeInbound, host string, port uint16) {
+	defer xrayRecover(fmt.Sprintf("native xray mux run session=%d", s.id))
+
+	// Abort early if the session was torn down (client sent End, connection
+	// closed, or a duplicate New replaced it) before we even dialed.
+	select {
+	case <-s.closed:
+		s.failInit(false)
+		return
+	default:
+	}
+
+	if s.network == nativeMuxNetworkTCP {
 		backend, target, err := ib.nativeDialTCP(host, port)
 		if err != nil {
-			releaseSlot()
-			return nil, target, err
+			xrayLogf("native xray: VLESS mux TCP dial %s failed session=%d: %v", target, s.id, err)
+			s.failInit(true)
+			return
 		}
 		s.tcp = backend
-		return s, target, nil
+	} else {
+		pc, udpNetwork, udpTarget, target, err := ib.nativeOpenMuxUDP(host, port)
+		if err != nil {
+			xrayLogf("native xray: VLESS mux UDP open %s failed session=%d: %v", target, s.id, err)
+			s.failInit(true)
+			return
+		}
+		s.udp = pc
+		s.udpNetwork = udpNetwork
+		s.udpTarget = udpTarget
 	}
 
-	pc, udpNetwork, udpTarget, target, err := ib.nativeOpenMuxUDP(host, port)
-	if err != nil {
-		releaseSlot()
-		return nil, target, err
+	// If the session was closed while dialing, tear the backend down now.
+	select {
+	case <-s.closed:
+		s.closeBackend()
+		return
+	default:
 	}
-	s.udp = pc
-	s.udpNetwork = udpNetwork
-	s.udpTarget = udpTarget
-	return s, target, nil
+
+	xrayGo(fmt.Sprintf("native xray mux backend session=%d", s.id), func() { s.readBackendLoop() })
+	s.uplinkLoop()
+}
+
+// failInit reports a session that never came up: optionally notify the client
+// with an End(error) frame, remove it from the parent maps, and release the
+// slot. It must not be used once a backend reader is running (readBackendLoop's
+// deferred cleanup owns that path).
+func (s *nativeMuxSession) failInit(notifyClient bool) {
+	if notifyClient {
+		s.writeMu.Lock()
+		_ = writeNativeMuxEnd(s.client, s.id, true)
+		s.writeMu.Unlock()
+	}
+	if s.onClose != nil {
+		s.onClose(s)
+	}
+	s.closeBackend()
+}
+
+// enqueueUplink hands one client->backend datagram/segment to the session's
+// uplink goroutine. The payload is copied because the caller (the shared read
+// loop) reuses its scratch buffer on the next iteration. A send blocks only when
+// this one session's queue is full (per-session backpressure) or once closed.
+func (s *nativeMuxSession) enqueueUplink(payload []byte, host string, port uint16) {
+	if len(payload) == 0 {
+		return
+	}
+	cp := make([]byte, len(payload))
+	copy(cp, payload)
+	select {
+	case s.uplink <- nativeMuxUplinkItem{payload: cp, host: host, port: port}:
+	case <-s.closed:
+	}
+}
+
+// uplinkLoop drains queued client->backend items until the session closes or a
+// backend write fails. Rate limiting and the blocking socket write now happen
+// here instead of in the shared read loop.
+func (s *nativeMuxSession) uplinkLoop() {
+	// upMeter is owned exclusively by this goroutine (writeBackendItem adds to it
+	// here), so it is flushed here too. readBackendLoop must not touch upMeter.
+	defer s.upMeter.flush()
+	for {
+		select {
+		case <-s.closed:
+			return
+		case item := <-s.uplink:
+			if !s.writeBackendItem(item) {
+				s.closeBackend()
+				return
+			}
+		}
+	}
 }
 
 func (ib *nativeInbound) nativeOpenMuxUDP(host string, port uint16) (net.PacketConn, string, net.Addr, string, error) {
@@ -384,13 +506,19 @@ func (ib *nativeInbound) nativeOpenMuxUDP(host string, port uint16) (net.PacketC
 	return pc, udpNetwork, udpTarget, target, nil
 }
 
-func (s *nativeMuxSession) writeBackend(payload []byte, overrideHost string, overridePort uint16) {
+// writeBackendItem writes one uplink item to the backend. It returns false when
+// the session should be torn down (rate wait cancelled or a fatal write error).
+// A per-packet UDP sink/override-resolve failure is a soft skip and returns true
+// so the session keeps serving other datagrams.
+func (s *nativeMuxSession) writeBackendItem(item nativeMuxUplinkItem) bool {
+	payload := item.payload
 	if len(payload) == 0 {
-		return
+		return true
 	}
-	if err := waitNativeRate(s.upLimiter, len(payload)); err != nil {
-		s.closeBackend()
-		return
+	if s.upLimiter != nil {
+		if err := s.upLimiter.WaitN(s.ctx, len(payload)); err != nil {
+			return false
+		}
 	}
 
 	var n int
@@ -399,23 +527,23 @@ func (s *nativeMuxSession) writeBackend(payload []byte, overrideHost string, ove
 		n, err = s.tcp.Write(payload)
 	} else {
 		target := s.udpTarget
-		if overrideHost != "" && overridePort != 0 {
-			if isNativeDNSSinkTarget(overrideHost) || invalidNativeDestination(overrideHost, overridePort) {
+		if item.host != "" && item.port != 0 {
+			if isNativeDNSSinkTarget(item.host) || invalidNativeDestination(item.host, item.port) {
 				// AdGuard/blocked endpoints must be ignored at the cheapest possible
 				// point. Do not resolve, dial, log loudly, or keep the mux child busy.
-				xrayTracef("native xray: VLESS mux UDP fast-ignored override sink session=%d target=%s:%d", s.id, overrideHost, overridePort)
-				return
+				xrayTracef("native xray: VLESS mux UDP fast-ignored override sink session=%d target=%s:%d", s.id, item.host, item.port)
+				return true
 			}
-			if s.lastUDPAddr != nil && s.lastUDPHost == overrideHost && s.lastUDPPort == overridePort {
+			if s.lastUDPAddr != nil && s.lastUDPHost == item.host && s.lastUDPPort == item.port {
 				target = s.lastUDPAddr
-			} else if addr, rerr := resolveNativeMuxUDPAddr(s.udpNetwork, overrideHost, overridePort); rerr == nil {
+			} else if addr, rerr := resolveNativeMuxUDPAddr(s.udpNetwork, item.host, item.port); rerr == nil {
 				target = addr
-				s.lastUDPHost = overrideHost
-				s.lastUDPPort = overridePort
+				s.lastUDPHost = item.host
+				s.lastUDPPort = item.port
 				s.lastUDPAddr = addr
 			} else {
-				xrayTracef("native xray: VLESS mux UDP override resolve failed session=%d target=%s:%d: %v", s.id, overrideHost, overridePort, rerr)
-				return
+				xrayTracef("native xray: VLESS mux UDP override resolve failed session=%d target=%s:%d: %v", s.id, item.host, item.port, rerr)
+				return true
 			}
 		}
 		n, err = s.udp.WriteTo(payload, target)
@@ -425,18 +553,22 @@ func (s *nativeMuxSession) writeBackend(payload []byte, overrideHost string, ove
 	}
 	if err != nil {
 		xrayLogf("native xray: VLESS mux backend write failed session=%d: %v", s.id, err)
-		s.closeBackend()
+		return false
 	}
+	return true
 }
 
 func (s *nativeMuxSession) readBackendLoop() {
 	defer xrayRecover(fmt.Sprintf("native xray mux backend loop session=%d", s.id))
+	sendEnd := true
 	defer func() {
+		// downMeter is owned by this goroutine; upMeter is flushed by uplinkLoop.
 		s.downMeter.flush()
-		s.upMeter.flush()
-		s.writeMu.Lock()
-		_ = writeNativeMuxEnd(s.client, s.id, false)
-		s.writeMu.Unlock()
+		if sendEnd {
+			s.writeMu.Lock()
+			_ = writeNativeMuxEnd(s.client, s.id, false)
+			s.writeMu.Unlock()
+		}
 		if s.onClose != nil {
 			s.onClose(s)
 		}
@@ -447,7 +579,17 @@ func (s *nativeMuxSession) readBackendLoop() {
 		s.readTCPBackendLoop()
 		return
 	}
-	s.readUDPBackendLoop()
+	// For UDP/QUIC, an idle backend timeout is only local cleanup. Sending an
+	// End frame on idle makes some clients close the whole video/QUIC flow after
+	// a short quiet period. Real errors still return true and notify the client.
+	sendEnd = s.readUDPBackendLoop()
+}
+
+func (s *nativeMuxSession) waitDownRate(n int) error {
+	if s.downLimiter == nil || n <= 0 {
+		return nil
+	}
+	return s.downLimiter.WaitN(s.ctx, n)
 }
 
 func (s *nativeMuxSession) readTCPBackendLoop() {
@@ -463,7 +605,7 @@ func (s *nativeMuxSession) readTCPBackendLoop() {
 		if n <= 0 {
 			continue
 		}
-		if err := waitNativeRate(s.downLimiter, n); err != nil {
+		if err := s.waitDownRate(n); err != nil {
 			return
 		}
 		s.downMeter.add(n)
@@ -477,25 +619,25 @@ func (s *nativeMuxSession) readTCPBackendLoop() {
 	}
 }
 
-func (s *nativeMuxSession) readUDPBackendLoop() {
+func (s *nativeMuxSession) readUDPBackendLoop() bool {
 	buf := make([]byte, nativeUDPBufferSize)
 	for {
 		_ = s.udp.SetReadDeadline(time.Now().Add(nativeMuxUDPIdleTimeout()))
 		n, addr, err := s.udp.ReadFrom(buf)
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Timeout() {
-				return
+				return false
 			}
 			if err != io.EOF {
 				xrayLogf("native xray: VLESS mux UDP backend read failed session=%d: %v", s.id, err)
 			}
-			return
+			return true
 		}
 		if n <= 0 {
 			continue
 		}
-		if err := waitNativeRate(s.downLimiter, n); err != nil {
-			return
+		if err := s.waitDownRate(n); err != nil {
+			return true
 		}
 		s.downMeter.add(n)
 		s.writeMu.Lock()
@@ -506,17 +648,20 @@ func (s *nativeMuxSession) readUDPBackendLoop() {
 		s.writeMu.Unlock()
 		if werr != nil {
 			xrayLogf("native xray: VLESS mux UDP client write failed session=%d: %v", s.id, werr)
-			return
+			return true
 		}
 	}
 }
 
+// closeBackend tears the session down exactly once. It is safe to call
+// concurrently from the read loop, the uplink loop and the backend reader; the
+// previous select/default form could double-close s.closed and panic.
 func (s *nativeMuxSession) closeBackend() {
-	select {
-	case <-s.closed:
-		return
-	default:
+	s.closeOnce.Do(func() {
 		close(s.closed)
+		if s.cancel != nil {
+			s.cancel()
+		}
 		if s.releaseSlot != nil {
 			s.releaseSlot()
 		}
@@ -526,7 +671,7 @@ func (s *nativeMuxSession) closeBackend() {
 		if s.udp != nil {
 			_ = s.udp.Close()
 		}
-	}
+	})
 }
 
 func nativeMuxNetworkName(network byte) string {
@@ -546,7 +691,8 @@ func readNativeMuxMetadata(r io.Reader) (nativeMuxMetadata, error) {
 	if metaLen < 4 || metaLen > 512 {
 		return meta, fmt.Errorf("invalid mux metadata length %d", metaLen)
 	}
-	b := make([]byte, metaLen)
+	var stack [512]byte
+	b := stack[:metaLen]
 	if _, err := io.ReadFull(r, b); err != nil {
 		return meta, err
 	}
@@ -639,17 +785,25 @@ func appendNativeMuxAddressPort(dst []byte, host string, port uint16) []byte {
 }
 
 func readNativeMuxDataBlock(r io.Reader) ([]byte, error) {
+	payload, _, err := readNativeMuxDataBlockScratch(r, nil)
+	return payload, err
+}
+
+func readNativeMuxDataBlockScratch(r io.Reader, scratch []byte) ([]byte, []byte, error) {
 	var lenBuf [2]byte
 	if _, err := io.ReadFull(r, lenBuf[:]); err != nil {
-		return nil, err
+		return nil, scratch, err
 	}
 	n := int(binary.BigEndian.Uint16(lenBuf[:]))
 	if n > nativeUDPMaxPacket {
-		return nil, fmt.Errorf("mux payload too large: %d", n)
+		return nil, scratch, fmt.Errorf("mux payload too large: %d", n)
 	}
-	payload := make([]byte, n)
+	if cap(scratch) < n {
+		scratch = make([]byte, n)
+	}
+	payload := scratch[:n]
 	_, err := io.ReadFull(r, payload)
-	return payload, err
+	return payload, scratch, err
 }
 
 func discardNativeMuxDataBlock(r io.Reader) error {
@@ -706,22 +860,24 @@ func writeNativeMuxPacketData(w io.Writer, sessionID uint16, status byte, payloa
 	if len(payload) > nativeUDPMaxPacket {
 		return fmt.Errorf("mux payload too large: %d", len(payload))
 	}
-	meta := []byte{byte(sessionID >> 8), byte(sessionID), status, nativeMuxOptionData}
+	bufp := nativeMuxFramePool.Get().(*[]byte)
+	frame := (*bufp)[:0]
+	frame = append(frame, 0, 0) // metadata length placeholder
+	metaStart := len(frame)
+	frame = append(frame, byte(sessionID>>8), byte(sessionID), status, nativeMuxOptionData)
 	if includeUDPAddr && udpAddr != nil {
 		if host, port, ok := nativeMuxAddrHostPort(udpAddr); ok {
-			meta = append(meta, nativeMuxNetworkUDP)
-			meta = appendNativeMuxAddressPort(meta, host, port)
+			frame = append(frame, nativeMuxNetworkUDP)
+			frame = appendNativeMuxAddressPort(frame, host, port)
 		}
 	}
-	// Keep every logical mux packet in one Write call. The XHTTP response writer
-	// flushes after each Write, so splitting this into metadata/payload writes
-	// multiplies flush/syscall work and can pin a CPU core under QUIC traffic.
-	frame := make([]byte, 0, 2+len(meta)+2+len(payload))
-	frame = appendUint16(frame, uint16(len(meta)))
-	frame = append(frame, meta...)
+	metaLen := len(frame) - metaStart
+	binary.BigEndian.PutUint16(frame[:2], uint16(metaLen))
 	frame = appendUint16(frame, uint16(len(payload)))
 	frame = append(frame, payload...)
 	_, err := w.Write(frame)
+	*bufp = frame[:0]
+	nativeMuxFramePool.Put(bufp)
 	return err
 }
 
@@ -730,8 +886,12 @@ func writeNativeMuxEnd(w io.Writer, sessionID uint16, hasError bool) error {
 	if hasError {
 		opt = nativeMuxOptionError
 	}
-	meta := []byte{0, 4, byte(sessionID >> 8), byte(sessionID), nativeMuxStatusEnd, opt}
-	_, err := w.Write(meta)
+	var frame [6]byte
+	binary.BigEndian.PutUint16(frame[0:2], 4)
+	binary.BigEndian.PutUint16(frame[2:4], sessionID)
+	frame[4] = nativeMuxStatusEnd
+	frame[5] = opt
+	_, err := w.Write(frame[:])
 	return err
 }
 

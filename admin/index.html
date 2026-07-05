@@ -1191,6 +1191,7 @@
           <details style="margin-top:10px;" open>
             <summary style="cursor:pointer;font-size:.76rem;font-weight:700;color:var(--text);">Native Xray scale tuning</summary>
             <div class="grid2" style="margin-top:10px;gap:8px;">
+              <div class="field"><label>Go CPU threads (GOMAXPROCS)</label><input type="number" min="0" id="cfgXrayRuntimeGomaxprocs" placeholder="0 = all CPU cores"/></div>
               <div class="field"><label>Mux sessions per connection</label><input type="number" min="1" id="cfgXrayMuxMaxSessions" placeholder="128"/></div>
               <div class="field"><label>Global mux backend sessions</label><input type="number" min="1" id="cfgXrayMuxGlobalSessions" placeholder="32768"/></div>
               <div class="field"><label>Mux UDP idle ms</label><input type="number" min="1000" id="cfgXrayMuxUdpIdleMs" placeholder="15000"/></div>
@@ -1198,9 +1199,6 @@
               <div class="field"><label>Mux UDP write buffer bytes</label><input type="number" min="4096" id="cfgXrayMuxUdpWbuf" placeholder="262144"/></div>
               <div class="field"><label>XHTTP max active sessions</label><input type="number" min="1" id="cfgXrayXhttpMaxSessions" placeholder="16384"/></div>
               <div class="field"><label>XHTTP buffered posts</label><input type="number" min="1" id="cfgXrayXhttpBufferedPosts" placeholder="64"/></div>
-              <div class="field"><label>XHTTP queue timeout ms</label><input type="number" min="10" id="cfgXrayXhttpQueueTimeoutMs" placeholder="250"/></div>
-              <div class="field"><label>XHTTP flush ms</label><input type="number" min="1" id="cfgXrayXhttpFlushMs" placeholder="5"/></div>
-              <div class="field"><label>XHTTP flush bytes</label><input type="number" min="1024" id="cfgXrayXhttpFlushBytes" placeholder="131072"/></div>
               <div class="field"><label>HTTP/2 max streams</label><input type="number" min="1" id="cfgXrayH2MaxStreams" placeholder="1024"/></div>
               <div class="field"><label>HTTP/2 upload buffer / conn</label><input type="number" min="65536" id="cfgXrayH2UploadConn" placeholder="1048576"/></div>
               <div class="field"><label>HTTP/2 upload buffer / stream</label><input type="number" min="32768" id="cfgXrayH2UploadStream" placeholder="262144"/></div>
@@ -1209,7 +1207,7 @@
                 <button class="btn btn-ghost btn-sm" type="button" onclick="setXrayNativeTuningDefaults('2k')">Apply 2K defaults</button>
                 <button class="btn btn-ghost btn-sm" type="button" onclick="setXrayNativeTuningDefaults('safe')">Apply safe defaults</button>
               </div>
-              <div class="hint" style="grid-column:1/-1;margin-top:-4px;">These values are saved in the panel config and applied live on restart/reload. No systemd Environment lines are needed.</div>
+              <div class="hint" style="grid-column:1/-1;margin-top:-4px;">These values are saved in the panel config and applied live on restart/reload. Go CPU threads = 0 means all detected CPU cores. No systemd Environment lines are needed.</div>
             </div>
           </details>
         </div>
@@ -1235,6 +1233,18 @@
 </div><!-- /shell -->
 </div><!-- /app -->
 
-<script defer src="assets/app.js?v=20260704xrayadmintune2"></script>
+<!-- app.js was split into ordered modules for maintainability. They are plain
+     classic scripts sharing one global scope; `defer` preserves execution order,
+     so behavior is identical to the old single file. Keep this load order. -->
+<script defer src="assets/js/01-core.js?v=20260704ytquicfix1"></script>
+<script defer src="assets/js/02-shell.js?v=20260704ytquicfix1"></script>
+<script defer src="assets/js/03-ssh-users.js?v=20260704ytquicfix1"></script>
+<script defer src="assets/js/04-xray.js?v=20260704ytquicfix1"></script>
+<script defer src="assets/js/05-resellers.js?v=20260704ytquicfix1"></script>
+<script defer src="assets/js/06-servers.js?v=20260704ytquicfix1"></script>
+<script defer src="assets/js/07-stats-logs.js?v=20260704ytquicfix1"></script>
+<script defer src="assets/js/08-server-config.js?v=20260704ytquicfix1"></script>
+<script defer src="assets/js/09-xray-wizard.js?v=20260704ytquicfix1"></script>
+<script defer src="assets/js/10-boot.js?v=20260704ytquicfix1"></script>
 </body>
 </html>

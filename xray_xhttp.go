@@ -411,9 +411,10 @@ func (ib *nativeInbound) upsertXHTTPSession(w http.ResponseWriter, id string) *n
 		return s
 	}
 	if max := ib.xhttpMaxActiveSessions(); max > 0 && len(ib.xhttpSessions) >= max {
-		xrayTracef("native xray: xhttp session rejected inbound=%q active=%d limit=%d", ib.tag, len(ib.xhttpSessions), max)
-		http.Error(w, "xhttp session limit reached", http.StatusTooManyRequests)
-		return nil
+		// XHTTP uses many HTTP requests/sessions by design. Returning HTTP 429
+		// makes Xray clients tear down active tunnels, which is worse than allowing
+		// a short soft-limit overflow and relying on stale-session cleanup.
+		xrayTracef("native xray: xhttp session soft limit exceeded inbound=%q active=%d limit=%d", ib.tag, len(ib.xhttpSessions), max)
 	}
 	s := &nativeXHTTPSession{
 		id:       id,
@@ -482,12 +483,11 @@ func (ib *nativeInbound) handleXHTTPStreamUpload(w http.ResponseWriter, r *http.
 		http.Error(w, "xhttp stream-up mode is not allowed", http.StatusBadRequest)
 		return
 	}
-	if err := sess.queue.pushContext(r.Context(), nativeXHTTPPacket{Reader: r.Body}, nativeXHTTPQueuePushTimeoutDuration()); err != nil {
-		status := http.StatusConflict
-		if errors.Is(err, errNativeXHTTPQueueFull) {
-			status = http.StatusTooManyRequests
+	if err := sess.queue.push(r.Context(), nativeXHTTPPacket{Reader: r.Body}); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
 		}
-		http.Error(w, err.Error(), status)
+		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
 	w.Header().Set("X-Accel-Buffering", "no")
@@ -517,13 +517,12 @@ func (ib *nativeInbound) handleXHTTPPacketUpload(w http.ResponseWriter, r *http.
 		return
 	}
 	xrayTracef("native xray: xhttp packet-up inbound=%q session=%q seq=%d payload=%d remote=%s", ib.tag, sess.id, seq, len(payload), r.RemoteAddr)
-	if err := sess.queue.pushContext(r.Context(), nativeXHTTPPacket{Payload: payload, Seq: seq}, nativeXHTTPQueuePushTimeoutDuration()); err != nil {
-		status := http.StatusConflict
-		if errors.Is(err, errNativeXHTTPQueueFull) {
-			status = http.StatusTooManyRequests
+	if err := sess.queue.push(r.Context(), nativeXHTTPPacket{Payload: payload, Seq: seq}); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
 		}
 		xrayTracef("native xray: xhttp packet-up push failed inbound=%q session=%q seq=%d: %v", ib.tag, sess.id, seq, err)
-		http.Error(w, err.Error(), status)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if len(payload) == 0 {
@@ -662,7 +661,13 @@ func (ib *nativeInbound) handleXHTTPDownload(w http.ResponseWriter, r *http.Requ
 	sess.touch()
 	defer xrayRecover(fmt.Sprintf("native xray XHTTP download inbound=%q session=%q remote=%s", ib.tag, sessionID, r.RemoteAddr))
 	xrayTracef("native xray: xhttp stream-down inbound=%q session=%q proto=%s remote=%s", ib.tag, sessionID, r.Proto, r.RemoteAddr)
-	sess.markConnected()
+	if !sess.markConnected() {
+		// Another download is already streaming this session. Reject the duplicate
+		// GET without touching the live session so the first download keeps flowing.
+		xrayTracef("native xray: xhttp duplicate download rejected inbound=%q session=%q remote=%s", ib.tag, sessionID, r.RemoteAddr)
+		xhttpBadRequest(w)
+		return
+	}
 	defer ib.deleteXHTTPSession(sessionID, sess)
 
 	w.Header().Set("X-Accel-Buffering", "no")
@@ -740,11 +745,21 @@ func (s *nativeXHTTPSession) touch() {
 	s.mu.Unlock()
 }
 
-func (s *nativeXHTTPSession) markConnected() {
+// markConnected attaches the single download (stream-down) reader to the
+// session. It returns false if a download is already attached: XHTTP has exactly
+// one downlink per session, and letting a second GET dispatch a second
+// VLESS/VMess reader over the same upload queue splits the decoded stream across
+// two HTTP responses and corrupts the tunnel (seen as the proxy "stopping
+// passing data" after a mobile-network reconnect).
+func (s *nativeXHTTPSession) markConnected() bool {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.connected {
+		return false
+	}
 	s.connected = true
 	s.lastSeen = time.Now()
-	s.mu.Unlock()
+	return true
 }
 
 func (s *nativeXHTTPSession) close() {
@@ -808,22 +823,19 @@ func (c *nativeXHTTPConn) SetReadDeadline(t time.Time) error {
 
 func (c *nativeXHTTPConn) SetWriteDeadline(time.Time) error { return nil }
 
+// nativeXHTTPResponseWriter mirrors xray-core's httpServerConn.Write: every write
+// to the download stream is flushed immediately. XHTTP download is an SSE-style
+// stream, and the client only makes progress on bytes that actually reach it, so
+// batching writes (behind a timer/threshold) just adds latency and stutter. The
+// mutex serializes writes against close.
 type nativeXHTTPResponseWriter struct {
-	mu           sync.Mutex
-	w            http.ResponseWriter
-	closed       bool
-	pendingFlush bool
-	lastFlush    time.Time
-	buffered     int
-	flushTimer   *time.Timer
-	timerActive  bool
+	mu     sync.Mutex
+	w      http.ResponseWriter
+	closed bool
 }
 
 func newNativeXHTTPResponseWriter(w http.ResponseWriter) *nativeXHTTPResponseWriter {
-	// The handler writes/flushed headers before the proxy stream is dispatched.
-	// Starting lastFlush at now prevents the first tiny mux packet from forcing an
-	// immediate extra flush for every user.
-	return &nativeXHTTPResponseWriter{w: w, lastFlush: time.Now()}
+	return &nativeXHTTPResponseWriter{w: w}
 }
 
 func (w *nativeXHTTPResponseWriter) Write(p []byte) (int, error) {
@@ -833,62 +845,15 @@ func (w *nativeXHTTPResponseWriter) Write(p []byte) (int, error) {
 		return 0, io.ErrClosedPipe
 	}
 	n, err := w.w.Write(p)
-	if n > 0 {
-		w.buffered += n
-	}
 	if err == nil {
-		w.flushMaybeLocked(false)
+		flushHTTP(w.w)
 	}
 	return n, err
 }
 
-func (w *nativeXHTTPResponseWriter) flushMaybeLocked(force bool) {
-	now := time.Now()
-	if force || w.buffered >= nativeXHTTPFlushByteLimit() || now.Sub(w.lastFlush) >= nativeXHTTPFlushIntervalDuration() {
-		flushHTTP(w.w)
-		w.lastFlush = now
-		w.buffered = 0
-		w.pendingFlush = false
-		w.timerActive = false
-		return
-	}
-	if w.pendingFlush {
-		return
-	}
-	w.pendingFlush = true
-	if w.timerActive {
-		return
-	}
-	w.timerActive = true
-	if w.flushTimer == nil {
-		w.flushTimer = time.AfterFunc(nativeXHTTPFlushIntervalDuration(), w.fireFlushTimer)
-	} else {
-		w.flushTimer.Reset(nativeXHTTPFlushIntervalDuration())
-	}
-}
-
-func (w *nativeXHTTPResponseWriter) fireFlushTimer() {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	w.timerActive = false
-	if w.closed || !w.pendingFlush {
-		return
-	}
-	flushHTTP(w.w)
-	w.lastFlush = time.Now()
-	w.buffered = 0
-	w.pendingFlush = false
-}
-
 func (w *nativeXHTTPResponseWriter) close() {
 	w.mu.Lock()
-	if !w.closed {
-		if w.flushTimer != nil {
-			w.flushTimer.Stop()
-		}
-		w.flushMaybeLocked(true)
-		w.closed = true
-	}
+	w.closed = true
 	w.mu.Unlock()
 }
 
@@ -898,21 +863,32 @@ type nativeXHTTPPacket struct {
 	Seq     uint64
 }
 
+// nativeXHTTPUploadQueue is a faithful port of xray-core's splithttp uploadQueue
+// (transport/internet/splithttp/upload_queue.go): a bounded channel that feeds a
+// sequence-number reorder heap. The critical property — matching upstream Xray —
+// is that push() buffers the packet and returns immediately so the HTTP POST is
+// acked (200) without waiting for the tunnel reader to consume it. The previous
+// implementation blocked each POST until consumption, which throttled the uplink
+// to the reassembly rate and periodically deadlocked against the client's
+// concurrent-POST limit — the classic "download a burst, stall, repeat" that made
+// video/large downloads unusable.
 type nativeXHTTPUploadQueue struct {
 	pushedPackets chan nativeXHTTPPacket
-	heap          nativeXHTTPHeap
-	nextSeq       uint64
 	maxPackets    int
-	closed        chan struct{}
-	closeOnce     sync.Once
-	reader        io.ReadCloser
-	deadlineMu    sync.Mutex
-	readDeadline  time.Time
+
+	mu           sync.Mutex
+	reader       io.ReadCloser
+	heap         nativeXHTTPHeap
+	nextSeq      uint64
+	readDeadline time.Time
+
+	closed    chan struct{}
+	closeOnce sync.Once
 }
 
 func newNativeXHTTPUploadQueue(maxPackets int) *nativeXHTTPUploadQueue {
 	if maxPackets <= 0 {
-		maxPackets = 30
+		maxPackets = defaultNativeXHTTPBufferedPosts
 	}
 	return &nativeXHTTPUploadQueue{
 		pushedPackets: make(chan nativeXHTTPPacket, maxPackets),
@@ -921,79 +897,121 @@ func newNativeXHTTPUploadQueue(maxPackets int) *nativeXHTTPUploadQueue {
 	}
 }
 
-var errNativeXHTTPQueueFull = errors.New("xhttp upload queue full")
-
-func (q *nativeXHTTPUploadQueue) pushContext(ctx context.Context, p nativeXHTTPPacket, timeout time.Duration) error {
-	if timeout <= 0 {
-		timeout = nativeXHTTPQueuePushTimeoutDuration()
+// push buffers one uplink packet (or the stream-up reader) and returns as soon as
+// it is queued. It only blocks when the bounded buffer is full — the same
+// backpressure upstream Xray applies — or until the request/session is cancelled.
+func (q *nativeXHTTPUploadQueue) push(ctx context.Context, p nativeXHTTPPacket) error {
+	if p.Reader != nil {
+		// Only one stream-up reader may exist per session.
+		q.mu.Lock()
+		if q.reader != nil {
+			q.mu.Unlock()
+			return errors.New("xhttp upload reader already exists")
+		}
+		q.mu.Unlock()
 	}
-	t := time.NewTimer(timeout)
-	defer t.Stop()
 	select {
 	case q.pushedPackets <- p:
+		select {
+		case <-q.closed:
+			return io.ErrClosedPipe
+		default:
+		}
 		return nil
 	case <-q.closed:
 		return io.ErrClosedPipe
 	case <-ctx.Done():
 		return ctx.Err()
-	case <-t.C:
-		return errNativeXHTTPQueueFull
 	}
 }
 
 func (q *nativeXHTTPUploadQueue) close() {
 	q.closeOnce.Do(func() {
 		close(q.closed)
-		if q.reader != nil {
-			_ = q.reader.Close()
+		q.mu.Lock()
+		reader := q.reader
+		q.mu.Unlock()
+		if reader != nil {
+			_ = reader.Close()
 		}
 	})
 }
 
 func (q *nativeXHTTPUploadQueue) SetReadDeadline(t time.Time) error {
-	q.deadlineMu.Lock()
+	q.mu.Lock()
 	q.readDeadline = t
-	q.deadlineMu.Unlock()
+	q.mu.Unlock()
 	return nil
 }
 
-func (q *nativeXHTTPUploadQueue) deadlineChan() <-chan time.Time {
-	q.deadlineMu.Lock()
+// recv blocks for the next buffered packet, honoring the current read deadline
+// (used only for the VLESS/VMess handshake timeout; the tunnel body has none).
+func (q *nativeXHTTPUploadQueue) recv() (nativeXHTTPPacket, error) {
+	q.mu.Lock()
 	d := q.readDeadline
-	q.deadlineMu.Unlock()
-	if d.IsZero() {
-		return nil
-	}
-	return time.After(time.Until(d))
-}
+	q.mu.Unlock()
 
-func (q *nativeXHTTPUploadQueue) Read(b []byte) (int, error) {
-	if q.reader != nil {
-		return q.reader.Read(b)
-	}
-	if len(q.heap) == 0 {
+	if d.IsZero() {
 		select {
-		case <-q.deadlineChan():
-			return 0, os.ErrDeadlineExceeded
 		case p := <-q.pushedPackets:
-			if p.Reader != nil {
-				q.reader = p.Reader
-				return q.reader.Read(b)
-			}
-			heap.Push(&q.heap, p)
+			return p, nil
 		case <-q.closed:
-			return 0, io.EOF
+			return nativeXHTTPPacket{}, io.EOF
 		}
 	}
+
+	wait := time.Until(d)
+	if wait <= 0 {
+		return nativeXHTTPPacket{}, os.ErrDeadlineExceeded
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case p := <-q.pushedPackets:
+		return p, nil
+	case <-q.closed:
+		return nativeXHTTPPacket{}, io.EOF
+	case <-timer.C:
+		return nativeXHTTPPacket{}, os.ErrDeadlineExceeded
+	}
+}
+
+// Read mirrors xray-core uploadQueue.Read: drain in-order payloads from the heap,
+// otherwise pull from the channel; misordered packets are buffered until their
+// predecessor arrives, and an over-large reassembly heap tears the session down
+// so the client retries.
+func (q *nativeXHTTPUploadQueue) Read(b []byte) (int, error) {
+	if reader := q.loadReader(); reader != nil {
+		return reader.Read(b)
+	}
+
+	select {
+	case <-q.closed:
+		return 0, io.EOF
+	default:
+	}
+
+	if len(q.heap) == 0 {
+		p, err := q.recv()
+		if err != nil {
+			return 0, err
+		}
+		if p.Reader != nil {
+			q.setReader(p.Reader)
+			return p.Reader.Read(b)
+		}
+		heap.Push(&q.heap, p)
+	}
+
 	for len(q.heap) > 0 {
 		packet := heap.Pop(&q.heap).(nativeXHTTPPacket)
+
 		if packet.Seq == q.nextSeq {
-			if len(packet.Payload) == 0 {
-				q.nextSeq = packet.Seq + 1
-				continue
-			}
 			n := copy(b, packet.Payload)
 			if n < len(packet.Payload) {
+				// Partial read: push the remainder back with the same sequence so
+				// the next Read continues it before advancing nextSeq. (This mirrors
+				// xray-core; a separate side buffer would forget to advance nextSeq.)
 				packet.Payload = packet.Payload[n:]
 				heap.Push(&q.heap, packet)
 			} else {
@@ -1001,37 +1019,38 @@ func (q *nativeXHTTPUploadQueue) Read(b []byte) (int, error) {
 			}
 			return n, nil
 		}
+
 		if packet.Seq > q.nextSeq {
+			// Misordered: wait for the missing predecessor.
 			if len(q.heap) > q.maxPackets {
-				return 0, errors.New("xhttp packet queue is too large")
+				return 0, errors.New("xhttp upload reassembly buffer too large")
 			}
 			heap.Push(&q.heap, packet)
-			select {
-			case <-q.deadlineChan():
-				return 0, os.ErrDeadlineExceeded
-			case p := <-q.pushedPackets:
-				if p.Reader != nil {
-					return 0, errors.New("xhttp mixed stream-up and packet-up upload")
-				}
-				heap.Push(&q.heap, p)
-			case <-q.closed:
-				return 0, io.EOF
+			p, err := q.recv()
+			if err != nil {
+				return 0, err
 			}
+			if p.Reader != nil {
+				return 0, errors.New("xhttp mixed stream-up and packet-up upload")
+			}
+			heap.Push(&q.heap, p)
 		}
+		// packet.Seq < nextSeq: stale/duplicate, already popped — drop it.
 	}
-	select {
-	case <-q.deadlineChan():
-		return 0, os.ErrDeadlineExceeded
-	case <-q.closed:
-		return 0, io.EOF
-	case p := <-q.pushedPackets:
-		if p.Reader != nil {
-			q.reader = p.Reader
-			return q.reader.Read(b)
-		}
-		heap.Push(&q.heap, p)
-		return q.Read(b)
-	}
+
+	return 0, nil
+}
+
+func (q *nativeXHTTPUploadQueue) loadReader() io.ReadCloser {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.reader
+}
+
+func (q *nativeXHTTPUploadQueue) setReader(r io.ReadCloser) {
+	q.mu.Lock()
+	q.reader = r
+	q.mu.Unlock()
 }
 
 type nativeXHTTPHeap []nativeXHTTPPacket
