@@ -400,10 +400,11 @@ func (ib *nativeInbound) upsertXHTTPSession(w http.ResponseWriter, id string) *n
 		xrayTracef("native xray: xhttp session soft limit exceeded inbound=%q active=%d limit=%d", ib.tag, len(ib.xhttpSessions), max)
 	}
 	s := &nativeXHTTPSession{
-		id:       id,
-		queue:    newNativeXHTTPUploadQueue(ib.xhttpMaxBufferedPosts),
-		done:     make(chan struct{}),
-		lastSeen: time.Now(),
+		id:          id,
+		queue:       newNativeXHTTPUploadQueue(ib.xhttpMaxBufferedPosts),
+		done:        make(chan struct{}),
+		connectedCh: make(chan struct{}),
+		lastSeen:    time.Now(),
 	}
 	ib.xhttpSessions[id] = s
 	xrayTracef("native xray: xhttp session created inbound=%q session=%q active=%d", ib.tag, id, len(ib.xhttpSessions))
@@ -419,35 +420,29 @@ func (ib *nativeInbound) xhttpMaxActiveSessions() int {
 }
 
 func (ib *nativeInbound) reapUnconnectedXHTTPSession(id string, s *nativeXHTTPSession) {
-	// Keep the cheap unconnected cleanup, but also reap stale sessions that never
-	// receive their paired download/close because a mobile network or CDN path died.
-	unconnected := time.NewTimer(20 * time.Second)
-	stale := time.NewTicker(30 * time.Second)
-	defer unconnected.Stop()
-	defer stale.Stop()
-	for {
-		select {
-		case <-unconnected.C:
-			s.mu.Lock()
-			connected := s.connected
-			s.mu.Unlock()
-			if !connected {
-				ib.deleteXHTTPSession(id, s)
-				s.close()
-				return
-			}
-		case <-stale.C:
-			s.mu.Lock()
-			idle := time.Since(s.lastSeen)
-			s.mu.Unlock()
-			if idle > 5*time.Minute {
-				ib.deleteXHTTPSession(id, s)
-				s.close()
-				return
-			}
-		case <-s.done:
-			return
+	// Match xray-core hub.go: give the session up to 30s for its downlink GET to
+	// attach. Once connected, the session lives for the life of that GET request
+	// with NO idle timeout -- the reaper simply exits. There is deliberately no
+	// stale/idle reaper for connected sessions: a long stream-down download rides
+	// inside the already-open GET/POST and produces no new HTTP requests, so an
+	// idle timeout would kill an active transfer mid-stream (e.g. YouTube stalling
+	// after a few minutes). Lifetime cleanup is handled by handleXHTTPDownload's
+	// deferred deleteXHTTPSession when the tunnel ends or the client disconnects.
+	timer := time.NewTimer(30 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		s.mu.Lock()
+		connected := s.connected
+		s.mu.Unlock()
+		if !connected {
+			ib.deleteXHTTPSession(id, s)
+			s.close()
 		}
+	case <-s.connectedCh:
+		// Downlink attached in time; stop watching.
+	case <-s.done:
+		// Already torn down.
 	}
 }
 
@@ -712,13 +707,15 @@ func flushHTTP(w http.ResponseWriter) {
 }
 
 type nativeXHTTPSession struct {
-	id        string
-	queue     *nativeXHTTPUploadQueue
-	done      chan struct{}
-	closeOnce sync.Once
-	mu        sync.Mutex
-	connected bool
-	lastSeen  time.Time
+	id          string
+	queue       *nativeXHTTPUploadQueue
+	done        chan struct{}
+	closeOnce   sync.Once
+	connectedCh chan struct{} // closed once the download GET attaches
+	connectOnce sync.Once
+	mu          sync.Mutex
+	connected   bool
+	lastSeen    time.Time
 }
 
 func (s *nativeXHTTPSession) touch() {
@@ -727,14 +724,15 @@ func (s *nativeXHTTPSession) touch() {
 	s.mu.Unlock()
 }
 
-// markConnected records that the download (stream-down) GET has attached, which
-// stops the unconnected-session reaper from expiring it. It does not reject a
-// second attach (xray-core does not either): rejecting breaks client reconnects.
+// markConnected records that the download (stream-down) GET has attached and
+// signals the reaper to stop watching. It does not reject a second attach
+// (xray-core does not either): rejecting breaks client reconnects.
 func (s *nativeXHTTPSession) markConnected() {
 	s.mu.Lock()
 	s.connected = true
 	s.lastSeen = time.Now()
 	s.mu.Unlock()
+	s.connectOnce.Do(func() { close(s.connectedCh) })
 }
 
 func (s *nativeXHTTPSession) close() {

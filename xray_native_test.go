@@ -238,6 +238,86 @@ func TestVLESSOverWebSocket(t *testing.T) {
 	}
 }
 
+// TestVLESSOverWebSocketEarlyData guards the 0-RTT path: xray clients configured
+// with ?ed=N carry the VLESS request header base64url-encoded in the
+// Sec-WebSocket-Protocol header and send no first frame. Dropping it (as the
+// handshake did before) makes the server block waiting for a header that never
+// arrives as a frame, stalling every ed= WebSocket client.
+func TestVLESSOverWebSocketEarlyData(t *testing.T) {
+	echoPort, stopEcho := startEchoServer(t)
+	defer stopEcho()
+	_, port, id, stop := newTestInbound(t, "ws", "/vlws")
+	defer stop()
+
+	raw, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", itoa(port)))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer raw.Close()
+	raw.SetDeadline(time.Now().Add(5 * time.Second))
+
+	// Entire VLESS header + first payload live in the early-data header; no frame.
+	early := append(vlessHeader(id, echoPort), []byte("ping-ed")...)
+	proto := base64.RawURLEncoding.EncodeToString(early)
+
+	var keyBytes [16]byte
+	rand.Read(keyBytes[:])
+	key := base64.StdEncoding.EncodeToString(keyBytes[:])
+	req := "GET /vlws HTTP/1.1\r\n" +
+		"Host: test\r\n" +
+		"Upgrade: websocket\r\n" +
+		"Connection: Upgrade\r\n" +
+		"Sec-WebSocket-Key: " + key + "\r\n" +
+		"Sec-WebSocket-Protocol: " + proto + "\r\n" +
+		"Sec-WebSocket-Version: 13\r\n\r\n"
+	if _, err := raw.Write([]byte(req)); err != nil {
+		t.Fatalf("handshake write: %v", err)
+	}
+
+	br := bufio.NewReader(raw)
+	statusLine, err := br.ReadString('\n')
+	if err != nil {
+		t.Fatalf("read status: %v", err)
+	}
+	if !strings.Contains(statusLine, "101") {
+		t.Fatalf("ws handshake not 101: %q", statusLine)
+	}
+	sawProto := false
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read headers: %v", err)
+		}
+		if strings.Contains(line, proto) {
+			sawProto = true
+		}
+		if line == "\r\n" {
+			break
+		}
+	}
+	if !sawProto {
+		t.Fatalf("server did not echo Sec-WebSocket-Protocol")
+	}
+
+	ws := &testWSConn{Conn: raw, r: br}
+	buf := make([]byte, 0, 32)
+	want := 2 + len("ping-ed")
+	for len(buf) < want {
+		chunk := make([]byte, 64)
+		n, err := ws.Read(chunk)
+		if err != nil {
+			t.Fatalf("ws read (early data dropped?): %v (got %q)", err, buf)
+		}
+		buf = append(buf, chunk[:n]...)
+	}
+	if buf[0] != 0 {
+		t.Fatalf("bad ws vless response: %v", buf[:2])
+	}
+	if string(buf[2:want]) != "ping-ed" {
+		t.Fatalf("ws early-data echo mismatch: got %q", buf[2:want])
+	}
+}
+
 func TestVLESSOverXHTTPPacketUp(t *testing.T) {
 	echoPort, stopEcho := startEchoServer(t)
 	defer stopEcho()

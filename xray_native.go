@@ -734,8 +734,27 @@ func wsServerHandshake(conn net.Conn, wantPath string) (*websocketConn, error) {
 	if key == "" {
 		return nil, errors.New("missing Sec-WebSocket-Key")
 	}
+	// Match only the path portion; the configured path may carry an ?ed=N query
+	// (early-data hint) and the request path is already query-stripped by Go.
+	if i := strings.IndexByte(wantPath, '?'); i >= 0 {
+		wantPath = wantPath[:i]
+	}
 	if wantPath != "" && wantPath != "/" && req.URL.Path != wantPath {
 		return nil, fmt.Errorf("ws path mismatch: got %q want %q", req.URL.Path, wantPath)
+	}
+
+	// WebSocket early data (0-RTT): xray clients configured with ?ed=N carry the
+	// first bytes -- the VLESS/VMess request header -- base64url-encoded in the
+	// Sec-WebSocket-Protocol request header instead of a first frame. Decode it and
+	// feed it to Read before any frame, and echo the header back so the client's
+	// upgrade check is satisfied. Dropping this makes every ed= WS client stall,
+	// because the server would wait for a header that never arrives as a frame.
+	var early []byte
+	proto := req.Header.Get("Sec-WebSocket-Protocol")
+	if proto != "" {
+		if ed, derr := base64.RawURLEncoding.DecodeString(proto); derr == nil {
+			early = ed
+		}
 	}
 
 	sum := sha1.Sum([]byte(key + wsMagicGUID))
@@ -743,11 +762,15 @@ func wsServerHandshake(conn net.Conn, wantPath string) (*websocketConn, error) {
 	resp := "HTTP/1.1 101 Switching Protocols\r\n" +
 		"Upgrade: websocket\r\n" +
 		"Connection: Upgrade\r\n" +
-		"Sec-WebSocket-Accept: " + accept + "\r\n\r\n"
+		"Sec-WebSocket-Accept: " + accept + "\r\n"
+	if proto != "" {
+		resp += "Sec-WebSocket-Protocol: " + proto + "\r\n"
+	}
+	resp += "\r\n"
 	if _, err := conn.Write([]byte(resp)); err != nil {
 		return nil, err
 	}
-	return &websocketConn{Conn: conn, r: br}, nil
+	return &websocketConn{Conn: conn, r: br, early: early}, nil
 }
 
 // websocketConn adapts a WebSocket data stream to a net.Conn. Client frames are
@@ -755,11 +778,17 @@ func wsServerHandshake(conn net.Conn, wantPath string) (*websocketConn, error) {
 type websocketConn struct {
 	net.Conn
 	r       *bufio.Reader
+	early   []byte // 0-RTT early data delivered before the first frame
 	readBuf []byte // decoded payload not yet consumed by Read
 	wmu     sync.Mutex
 }
 
 func (c *websocketConn) Read(p []byte) (int, error) {
+	if len(c.early) > 0 {
+		n := copy(p, c.early)
+		c.early = c.early[n:]
+		return n, nil
+	}
 	for len(c.readBuf) == 0 {
 		payload, opcode, err := c.readFrame()
 		if err != nil {
