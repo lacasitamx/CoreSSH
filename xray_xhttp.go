@@ -99,8 +99,6 @@ func mergeNativeXHTTPSettings(primary, fallback nativeXHTTPSettingsJSON) nativeX
 
 func (ib *nativeInbound) serveXHTTPListener(ln net.Listener) {
 	defer xrayRecover(fmt.Sprintf("native xray XHTTP listener inbound=%q addr=%s", ib.tag, ln.Addr()))
-	// Match xray-core: let net/http's HTTP/2 use its own defaults for flow
-	// control, stream limits and upload buffers instead of overriding them.
 	h2s := &http2.Server{}
 	handler := http.Handler(ib)
 	// Official Xray accepts plaintext HTTP/1.1 and h2c on non-TLS XHTTP
@@ -164,14 +162,11 @@ func (ib *nativeInbound) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	mode := ib.normalizedXHTTPMode()
 	xrayTracef("native xray: xhttp request inbound=%q method=%s proto=%s path=%q host=%q session=%q seq=%q len=%d mode=%s remote=%s", ib.tag, r.Method, r.Proto, r.URL.RequestURI(), r.Host, sessionID, seqStr, r.ContentLength, mode, r.RemoteAddr)
 
-	// Routing mirrors xray-core splithttp hub.go ServeHTTP exactly.
 	if sessionID == "" && mode != "" && mode != "auto" && mode != "stream-one" && mode != "stream-up" {
 		http.Error(w, "stream-one mode is not allowed", http.StatusBadRequest)
 		return
 	}
 
-	// GET carries uplink data only when it has a sequence id; every other method
-	// (POST/PUT/PATCH) is always an uplink request.
 	isUplinkRequest := true
 	if r.Method == http.MethodGet {
 		isUplinkRequest = seqStr != ""
@@ -319,9 +314,6 @@ func (ib *nativeInbound) extractXHTTPMeta(r *http.Request, base string) (session
 	sessionKey := firstNonEmpty(ib.xhttpSessionKey, defaultXHTTPMetaKey(sessionPlacement, true))
 	seqKey := firstNonEmpty(ib.xhttpSeqKey, defaultXHTTPMetaKey(seqPlacement, false))
 
-	// Matches xray-core ExtractMetaFromRequest: split the path suffix after the
-	// base directly, without trimming empty segments, so segment indices line up
-	// exactly with what the client produced via appendToPath.
 	var parts []string
 	pathPart := 0
 	if sessionPlacement == xhttpPlacementPath || seqPlacement == xhttpPlacementPath {
@@ -420,14 +412,6 @@ func (ib *nativeInbound) xhttpMaxActiveSessions() int {
 }
 
 func (ib *nativeInbound) reapUnconnectedXHTTPSession(id string, s *nativeXHTTPSession) {
-	// Match xray-core hub.go: give the session up to 30s for its downlink GET to
-	// attach. Once connected, the session lives for the life of that GET request
-	// with NO idle timeout -- the reaper simply exits. There is deliberately no
-	// stale/idle reaper for connected sessions: a long stream-down download rides
-	// inside the already-open GET/POST and produces no new HTTP requests, so an
-	// idle timeout would kill an active transfer mid-stream (e.g. YouTube stalling
-	// after a few minutes). Lifetime cleanup is handled by handleXHTTPDownload's
-	// deferred deleteXHTTPSession when the tunnel ends or the client disconnects.
 	timer := time.NewTimer(30 * time.Second)
 	defer timer.Stop()
 	select {
@@ -440,9 +424,7 @@ func (ib *nativeInbound) reapUnconnectedXHTTPSession(id string, s *nativeXHTTPSe
 			s.close()
 		}
 	case <-s.connectedCh:
-		// Downlink attached in time; stop watching.
 	case <-s.done:
-		// Already torn down.
 	}
 }
 
@@ -639,11 +621,6 @@ func (ib *nativeInbound) handleXHTTPDownload(w http.ResponseWriter, r *http.Requ
 	sess.touch()
 	defer xrayRecover(fmt.Sprintf("native xray XHTTP download inbound=%q session=%q remote=%s", ib.tag, sessionID, r.RemoteAddr))
 	xrayTracef("native xray: xhttp stream-down inbound=%q session=%q proto=%s remote=%s", ib.tag, sessionID, r.Proto, r.RemoteAddr)
-	// Do NOT reject a second download GET for the same session. xray-core does not,
-	// and rejecting one permanently breaks reconnects: when the client re-opens the
-	// downlink after a network hiccup (or H2 retries it) while the previous handler
-	// is still blocked on a now-dead socket, a 400 makes the client tear the whole
-	// session down and every retry keeps failing.
 	sess.markConnected()
 	defer ib.deleteXHTTPSession(sessionID, sess)
 
@@ -724,9 +701,6 @@ func (s *nativeXHTTPSession) touch() {
 	s.mu.Unlock()
 }
 
-// markConnected records that the download (stream-down) GET has attached and
-// signals the reaper to stop watching. It does not reject a second attach
-// (xray-core does not either): rejecting breaks client reconnects.
 func (s *nativeXHTTPSession) markConnected() {
 	s.mu.Lock()
 	s.connected = true
@@ -796,11 +770,6 @@ func (c *nativeXHTTPConn) SetReadDeadline(t time.Time) error {
 
 func (c *nativeXHTTPConn) SetWriteDeadline(time.Time) error { return nil }
 
-// nativeXHTTPResponseWriter mirrors xray-core's httpServerConn.Write: every write
-// to the download stream is flushed immediately. XHTTP download is an SSE-style
-// stream, and the client only makes progress on bytes that actually reach it, so
-// batching writes (behind a timer/threshold) just adds latency and stutter. The
-// mutex serializes writes against close.
 type nativeXHTTPResponseWriter struct {
 	mu     sync.Mutex
 	w      http.ResponseWriter
@@ -836,15 +805,6 @@ type nativeXHTTPPacket struct {
 	Seq     uint64
 }
 
-// nativeXHTTPUploadQueue is a faithful port of xray-core's splithttp uploadQueue
-// (transport/internet/splithttp/upload_queue.go): a bounded channel that feeds a
-// sequence-number reorder heap. The critical property — matching upstream Xray —
-// is that push() buffers the packet and returns immediately so the HTTP POST is
-// acked (200) without waiting for the tunnel reader to consume it. The previous
-// implementation blocked each POST until consumption, which throttled the uplink
-// to the reassembly rate and periodically deadlocked against the client's
-// concurrent-POST limit — the classic "download a burst, stall, repeat" that made
-// video/large downloads unusable.
 type nativeXHTTPUploadQueue struct {
 	pushedPackets chan nativeXHTTPPacket
 	maxPackets    int
@@ -870,12 +830,8 @@ func newNativeXHTTPUploadQueue(maxPackets int) *nativeXHTTPUploadQueue {
 	}
 }
 
-// push buffers one uplink packet (or the stream-up reader) and returns as soon as
-// it is queued. It only blocks when the bounded buffer is full — the same
-// backpressure upstream Xray applies — or until the request/session is cancelled.
 func (q *nativeXHTTPUploadQueue) push(ctx context.Context, p nativeXHTTPPacket) error {
 	if p.Reader != nil {
-		// Only one stream-up reader may exist per session.
 		q.mu.Lock()
 		if q.reader != nil {
 			q.mu.Unlock()
@@ -917,8 +873,6 @@ func (q *nativeXHTTPUploadQueue) SetReadDeadline(t time.Time) error {
 	return nil
 }
 
-// recv blocks for the next buffered packet, honoring the current read deadline
-// (used only for the VLESS/VMess handshake timeout; the tunnel body has none).
 func (q *nativeXHTTPUploadQueue) recv() (nativeXHTTPPacket, error) {
 	q.mu.Lock()
 	d := q.readDeadline
@@ -949,10 +903,6 @@ func (q *nativeXHTTPUploadQueue) recv() (nativeXHTTPPacket, error) {
 	}
 }
 
-// Read mirrors xray-core uploadQueue.Read: drain in-order payloads from the heap,
-// otherwise pull from the channel; misordered packets are buffered until their
-// predecessor arrives, and an over-large reassembly heap tears the session down
-// so the client retries.
 func (q *nativeXHTTPUploadQueue) Read(b []byte) (int, error) {
 	if reader := q.loadReader(); reader != nil {
 		return reader.Read(b)
@@ -982,9 +932,6 @@ func (q *nativeXHTTPUploadQueue) Read(b []byte) (int, error) {
 		if packet.Seq == q.nextSeq {
 			n := copy(b, packet.Payload)
 			if n < len(packet.Payload) {
-				// Partial read: push the remainder back with the same sequence so
-				// the next Read continues it before advancing nextSeq. (This mirrors
-				// xray-core; a separate side buffer would forget to advance nextSeq.)
 				packet.Payload = packet.Payload[n:]
 				heap.Push(&q.heap, packet)
 			} else {
@@ -994,7 +941,6 @@ func (q *nativeXHTTPUploadQueue) Read(b []byte) (int, error) {
 		}
 
 		if packet.Seq > q.nextSeq {
-			// Misordered: wait for the missing predecessor.
 			if len(q.heap) > q.maxPackets {
 				return 0, errors.New("xhttp upload reassembly buffer too large")
 			}
@@ -1008,7 +954,6 @@ func (q *nativeXHTTPUploadQueue) Read(b []byte) (int, error) {
 			}
 			heap.Push(&q.heap, p)
 		}
-		// packet.Seq < nextSeq: stale/duplicate, already popped — drop it.
 	}
 
 	return 0, nil
