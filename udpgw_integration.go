@@ -25,10 +25,24 @@ import (
 	"time"
 )
 
+// Safe ceilings applied regardless of config, so oversized values left in an
+// existing config.json cannot bloat per-client memory at scale.
+const (
+	udpgwSocketBufferMax   = 512 * 1024 // per-client UDP socket buffer (kernel memory)
+	udpgwWriteChanMax      = 1024       // per-client reply queue slots
+	udpgwDefaultMaxClients = 10000      // total concurrent client cap
+)
+
 var (
 	udpgwMu      sync.Mutex
 	udpgwLn      net.Listener
 	udpgwClients = make(map[net.Conn]struct{})
+	// udpgwClientLimit is the max concurrent clients (0 = unlimited). Set when
+	// the listener starts and read on every accept, all under udpgwMu.
+	udpgwClientLimit int
+	// udpgwClientsRejected counts clients turned away at the cap, for logging
+	// and future stats. Guarded by udpgwMu.
+	udpgwClientsRejected int64
 
 	udpgwAutoMu     sync.Mutex
 	udpgwAutoCancel context.CancelFunc
@@ -69,6 +83,17 @@ func registerUDPGWClient(conn net.Conn) bool {
 	defer udpgwMu.Unlock()
 	if udpgwLn == nil {
 		_ = conn.Close()
+		return false
+	}
+	// Reject past the hard client cap so a surge cannot exhaust memory.
+	if udpgwClientLimit > 0 && len(udpgwClients) >= udpgwClientLimit {
+		udpgwClientsRejected++
+		rejected := udpgwClientsRejected
+		_ = conn.Close()
+		// Log the first rejection and then every 1000th to avoid log spam.
+		if rejected == 1 || rejected%1000 == 0 {
+			log.Printf("udpgw: client cap reached (%d); rejected %d client(s) so far", udpgwClientLimit, rejected)
+		}
 		return false
 	}
 	udpgwClients[conn] = struct{}{}
@@ -131,21 +156,29 @@ func startUDPGWInstance(cfg *UDPGWConfig) error {
 	} else {
 		c.hexdumpN = 64
 	}
-	if cfg.WriteChan > 0 {
+	// Per-client outgoing frame queue. A large queue costs ~24 B/slot of heap
+	// per client even when empty; at thousands of clients that adds up. UDP is
+	// lossy by nature, so a smaller queue that drops under backpressure is fine.
+	// The value is clamped to udpgwWriteChanMax so an oversized value left in an
+	// old config.json is ignored; only smaller custom values are honored.
+	c.writeChan = udpgwWriteChanMax
+	if cfg.WriteChan > 0 && cfg.WriteChan < udpgwWriteChanMax {
 		c.writeChan = cfg.WriteChan
-	} else {
-		c.writeChan = 4096
 	}
 	c.udpBindIP = cfg.UDPBindIP
-	if cfg.UDPRBuf > 0 {
+	// Per-client UDP socket buffers are KERNEL memory, allocated per connected
+	// client. 8 MB per socket is fine for a single process-wide listener, but
+	// here every tunnel user gets its own socket, so a large value multiplied by
+	// thousands of clients can exhaust kernel memory (especially if
+	// net.core.rmem_max was raised for DNSTT). Clamp to udpgwSocketBufferMax so
+	// old large config values are ignored; only smaller custom values are used.
+	c.udpRBuf = udpgwSocketBufferMax
+	if cfg.UDPRBuf > 0 && cfg.UDPRBuf < udpgwSocketBufferMax {
 		c.udpRBuf = cfg.UDPRBuf
-	} else {
-		c.udpRBuf = 8 * 1024 * 1024
 	}
-	if cfg.UDPWBuf > 0 {
+	c.udpWBuf = udpgwSocketBufferMax
+	if cfg.UDPWBuf > 0 && cfg.UDPWBuf < udpgwSocketBufferMax {
 		c.udpWBuf = cfg.UDPWBuf
-	} else {
-		c.udpWBuf = 8 * 1024 * 1024
 	}
 	// Parse durations with fallback defaults.
 	if cfg.MapTTL != "" {
@@ -191,6 +224,13 @@ func startUDPGWInstance(cfg *UDPGWConfig) error {
 	} else {
 		c.maxMapEntries = 32768
 	}
+	// Total concurrent client cap. New clients past this are rejected so a
+	// surge (e.g. well past normal load) cannot exhaust memory and crash.
+	if cfg.MaxClients > 0 {
+		c.maxClients = cfg.MaxClients
+	} else {
+		c.maxClients = udpgwDefaultMaxClients
+	}
 	// Start listening.
 	ln, err := net.Listen("tcp", c.listen)
 	if err != nil {
@@ -198,12 +238,14 @@ func startUDPGWInstance(cfg *UDPGWConfig) error {
 		return fmt.Errorf("udpgw: listen failed on %s: %w", c.listen, err)
 	}
 
-	// Register as the active listener so stopUDPGW can close it.
+	// Register as the active listener so stopUDPGW can close it, and publish
+	// the current client cap so registerUDPGWClient can enforce it.
 	udpgwMu.Lock()
 	if udpgwLn != nil {
 		_ = udpgwLn.Close()
 	}
 	udpgwLn = ln
+	udpgwClientLimit = c.maxClients
 	udpgwMu.Unlock()
 
 	if c.debug {
@@ -329,6 +371,7 @@ type internalUDPGWConfig struct {
 	idleTimeout    time.Duration
 	maxClientConns int
 	maxMapEntries  int
+	maxClients     int
 }
 
 // udpDestKey identifies a destination IPv4:port for the UDP gateway.  A
@@ -365,7 +408,11 @@ func handleUDPGWClient(conn net.Conn, c *internalUDPGWConfig) {
 	if tcp, ok := conn.(*net.TCPConn); ok {
 		_ = tcp.SetNoDelay(true)
 	}
-	br := bufio.NewReaderSize(conn, 256*1024)
+	// 32 KiB is ample for reading length-prefixed UDPGW frames (which are
+	// MTU-sized in practice). bufio serves reads larger than its buffer by
+	// reading straight into the caller's slice, so max-frame reads still work.
+	// The old 256 KiB buffer wasted ~224 KiB of heap per connected client.
+	br := bufio.NewReaderSize(conn, 32*1024)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	// Bind a UDP socket for this client.  Use cfg.udpBindIP if provided.

@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	_ "github.com/lib/pq"
@@ -95,6 +96,13 @@ type Config struct {
 	// remain with no bytes moving in either direction before it is closed and
 	// released from the active user count. Empty = default 5m. Use "0s" to disable.
 	SSHIdleTimeout string `json:"ssh_idle_timeout,omitempty"`
+
+	// MaxTotalConnections caps the total number of concurrent SSH connections
+	// across all users. Once reached, new connections are rejected before the
+	// (expensive) SSH handshake, so a surge past normal load cannot exhaust
+	// memory/CPU and crash the server. 0 or empty uses the default (10000);
+	// set to -1 to disable the global cap entirely.
+	MaxTotalConnections int `json:"max_total_connections,omitempty"`
 
 	// NEW: Directory to serve the admin panel from
 	AdminDir string `json:"admin_dir"`
@@ -259,17 +267,21 @@ type UDPGWConfig struct {
 	// debug logs.  A value of zero suppresses hex dumps.  Default is 64.
 	HexdumpN int `json:"hexdump"`
 	// WriteChan sets the size of the buffered channel used for sending
-	// reply frames back to the client.  Larger values allow more queued
-	// replies before blocking.  The default is 4096.
+	// reply frames back to the client. Default and hard ceiling is 1024:
+	// values above the ceiling are clamped down, so an oversized value left in
+	// an old config cannot bloat per-client memory. Zero uses the default.
 	WriteChan int `json:"write_chan"`
 	// UDPBindIP, if non‑empty, causes each per‑client UDP socket to bind to
 	// the specified local IP address.  The port is chosen automatically.
 	UDPBindIP string `json:"udp_bind"`
-	// UDPRBuf sets the size of the UDP socket read buffer in bytes.  The
-	// default is 8 MiB.  Setting this to zero uses the default.
+	// UDPRBuf sets the per-client UDP socket read buffer in bytes. This is
+	// KERNEL memory allocated per connected client. Default and hard ceiling is
+	// 512 KiB; larger values (including old 8 MiB configs) are clamped down so
+	// thousands of clients cannot exhaust kernel memory. Zero uses the default.
 	UDPRBuf int `json:"udp_rbuf"`
-	// UDPWBuf sets the size of the UDP socket write buffer in bytes.  The
-	// default is 8 MiB.  Setting this to zero uses the default.
+	// UDPWBuf sets the per-client UDP socket write buffer in bytes. Default and
+	// hard ceiling is 512 KiB; larger values are clamped down. Zero uses the
+	// default.
 	UDPWBuf int `json:"udp_wbuf"`
 	// MapTTL controls how long a destination->connID mapping remains
 	// valid after the last packet from that destination.  Expressed as a
@@ -292,6 +304,12 @@ type UDPGWConfig struct {
 	// growth if a client sprays packets to many unique destinations.
 	// Default is 32768.
 	MaxMapEntries int `json:"max_map_entries"`
+	// MaxClients caps the total number of concurrent UDPGW client TCP
+	// connections. Once reached, new clients are rejected (their TCP socket is
+	// closed immediately) instead of being accepted, so a surge past normal
+	// load cannot exhaust memory and crash the server. Default is 10000.
+	// A value <= 0 uses the default.
+	MaxClients int `json:"max_clients"`
 
 	// AutoRestartInterval controls a watchdog that periodically hard-restarts
 	// the integrated UDPGW listener and closes all connected UDPGW clients. Empty,
@@ -494,25 +512,37 @@ func mbpsToBytesPerSec(mbps int) int64 {
 	return int64(mbps) * 1024 * 1024 / 8
 }
 
+// copyBufSize is the per-direction relay buffer for tunnel traffic. SSH tunnel
+// clients (mobile injection apps) push many low-bandwidth flows, so a large
+// buffer wastes heap with no throughput benefit. 16 KiB keeps per-channel heap
+// low across thousands of concurrent direct-tcpip channels.
+const copyBufSize = 16 * 1024
+
 var copyBufPool = sync.Pool{
-	New: func() interface{} { b := make([]byte, 32*1024); return &b },
+	New: func() interface{} { b := make([]byte, copyBufSize); return &b },
 }
 
+// copyWithRateLimit relays src->dst through a pooled buffer. Every copy path
+// (rate-limited or not) goes through the pool: previously the lim==nil path used
+// io.Copy, which allocates a fresh 32 KiB buffer per direction per channel and
+// never pools it — at thousands of channels that churn dominated GC pressure.
 func copyWithRateLimit(dst io.Writer, src io.Reader, lim *rate.Limiter) (written int64, err error) {
-	if lim == nil {
-		return io.Copy(dst, src)
-	}
-
 	bufp := copyBufPool.Get().(*[]byte)
 	buf := *bufp
 	defer copyBufPool.Put(bufp)
-	ctx := context.Background()
+
+	var ctx context.Context
+	if lim != nil {
+		ctx = context.Background()
+	}
 
 	for {
 		nr, er := src.Read(buf)
 		if nr > 0 {
-			if err := lim.WaitN(ctx, nr); err != nil {
-				return written, err
+			if lim != nil {
+				if err := lim.WaitN(ctx, nr); err != nil {
+					return written, err
+				}
 			}
 
 			nw, ew := dst.Write(buf[:nr])
@@ -569,6 +599,35 @@ func getSSHIdleTimeout() time.Duration {
 	d := currentSSHIdleTimeout
 	sshIdleTimeoutMu.RUnlock()
 	return d
+}
+
+// defaultMaxTotalConns is the global concurrent SSH connection cap used when
+// max_total_connections is unset (0). Keeps headroom above normal load while
+// preventing an unbounded surge from exhausting memory/CPU.
+const defaultMaxTotalConns = 10000
+
+var (
+	// activeSSHConns is the current number of in-flight SSH connections.
+	activeSSHConns int64
+	// maxTotalConns is the global cap; 0 means unlimited. Set from config.
+	maxTotalConns int64 = defaultMaxTotalConns
+	// sshConnsRejected counts connections turned away at the global cap.
+	sshConnsRejected int64
+)
+
+// setMaxTotalConnsFromConfig applies the max_total_connections config value:
+// 0 -> default, <0 -> disabled (unlimited), >0 -> that exact cap.
+func setMaxTotalConnsFromConfig(v int) {
+	var lim int64
+	switch {
+	case v < 0:
+		lim = 0
+	case v == 0:
+		lim = defaultMaxTotalConns
+	default:
+		lim = int64(v)
+	}
+	atomic.StoreInt64(&maxTotalConns, lim)
 }
 
 // activityConn tracks real SSH transport activity in both directions. The idle
@@ -2018,6 +2077,19 @@ func handleConn(tcpConn net.Conn, config *ssh.ServerConfig) {
 	trackedConn := newActivityConn(tcpConn)
 	defer trackedConn.Close()
 
+	// Global connection cap: reject before the expensive SSH handshake so a
+	// surge past normal load cannot exhaust memory/CPU. Count first, then check,
+	// so the defer always balances the increment.
+	live := atomic.AddInt64(&activeSSHConns, 1)
+	defer atomic.AddInt64(&activeSSHConns, -1)
+	if lim := atomic.LoadInt64(&maxTotalConns); lim > 0 && live > lim {
+		r := atomic.AddInt64(&sshConnsRejected, 1)
+		if r == 1 || r%1000 == 0 {
+			log.Printf("ssh: global connection cap reached (%d); rejected %d connection(s) so far", lim, r)
+		}
+		return
+	}
+
 	// Prevent goroutine leaks from clients that connect but never complete the SSH handshake.
 	_ = trackedConn.SetReadDeadline(time.Now().Add(sshHandshakeTimeout))
 
@@ -2142,8 +2214,17 @@ func handleDirectTCPIP(newChan ssh.NewChannel, u *UserState, upLimiter, downLimi
 		return
 	}
 
+	// Shared closer: when either copy direction finishes (including a
+	// half-close that never completes), both sides are force-closed so the
+	// other direction unblocks. Close is idempotent, so calling it from both
+	// directions is safe and no separate waiter goroutine is needed.
+	closeAll := func() {
+		_ = backend.Close()
+		_ = ch.Close()
+	}
+
+	// Drain channel requests concurrently so the peer isn't left waiting.
 	go func() {
-		defer ch.Close()
 		for req := range reqs {
 			if req.WantReply {
 				req.Reply(false, nil)
@@ -2151,22 +2232,8 @@ func handleDirectTCPIP(newChan ssh.NewChannel, u *UserState, upLimiter, downLimi
 		}
 	}()
 
-	// Use a WaitGroup + shared closer so that when either copy direction
-	// finishes (including a half-close that never completes), both sides
-	// are force-closed and the other goroutine is unblocked.  Without
-	// this, a backend that issues CloseWrite but never closes the read
-	// side would leave the downstream goroutine blocked indefinitely,
-	// leaking a goroutine, a rate-limiter, and the SSH channel.
-	var wg sync.WaitGroup
-	closeAll := func() {
-		_ = backend.Close()
-		_ = ch.Close()
-	}
-
-	// upstream: SSH channel -> backend
-	wg.Add(1)
+	// upstream: SSH channel -> backend, in its own goroutine.
 	go func() {
-		defer wg.Done()
 		_, _ = copyWithRateLimit(backend, ch, upLimiter)
 		// Signal to the backend that we are done writing.
 		if cw, ok := backend.(interface{ CloseWrite() error }); ok {
@@ -2175,19 +2242,11 @@ func handleDirectTCPIP(newChan ssh.NewChannel, u *UserState, upLimiter, downLimi
 		closeAll()
 	}()
 
-	// downstream: backend -> SSH channel
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		_, _ = copyWithRateLimit(ch, backend, downLimiter)
-		closeAll()
-	}()
-
-	// Wait for both goroutines to finish, then ensure everything is closed.
-	go func() {
-		wg.Wait()
-		closeAll()
-	}()
+	// downstream: backend -> SSH channel, run in this goroutine.
+	// handleDirectTCPIP already runs as its own goroutine (see handleConn),
+	// so reusing it here avoids spawning a third goroutine per channel.
+	_, _ = copyWithRateLimit(ch, backend, downLimiter)
+	closeAll()
 }
 
 func handleDummySession(newChan ssh.NewChannel) {
@@ -3006,6 +3065,7 @@ func main() {
 	// Initialise default per-connection bandwidth limits and SSH inactivity cleanup.
 	setDefaultLimits(cfg.DefaultLimitMbpsUp, cfg.DefaultLimitMbpsDown)
 	setSSHIdleTimeoutFromConfig(cfg.SSHIdleTimeout)
+	setMaxTotalConnsFromConfig(cfg.MaxTotalConnections)
 
 	// Initialise listener pools (used for initial startup and hot-reload alike).
 	publicPool = newListenerPool(serveHTTP80)

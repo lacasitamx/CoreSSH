@@ -95,6 +95,7 @@ async function loadServerConfig() {
     // SSH / general
     document.getElementById("cfgLimitUp").value      = c.default_limit_mbps_up || 0;
     document.getElementById("cfgLimitDown").value    = c.default_limit_mbps_down || 0;
+    document.getElementById("cfgMaxTotalConns").value = c.max_total_connections || 0;
     document.getElementById("cfgQuiet").checked      = !!c.quiet;
     document.getElementById("cfgUserCount").checked  = !!c.user_count;
 
@@ -133,6 +134,7 @@ async function loadServerConfig() {
     const u = c.udpgw || {};
     document.getElementById("cfgUdpgwListen").value    = u.listen || "";
     document.getElementById("cfgUdpgwMaxConns").value  = u.max_client_conns || 0;
+    document.getElementById("cfgUdpgwMaxClients").value = u.max_clients || 0;
     document.getElementById("cfgUdpgwIdle").value      = u.idle_timeout || "";
     document.getElementById("cfgUdpgwMapTTL").value    = u.map_ttl || "";
     document.getElementById("cfgUdpgwAutoRestart").value = u.auto_restart_interval || "";
@@ -175,6 +177,7 @@ async function saveServerConfig() {
     admin_dir:            "/opt/sshpanel/admin",
     default_limit_mbps_up:   parseInt(document.getElementById("cfgLimitUp").value  || "0", 10),
     default_limit_mbps_down: parseInt(document.getElementById("cfgLimitDown").value || "0", 10),
+    max_total_connections:   parseInt(document.getElementById("cfgMaxTotalConns").value || "0", 10),
     quiet:      document.getElementById("cfgQuiet").checked,
     user_count: document.getElementById("cfgUserCount").checked,
     banner:      document.getElementById("cfgBanner").value,
@@ -204,6 +207,7 @@ async function saveServerConfig() {
     udpgw: document.getElementById("cfgUdpgwEnabled").checked ? {
       listen:          document.getElementById("cfgUdpgwListen").value.trim(),
       max_client_conns: parseInt(document.getElementById("cfgUdpgwMaxConns").value || "0", 10),
+      max_clients:     parseInt(document.getElementById("cfgUdpgwMaxClients").value || "0", 10),
       idle_timeout:    document.getElementById("cfgUdpgwIdle").value.trim(),
       map_ttl:         document.getElementById("cfgUdpgwMapTTL").value.trim(),
       auto_restart_interval: document.getElementById("cfgUdpgwAutoRestart").value.trim(),
