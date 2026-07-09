@@ -11,8 +11,13 @@ DragonCoreSSH V40 é um painel/servidor em Go para SSH com HTTP Injection, paine
 - Banco de dados PostgreSQL
 - Integração com Xray-core/V2Ray
 - Configurador visual para VLESS e VMess
+- Contas de revendedor (reseller) com cota de usuários e escopo próprio
+- Gerenciamento multi-servidor (master/slave) direto pelo painel
+- API HTTP completa para bots/automações (ver **HTTP API Reference**)
 - API pública `/check` para consultar usuário ou UUID
 - Aba de logs no painel para ver logs do sistema, DNSTT e Xray
+- Túnel DNSTT integrado com proteção de escala e reinício automático
+- DNS local embutido (fake DNS) em IPv4 ou IPv6 para testes sem um segundo servidor DNS
 - Salvamento live das configurações principais, com checagem se o serviço realmente subiu
 - Serviço `systemd` para iniciar automaticamente com o sistema
 
@@ -386,6 +391,115 @@ Erros comuns:
 {"error":"database not configured"}
 ```
 
+### Proteção de escala do DNSTT para servidores com muitos usuários
+
+O serviço DNSTT integrado inclui proteção contra sobrecarga para que milhares de usuários do túnel DNS não esgotem a RAM nem derrubem o painel inteiro com facilidade.
+
+Campos de configuração do DNSTT:
+
+```json
+{
+  "dnstt": {
+    "max_sessions": 10000,
+    "max_streams": 15000,
+    "pending_responses": 20000,
+    "stream_buffer": 262144,
+    "udp_read_buffer": 16777216,
+    "udp_write_buffer": 16777216,
+    "log_connections": false
+  }
+}
+```
+
+Os valores podem ser alterados no painel admin em **DNSTT Tunnel**. Use `0` para manter o padrão seguro. Use `-1` apenas em `max_sessions` ou `max_streams` se quiser intencionalmente não ter limite máximo.
+
+Valores recomendados para servidor movimentado:
+
+- `max_sessions`: `10000`
+- `max_streams`: `15000`
+- `pending_responses`: `20000`
+- `stream_buffer`: `262144`
+- `udp_read_buffer`: `16777216`
+- `udp_write_buffer`: `16777216`
+- `log_connections`: `false`
+
+O DNSTT também recupera panics dentro das goroutines do DNSTT, rejeita novas sessões/streams quando os limites são atingidos e reporta esses contadores em `/api/dnstt`. O painel admin os mostra no **Dashboard** principal quando o DNSTT está ativado. Se `dnstt` estiver desativado na config, o card do dashboard fica oculto. `/api/dnstt` também retorna um campo `enabled`. Contadores expostos:
+
+- `active_sessions`
+- `active_streams`
+- `sess_rejected`
+- `stream_rejected`
+- `panic_recovered`
+- `rec_dropped`
+- `parse_err`
+- `ch_len`
+
+Para implantações muito grandes, aumente também os limites de buffer de socket do Linux, por exemplo:
+
+```bash
+cat >/etc/sysctl.d/99-dragon-dnstt.conf <<'SYSCTL'
+net.core.rmem_max=67108864
+net.core.wmem_max=67108864
+net.core.netdev_max_backlog=250000
+net.ipv4.udp_mem=262144 524288 1048576
+SYSCTL
+sysctl --system
+```
+
+### DNS local embutido / fake DNS (IPv4 e IPv6)
+
+O DNSTT pode abrir um listener DNS interno extra para testes locais/LAN sem precisar de um segundo servidor DNS. Esse listener injeta os pacotes do túnel DNS diretamente no mesmo pool de sessões e chave privada do DNSTT integrado.
+
+O DNS local embutido funciona em **IPv4 e IPv6**. A família de endereço é escolhida automaticamente a partir de `fake_dns_listen`: um endereço IPv4 abre um socket `udp4`, e um endereço IPv6 (entre colchetes) abre um socket `udp6`.
+
+Exemplo IPv4:
+
+```json
+{
+  "dnstt": {
+    "domain": "t.example.com",
+    "domains": ["t.example.com", "t.local.lan"],
+    "udp_listen": "0.0.0.0:5300",
+    "fake_dns_enabled": true,
+    "fake_dns_listen": "192.168.0.10:53",
+    "fake_dns_domain": "t.local.lan",
+    "fake_dns_workers": 4,
+    "dns_response_workers": 1,
+    "privkey_file": "/opt/sshpanel/dnstt.key"
+  }
+}
+```
+
+Exemplo IPv6:
+
+```json
+{
+  "dnstt": {
+    "domain": "t.example.com",
+    "domains": ["t.example.com", "t.local.lan"],
+    "udp_listen": "[::]:5300",
+    "fake_dns_enabled": true,
+    "fake_dns_listen": "[2001:db8::1234]:53",
+    "fake_dns_domain": "t.local.lan",
+    "fake_dns_workers": 4,
+    "dns_response_workers": 1,
+    "privkey_file": "/opt/sshpanel/dnstt.key"
+  }
+}
+```
+
+Notas:
+
+- `fake_dns_listen` aceita um endereço IPv4 (`192.168.0.10:53`, `0.0.0.0:53`) ou um endereço IPv6 entre colchetes (`[2001:db8::1234]:53`, `[::]:53`). Se ficar vazio com `fake_dns_enabled` em `true`, o padrão é `[::]:53`.
+- A família do socket é escolhida pelo endereço: IPv4 → `udp4`, IPv6 → `udp6`. Um listener `udp6` não tenta reservar a porta 53 em IPv4, então um DNS master IPv4 existente pode continuar usando a porta 53 em IPv4 enquanto o DNSTT usa um novo endereço IPv6. Da mesma forma, um listener `udp4` num IPv4 específico evita conflito com um servidor DNS IPv6.
+- O DNS local embutido só aceita `fake_dns_domain`, por exemplo `t.local.lan`. Se vazio, o padrão é `t.local.lan`. Essa zona também é adicionada à lista `domains` do listener principal.
+- Se `fake_dns_listen` apontar para o mesmo endereço de `udp_listen`, o listener separado é ignorado e o listener DNSTT principal é usado.
+- `fake_dns_workers` adiciona workers de leitura/parse UDP concorrentes para o DNS local. Use `0` para o padrão automático; `4` a `8` é uma boa faixa inicial para servidores movimentados.
+- `dns_response_workers` distribui o envio de respostas DNS em shards. Mantenha em `0` ou `1` a menos que a **Queue** do DNSTT cresça sob carga; então teste `2` a `4`.
+- O listener normal `udp_listen` continua aceitando toda a lista `domains`.
+- A porta 53 pode exigir privilégios de root ou a capability `CAP_NET_BIND_SERVICE`.
+- Esses campos podem ser alterados no painel admin em **DNSTT Tunnel**.
+
 ---
 
 ## EN-US
@@ -399,8 +513,13 @@ DragonCoreSSH V40 is a Go-based SSH HTTP Injection server with a web panel, Post
 - PostgreSQL database
 - Xray-core/V2Ray integration
 - Visual configurator for VLESS and VMess
+- Reseller accounts with a user quota and self-scoped access
+- Multi-server (master/slave) management directly from the panel
+- Full HTTP API for bots/automations (see **HTTP API Reference**)
 - Public `/check` API for checking username or UUID
 - Logs tab in the panel for system, DNSTT, and Xray logs
+- Integrated DNSTT tunnel with scale protection and auto restart
+- Built-in local DNS (fake DNS) on IPv4 or IPv6 for testing without a second DNS server
 - Live-save for main service settings, with checks that enabled services actually started
 - `systemd` service for automatic startup
 
@@ -829,12 +948,34 @@ SYSCTL
 sysctl --system
 ```
 
-### DNSTT built-in local DNS / fake DNS over IPv6
+### DNSTT built-in local DNS / fake DNS (IPv4 and IPv6)
 
-DNSTT can now open an extra internal DNS listener for local testing without a second DNS server.
+DNSTT can open an extra internal DNS listener for local/LAN testing without a second DNS server.
 This listener feeds DNS tunnel packets directly into the same integrated DNSTT session pool and private key.
 
-Example IPv6-only config:
+The built-in local DNS listener works on **both IPv4 and IPv6**. The address family is chosen
+automatically from `fake_dns_listen`: an IPv4 address opens a `udp4` socket, and an IPv6 address
+(bracket form) opens a `udp6` socket.
+
+IPv4 example:
+
+```json
+{
+  "dnstt": {
+    "domain": "t.example.com",
+    "domains": ["t.example.com", "t.local.lan"],
+    "udp_listen": "0.0.0.0:5300",
+    "fake_dns_enabled": true,
+    "fake_dns_listen": "192.168.0.10:53",
+    "fake_dns_domain": "t.local.lan",
+    "fake_dns_workers": 4,
+    "dns_response_workers": 1,
+    "privkey_file": "/opt/sshpanel/dnstt.key"
+  }
+}
+```
+
+IPv6 example:
 
 ```json
 {
@@ -854,11 +995,240 @@ Example IPv6-only config:
 
 Notes:
 
-- `fake_dns_listen` accepts IPv6 bracket syntax such as `[2001:db8::1234]:53` or `[::]:53`.
-- IPv6 listeners are opened with `udp6`, so they do not try to reserve IPv4 port 53. This lets an existing IPv4 master DNS keep using IPv4 port 53 while DNSTT uses a new IPv6 address.
-- The built-in local DNS listener only accepts `fake_dns_domain`, for example `t.local.lan`.
+- `fake_dns_listen` accepts an IPv4 address (`192.168.0.10:53`, `0.0.0.0:53`) or an IPv6 address in bracket form (`[2001:db8::1234]:53`, `[::]:53`). If left empty while `fake_dns_enabled` is `true`, it defaults to `[::]:53`.
+- The socket family is selected from the address: IPv4 → `udp4`, IPv6 → `udp6`. A `udp6` listener does not try to reserve IPv4 port 53, so an existing IPv4 master DNS can keep IPv4 port 53 while DNSTT uses a new IPv6 address. Likewise a `udp4` listener on a specific IPv4 address avoids clashing with an IPv6 DNS server.
+- The built-in local DNS listener only accepts `fake_dns_domain`, for example `t.local.lan`. If empty, it defaults to `t.local.lan`. The zone is also added to the main listener's `domains` list.
+- If `fake_dns_listen` resolves to the same address as `udp_listen`, the separate listener is skipped and the main DNSTT listener is used instead.
 - `fake_dns_workers` adds concurrent UDP read/parse workers for the local DNS listener. Use `0` for the automatic default; `4` to `8` is a good starting range for busy servers.
 - `dns_response_workers` shards DNS response sending. Keep it at `0` or `1` unless the DNSTT **Queue** grows under load; then test `2` to `4`.
 - The normal `udp_listen` listener still accepts the full `domains` list.
 - Port 53 may require root privileges or the `CAP_NET_BIND_SERVICE` capability.
 - These fields can be changed from the admin panel under **DNSTT Tunnel**.
+
+---
+
+## HTTP API Reference
+
+**PT-BR:** Esta seção documenta todos os endpoints HTTP do painel para quem quer integrar bots do Telegram, painéis web externos, automações, etc., sem precisar ler o código-fonte. Além da API pública `/check` (sem autenticação), todos os endpoints administrativos usam o cabeçalho `X-Session-Token`.
+
+**EN-US:** This section documents every HTTP endpoint of the panel so you can build Telegram bots, external web panels, automations, etc. without reading the source. Besides the public `/check` API (no auth), all admin endpoints use the `X-Session-Token` header.
+
+Base URL: `http://SERVER_IP:9090` (the web panel + API port).
+
+### Authentication model
+
+- All authenticated calls use the `X-Session-Token` request header (no cookies). Obtain a token from `POST /api/auth/login`.
+- Auth levels used in this doc:
+  - **None** — public, no token required.
+  - **Session** — any valid logged-in session (superadmin or reseller). Missing/invalid token → `401`.
+  - **Superadmin** — a valid session whose role is `superadmin`. Non-superadmin → `403`; missing token → `401`.
+- Roles: `superadmin` and `reseller`. Resellers are automatically scoped to their own users/clients and limited by their user quota.
+- Method mismatch on most handlers returns `405`. Invalid JSON bodies return `400 invalid json`.
+- Error responses from the API are `text/plain` bodies (the message strings shown below) with the noted HTTP status code — **not** JSON. Success bodies are JSON (or empty for `201`/`204`).
+- Send `Content-Type: application/json` on every POST that takes a body.
+- `expires_at` accepts RFC3339 (e.g. `2026-12-31T23:59:59Z`). Xray client endpoints additionally accept `YYYY-MM-DDThh:mm` and `YYYY-MM-DD`.
+- Only `/check` sends permissive CORS (`*`). The authenticated routes have no CORS/OPTIONS handling and are meant for server-to-server or same-origin use.
+
+### Managed servers (`server_id`) — master/slave
+
+Many endpoints accept an optional `server_id` query param (alias `server`), or `server_id` JSON field on create/add calls. When it names a remote managed slave node, the master proxies the request to that node and returns its response verbatim. Empty, `0`, `local`, or the local id means "this server". Proxy failures return `502` with `remote server error: ...`. Endpoints below note when `server_id` is supported.
+
+### Quick auth example
+
+```bash
+# 1) Log in and capture the token
+TOKEN=$(curl -s -X POST "http://SERVER_IP:9090/api/auth/login" \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"YOUR_PASSWORD"}' | jq -r .token)
+
+# 2) Use the token on any authenticated endpoint
+curl -s "http://SERVER_IP:9090/api/users" -H "X-Session-Token: $TOKEN"
+```
+
+---
+
+### Auth
+
+#### `POST /api/auth/login` — none
+- Body: `username` (string, required), `password` (string, required).
+- `200`: `{ "token": string, "username": string, "role": string }`.
+- Errors: `400` username/password required or invalid json; `401 invalid credentials`; `403 account suspended` / `account expired`.
+
+#### `POST /api/auth/logout` — session
+- No body. Deletes the session for the supplied `X-Session-Token`. Returns `200` (empty).
+
+#### `GET /api/auth/me` — session
+- `200`: `{ "username": string, "role": string }`. If the role is `reseller`, it also includes `max_users` (int), `used_users` (int, combined SSH+Xray), `used_ssh_users` (int), `used_xray_users` (int), `expires_at` (string RFC3339 or null), `is_active` (bool).
+
+---
+
+### SSH users
+
+#### `GET /api/users` — session
+- Optional query: `server_id`. Resellers see only their own users; superadmins see all.
+- `200`: array of user objects: `username` (string), `active_conns` (int), `max_connections` (int), `expires_at` (string/null), `limit_mbps_up` (int), `limit_mbps_down` (int), `totp_secret` (string, omitempty), `totp_period` (int), `totp_window` (int), `totp_digits` (int), `allow_static_password` (bool), `totp_enabled` (bool), `owner_username` (string, omitempty), `server_id` (string, omitempty).
+
+#### `POST /api/users/create` — session
+Creates or updates (upsert) an SSH user.
+- Body: `username` (string, required); `password` (string, optional — empty keeps the existing password on an existing user; for a new user either `password` or `totp_secret` is required); `max_connections` (int); `expires_at` (string); `limit_mbps_up` (int); `limit_mbps_down` (int); `totp_secret` (string); `totp_period` (int); `totp_window` (int); `totp_digits` (int); `allow_static_password` (bool); `owner_username` (string, optional — honored only for superadmin; resellers are forced to themselves); `server_id` (string, optional).
+- `201 Created` (empty body). A proxied create returns the remote node's status/body.
+- Errors: `400 username required`, `400 password or totp_secret required for new user`; `403 user limit reached (N)`; `403 SSH creation is disabled for this server`; `503 database not configured`.
+
+#### `DELETE /api/users/delete` — session
+- Query: `username` (string, required); optional `server_id`. Resellers may delete only their own users.
+- `204 No Content`. Errors: `400 username required`; `403 forbidden`; `503 database not configured`.
+
+---
+
+### Stats & bandwidth
+
+#### `GET /api/stats` — session
+- Optional query: `server_id`.
+- `200`: `{ "cpu_percent": float, "mem_total_bytes": uint, "mem_used_bytes": uint, "mem_avail_bytes": uint, "mem_percent": float, "interfaces": [ { "name": string, "rx_bytes": uint, "tx_bytes": uint, "rx_mbps": float, "tx_mbps": float } ] }`.
+
+#### `POST /api/stats/interfaces/reset` — superadmin
+- No body. Resets persisted per-interface byte totals to the current kernel counters. `200`: `{ "ok": true }`. Errors: `503`, `500`.
+
+#### `GET /api/vnstat` — superadmin
+- Query: `days` (int, optional, default 31), `months` (int, optional, default 12).
+- `200`: interface usage dataset (daily/monthly aggregates). Errors: `503 database not configured`; `500 db error`.
+
+#### `POST /api/vnstat/reset` — superadmin
+- No body. Clears stored vnstat usage. `200`: `{ "ok": true }`. Errors: `503`, `500 db error`.
+
+---
+
+### Logs
+
+#### `GET /api/system/logs` — superadmin
+- Query: `source` (`panel` (default), `dnstt`, or `xray`); `lines` (int, optional, default 300, max 2000).
+- `200`: `{ "source": string, "path": string (panel only), "lines": string[] }`.
+
+#### `POST /api/system/logs/reset` — superadmin
+- No body. Truncates the panel log file. `200`: `{ "ok": true, "path": string, "max_bytes": int }`. Error: `500`.
+
+---
+
+### DNSTT
+
+#### `GET /api/dnstt` — superadmin
+- Optional query: `server_id`.
+- `200`: 5-second stats snapshot: `timestamp` (string), `enabled` (bool), `running` (bool); uint counters `dns_rx`, `parse_err`, `no_edns`, `limit512`, `rec_queued`, `rec_dropped`, `resp_sent`, `resp_bytes`, `resp_empty`, `resp_data`, `resp_oversize`, `kcp_new`, `kcp_end`, `smux_new`, `smux_end`, `sess_rejected`, `stream_rejected`, `panic_recovered`; `active_sessions` (int64), `active_streams` (int64), `ch_len` (int), `fake_dns_workers` (int, omitempty), `dns_response_workers` (int, omitempty).
+
+#### `GET /api/dnstt/logs` — superadmin
+- `200`: array of log line strings (empty array if uninitialized). Does not proxy to managed servers.
+
+#### `POST /api/dnstt/genkey` — superadmin
+- No body. Generates a new Noise keypair and writes the private key to the configured key file. `200`: `{ "privkey_file": string, "pubkey": string }`. Error: `500`. Supports `server_id` proxying.
+
+#### `GET /api/dnstt/pubkey` — superadmin
+- No body. Returns the public key derived from the configured private key. `200`: `{ "pubkey": string }`. Error: `500`. Supports `server_id` proxying.
+
+---
+
+### Resellers (superadmin only)
+
+#### `GET /api/resellers` — superadmin
+- `200`: array of `{ "id": int, "username": string, "role": string, "max_users": int, "used_users": int, "used_ssh_users": int, "used_xray_users": int, "expires_at": string/null, "is_active": bool, "created_at": string }`.
+
+#### `POST /api/resellers/create` — superadmin
+Creates or updates a reseller (upsert by username).
+- Body: `username` (string, required); `password` (string, optional — required only when creating; if given on an existing account it is changed); `max_users` (int); `expires_at` (string, optional RFC3339; empty clears expiry); `is_active` (bool).
+- `201 Created` (empty). Errors: `400 username required`, `400 password required for new account`, `400 invalid expires_at (RFC3339 required)`; `500 db error`.
+
+#### `DELETE /api/resellers/delete` — superadmin
+- Query: `username` (string, required). Also disconnects/removes the reseller's owned SSH users and Xray clients.
+- `204 No Content`. Errors: `400 username required`; `500 db error`.
+
+---
+
+### Managed servers (superadmin, except list)
+
+#### `/api/servers` — GET: session · POST/DELETE: superadmin
+Accepts `GET`, `POST`, `DELETE`.
+- **GET**: list servers. Resellers see only active servers with `admin_username` blanked. The local server is always first. `200`: array of `{ "id": string, "name": string, "base_url": string, "admin_username": string, "enable_ssh": bool, "enable_xray": bool, "is_active": bool, "is_local": bool, "created_at": string, "updated_at": string }`.
+- **POST**: upsert a slave node. Body: `id` (string), `name` (string), `base_url` (string), `admin_username` (string), `admin_key` (string), `enable_ssh` (bool), `enable_xray` (bool), `is_active` (bool). `200`: the created/updated server object.
+- **DELETE**: query `id` (int, required, > 0). `204`. Errors: `400 invalid server id`; `403 forbidden`.
+- All methods: `503 database not configured`.
+
+#### `POST /api/servers/test` — superadmin
+Tests connectivity/credentials to a managed node (remote login + `/api/auth/me`).
+- Body: `base_url`, `admin_key` (or password), `admin_username` (default `admin`), `id`, `enable_ssh`, `enable_xray`. If `id` matches a stored server, missing fields are filled from the DB.
+- `200`: `{ "ok": true, "message": "remote login ok" }`. Errors: `400 base url and admin key/password required`; `502` on remote failure; `503`.
+
+#### `/api/servers/config` — superadmin (GET or POST)
+Read/write a managed server's `config.json`. Query: `server_id`. Local delegates to `/api/server/config`; remote proxies GET/POST to that node (POST body ≤ 512 KiB).
+
+---
+
+### Xray-core
+
+#### `GET /api/xray/status` — session
+- Optional query: `server_id`. For resellers, `online_users` counts only their own clients.
+- `200`: `{ "enabled": bool, "running": bool, "mode": string, "native": bool, "pid": int, "uptime": string, "error": string, "online_users": int, "stats_error": string, "stats_configured": bool, "stats_missing": string[], "api_server": string, "last_stats_poll": string/null, "online_window_seconds": int }`.
+
+#### `POST /api/xray/start` · `POST /api/xray/stop` · `POST /api/xray/restart` — superadmin
+- No body; optional `server_id`. `200` (empty) on success; `500` with message on error.
+
+#### `POST /api/xray/stats/repair` — superadmin
+- No body; optional `server_id`. Ensures the Stats API config and restarts Xray if it was running.
+- `200`: `{ "changed": bool, "restarted": bool, "stats_configured": bool, "stats_missing": string[], "api_server": string }`. Errors: `400`, `500`.
+
+#### `/api/xray/config` — superadmin (GET or POST)
+- Optional `server_id`. **GET** returns the raw Xray config JSON. **POST** replaces it — body is the full Xray config JSON (≤ 512 KiB), validated then saved. `200` on success; `400` on invalid config; `500` on read.
+
+#### `GET /api/xray/logs` — superadmin
+- Optional `server_id`. `200`: `{ "lines": string[] }`.
+
+#### `GET /api/xray/inbounds` — session
+- Optional `server_id`. Lists only inbounds that carry client lists (vless/vmess/trojan). Resellers see all inbounds but only their own clients. Clients are enriched with DB metadata and runtime stats.
+- `200`: array of `{ "tag": string, "protocol": string, "port": <raw>, "listen": string, "clients": [ XrayClientInfo ] }`.
+- **XrayClientInfo**: `id` (string, the UUID), `password` (string, omitempty), `email` (string), `level` (int), `online` (bool), `last_active` (string/null), `uplink_bytes` (int64), `downlink_bytes` (int64), `total_bytes` (int64), `active_connections` (int), `name` (string), `expires_at` (string/null), `expiration_days` (int; `-1` = no expiry, `0` = expired), `max_conns`, `owner_username`, `expired`.
+
+#### `POST /api/xray/clients/add` — session
+- Body: `inbound_tag` (string, required), `uuid` (string, required), `email` (string, optional — defaults to name then uuid), `name` (string, optional), `expires_at` (string, optional), `max_connections` (int), `owner_username` (string, optional — superadmin only), `server_id` (string, optional).
+- `201 Created` (empty). Errors: `400 inbound_tag and uuid required` / `UUID already exists in database`; `403 reseller account suspended or expired` / `user limit reached (N)` / `Xray creation is disabled for this server`; `500`.
+
+#### `POST /api/xray/clients/update` — session
+- Body: `uuid` (string, required), `name` (string), `email` (string), `expires_at` (string), `max_connections` (int), `server_id` (string, optional). Inbound tag and owner are preserved from existing metadata. Resellers may update only their own clients.
+- `200`. Errors: `400 uuid required`; `403 forbidden`; `404 client metadata not found`; `500`.
+
+#### `DELETE /api/xray/clients/remove` — session
+- Query: `inbound_tag` (string, required), `uuid` (string, required); optional `server_id`. Resellers may remove only their own clients.
+- `204 No Content`. Errors: `400 inbound_tag and uuid required`; `403 forbidden`; `500`.
+
+---
+
+### TLS certificates (superadmin only)
+
+All three accept `POST` only and support `server_id` proxying.
+
+#### `POST /api/tls/generate-selfsigned`
+- Body: `domain` (string, required). Writes a self-signed ECDSA (P-256) cert (10-year validity) to `/opt/sshpanel/certs/<domain>/`.
+- `200`: `{ "cert_file": string, "key_file": string }`. Errors: `400 domain required`; `500`.
+
+#### `POST /api/tls/letsencrypt`
+- Body: `domain` (string, required), `email` (string, required). Runs `certbot certonly --standalone` (requires certbot and a free port 80).
+- `200`: `{ "cert_file": string, "key_file": string, "output": string }`. Errors: `400 domain and email required`; `500 certbot failed: ...`.
+
+#### `POST /api/tls/upload-pem`
+- Body: `name` (string, required), `cert` (string, required — PEM), `key` (string, required — PEM). Saves to `/opt/sshpanel/certs/<name>/`.
+- `200`: `{ "cert_file": string, "key_file": string }`. Errors: `400 name, cert, and key required` / `invalid name`; `500`.
+
+---
+
+### Panel config
+
+#### `/api/server/config` — superadmin (GET or POST)
+Reads/writes the panel's `config.json` and hot-applies changes.
+- **GET**: returns the raw config file JSON.
+- **POST**: body is the full config JSON (≤ 512 KiB). Validated (`listen` required), the file-based `users` array is preserved, ports normalized, then written to disk and applied live.
+  - `200`: reload report `{ "applied": bool, "warnings": string[], "services": { "<name>": ServiceReloadStatus } }`.
+  - Errors: `400 invalid JSON: ...` / `listen address required`; `500 config path not set` / read/write errors.
+
+---
+
+### Public — CheckUser
+
+#### `GET /check` — none
+Public status lookup for SSH users and Xray/V2Ray UUIDs (CORS `*`). See the **Public CheckUser API** section above for query params, response fields, and examples.
