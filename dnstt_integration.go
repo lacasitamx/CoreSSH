@@ -833,18 +833,19 @@ func handleDNSTTStream(stream *smux.Stream, conv uint32) error {
 }
 
 // streamConn adapts a smux.Stream to the net.Conn interface expected by
-// handleConn.  smux.Stream already implements Read and Write, but does not
-// satisfy net.Conn because it lacks methods for deadlines and addresses.  We
-// implement those methods with no‑ops and placeholder addresses.
+// handleConn.  smux.Stream implements Read, Write, and (via its embedded
+// *stream) real deadline methods, but its addresses reflect the underlying
+// KCP/Noise DummyAddr, so we only override LocalAddr/RemoteAddr with a stable
+// "dnstt" placeholder for logging.  The deadline methods are intentionally NOT
+// overridden: handleConn's sshHandshakeTimeout guard relies on SetReadDeadline
+// actually working, otherwise a stream that opens but never completes the SSH
+// handshake wedges a goroutine until MaxStreams is hit.
 type streamConn struct {
 	*smux.Stream
 }
 
-func (s *streamConn) LocalAddr() net.Addr                { return dummyAddr{} }
-func (s *streamConn) RemoteAddr() net.Addr               { return dummyAddr{} }
-func (s *streamConn) SetDeadline(t time.Time) error      { return nil }
-func (s *streamConn) SetReadDeadline(t time.Time) error  { return nil }
-func (s *streamConn) SetWriteDeadline(t time.Time) error { return nil }
+func (s *streamConn) LocalAddr() net.Addr  { return dummyAddr{} }
+func (s *streamConn) RemoteAddr() net.Addr { return dummyAddr{} }
 
 // dummyAddr is a stand‑in net.Addr implementation for dnstt streams.  It
 // reports a generic network and address; this satisfies the net.Conn
@@ -859,11 +860,21 @@ func (d dummyAddr) String() string  { return "dnstt" }
 // Session, then waits for smux streams.  Each stream is passed to
 // handleDNSTTStream.  Any errors from the Noise or smux layers are returned.
 func acceptDNSTTStreams(conn *kcp.UDPSession, privkey []byte, limits dnsttRuntimeLimits) error {
+	// Bound the Noise handshake read. A client can complete the KCP accept and
+	// then go silent (UDP: no FIN) before sending the Noise handshake; with no
+	// deadline, noise.NewServer's blocking ReadFull would park this goroutine
+	// and its KCP session forever (nothing frees them — smux keepalive cannot
+	// help because smux is not constructed until after the handshake). idleTimeout
+	// is generous: a real client sends the handshake immediately after connecting.
+	_ = conn.SetReadDeadline(time.Now().Add(idleTimeout))
 	// Put a Noise channel on top of the KCP conn.
 	rw, err := noise.NewServer(conn, privkey)
 	if err != nil {
 		return err
 	}
+	// Clear the handshake deadline; the live session is governed by smux
+	// KeepAliveTimeout and KCP's own dead-link detection from here on.
+	_ = conn.SetReadDeadline(time.Time{})
 
 	// Put an smux session on top of the encrypted Noise channel.
 	smuxConfig := smux.DefaultConfig()

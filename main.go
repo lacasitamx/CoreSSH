@@ -34,7 +34,10 @@ import (
 
 const (
 	// Hard timeouts to ensure half-open connections don't leak goroutines.
-	sshHandshakeTimeout = 15 * time.Second
+	// This also bounds DNSTT SSH handshakes (streamConn now honors deadlines),
+	// which travel over DNS and need more headroom than a direct TCP handshake;
+	// 45s is generous for slow/lossy DNS paths while still reaping wedged streams.
+	sshHandshakeTimeout = 45 * time.Second
 	tlsHandshakeTimeout = 15 * time.Second
 	// Dial timeout for direct-tcpip backend connections.
 	directTCPIPDialTimeout = 10 * time.Second
