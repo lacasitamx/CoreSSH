@@ -23,6 +23,14 @@ const (
 
 	defaultNativeXHTTPMaxSessions   = 16384
 	defaultNativeXHTTPBufferedPosts = 512
+
+	// Connected XHTTP sessions are torn down primarily by request-context
+	// cancellation. This idle timeout is the backstop that reaps a connected
+	// session whose client vanished without the transport ever reporting it
+	// (common for XHTTP behind a CDN, where no TCP FIN reaches the origin).
+	// Matches the SSH idle default so a genuinely idle-but-live tunnel is not
+	// closed prematurely.
+	fixedNativeXHTTPIdleMS = 300000
 )
 
 var (
@@ -76,4 +84,7 @@ func nativeXHTTPMaxSessionLimit() int   { return defaultNativeXHTTPMaxSessions }
 func nativeXHTTPBufferedPostLimit() int { return defaultNativeXHTTPBufferedPosts }
 func nativeMuxUDPIdleTimeout() time.Duration {
 	return fixedNativeMuxUDPIdleMS * time.Millisecond
+}
+func nativeXHTTPIdleTimeout() time.Duration {
+	return fixedNativeXHTTPIdleMS * time.Millisecond
 }

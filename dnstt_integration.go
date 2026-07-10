@@ -34,7 +34,12 @@ import (
 	"golang.org/x/crypto/ssh"
 	"www.bamsoftware.com/git/dnstt.git/dns"
 	"www.bamsoftware.com/git/dnstt.git/noise"
-	"www.bamsoftware.com/git/dnstt.git/turbotunnel"
+
+	// Local fork of the upstream turbotunnel package. Identical except that
+	// RemoteMap's background expiry goroutine is stoppable via Close(); upstream
+	// leaks it for the process lifetime, which becomes a per-restart goroutine
+	// leak under this integration's DNSTT hot-reload / auto-restart.
+	"shell2/internal/turbotunnel"
 )
 
 // ---------- Hot-reload stop mechanism ----------
@@ -1664,6 +1669,10 @@ func runDNSTTOnListeners(privkey []byte, listeners []dnsttListenerSpec, limits d
 	}
 	// set up turbotunnel and KCP listener
 	ttConn := turbotunnel.NewQueuePacketConn(turbotunnel.DummyAddr{}, idleTimeout*2)
+	// Close ttConn on exit so its RemoteMap expiry goroutine is stopped. Without
+	// this, every DNSTT restart (hot-reload / auto-restart) leaks that goroutine
+	// plus the QueuePacketConn's buffers for the process lifetime.
+	defer ttConn.Close()
 	ln, err := kcp.ServeConn(nil, 0, 0, ttConn)
 	if err != nil {
 		return fmt.Errorf("dnstt: opening KCP listener: %v", err)

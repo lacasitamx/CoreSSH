@@ -117,8 +117,63 @@ func (ib *nativeInbound) serveXHTTPListener(ln net.Listener) {
 		srv.TLSConfig = ib.tlsConfig
 		_ = http2.ConfigureServer(srv, h2s)
 	}
+	// Backstop reaper for connected sessions whose client vanished without the
+	// request context ever firing. Lives for the lifetime of this listener.
+	stopSweep := make(chan struct{})
+	defer close(stopSweep)
+	xrayGo(fmt.Sprintf("native xray XHTTP idle sweeper inbound=%q", ib.tag), func() { ib.sweepXHTTPSessions(stopSweep) })
 	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) && !isListenerClosed(err) {
 		xrayLogf("native xray: XHTTP server for inbound %q stopped: %v", ib.tag, err)
+	}
+}
+
+// sweepXHTTPSessions periodically evicts connected XHTTP sessions that have seen
+// no traffic (in either direction) within the idle timeout. This is the safety
+// net behind the per-request context watch in handleXHTTPDownload; it only ever
+// touches sessions whose lastSeen has genuinely gone stale, so an active tunnel
+// (which refreshes lastSeen via nativeXHTTPConn.onActivity) is never reaped.
+func (ib *nativeInbound) sweepXHTTPSessions(stop <-chan struct{}) {
+	defer xrayRecover(fmt.Sprintf("native xray XHTTP idle sweeper inbound=%q", ib.tag))
+	idle := nativeXHTTPIdleTimeout()
+	if idle <= 0 {
+		return
+	}
+	interval := idle / 4
+	if interval < 15*time.Second {
+		interval = 15 * time.Second
+	}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-t.C:
+			ib.reapStaleXHTTPSessions(idle)
+		}
+	}
+}
+
+func (ib *nativeInbound) reapStaleXHTTPSessions(idle time.Duration) {
+	now := time.Now()
+	var stale []*nativeXHTTPSession
+	ib.xhttpMu.Lock()
+	for id, s := range ib.xhttpSessions {
+		s.mu.Lock()
+		connected := s.connected
+		last := s.lastSeen
+		s.mu.Unlock()
+		// Unconnected sessions have their own 30s reaper; only reap connected
+		// ones that have gone idle past the timeout.
+		if connected && now.Sub(last) >= idle {
+			delete(ib.xhttpSessions, id)
+			stale = append(stale, s)
+		}
+	}
+	ib.xhttpMu.Unlock()
+	for _, s := range stale {
+		xrayTracef("native xray: xhttp idle sweep closing session=%q inbound=%q", s.id, ib.tag)
+		s.close()
 	}
 }
 
@@ -636,15 +691,31 @@ func (ib *nativeInbound) handleXHTTPDownload(w http.ResponseWriter, r *http.Requ
 	var reader io.Reader = sess.queue
 	resp := newNativeXHTTPResponseWriter(w)
 	xc := &nativeXHTTPConn{
-		reader: reader,
-		writer: resp,
-		remote: remote,
-		local:  dummyLocalAddr(r),
+		reader:     reader,
+		writer:     resp,
+		remote:     remote,
+		local:      dummyLocalAddr(r),
+		onActivity: sess.touch,
 	}
 	xc.onClose = func() {
 		resp.close()
 		sess.close()
 	}
+
+	// When the download GET is cancelled (client gone, or a CDN closes the
+	// origin stream after its own idle timeout) the HTTP request context fires.
+	// Closing xc unblocks the tunnel's uplink reader (via sess.close -> queue
+	// close) and closes the backend, so handleXHTTPDownload returns and its
+	// deferred deleteXHTTPSession runs. Without this watch an idle tunnel whose
+	// client vanished silently would never be torn down. The goroutine exits on
+	// sess.done once the session closes for any reason.
+	go func() {
+		select {
+		case <-r.Context().Done():
+			_ = xc.Close()
+		case <-sess.done:
+		}
+	}()
 
 	ib.dispatchXHTTPConn(xc, remote)
 	_ = xc.Close()
@@ -727,6 +798,11 @@ type nativeXHTTPConn struct {
 
 	closeOnce sync.Once
 	onClose   func()
+	// onActivity, when set, is called after any successful read or write so the
+	// owning session's lastSeen reflects real bidirectional traffic (not just
+	// HTTP request arrivals). The idle sweeper relies on this to avoid reaping a
+	// tunnel that is actively streaming in only one direction.
+	onActivity func()
 }
 
 func (c *nativeXHTTPConn) Read(p []byte) (int, error) {
@@ -736,10 +812,20 @@ func (c *nativeXHTTPConn) Read(p []byte) (int, error) {
 		c.deadlineMu.Unlock()
 		_ = dr.SetReadDeadline(d)
 	}
-	return c.reader.Read(p)
+	n, err := c.reader.Read(p)
+	if n > 0 && c.onActivity != nil {
+		c.onActivity()
+	}
+	return n, err
 }
 
-func (c *nativeXHTTPConn) Write(p []byte) (int, error) { return c.writer.Write(p) }
+func (c *nativeXHTTPConn) Write(p []byte) (int, error) {
+	n, err := c.writer.Write(p)
+	if n > 0 && c.onActivity != nil {
+		c.onActivity()
+	}
+	return n, err
+}
 
 func (c *nativeXHTTPConn) Close() error {
 	c.closeOnce.Do(func() {

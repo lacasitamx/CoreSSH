@@ -564,8 +564,30 @@ func (m *XrayManager) startNativeStatsFlusher() {
 		defer ticker.Stop()
 		for range ticker.C {
 			m.flushNativeStatsToDB()
+			m.pruneStaleRuntimeStats()
 		}
 	})
+}
+
+// pruneStaleRuntimeStats drops runtime stat entries for clients that have no
+// active connections and have been idle well past the online window. Without
+// this, statsByEmail keeps one entry per email/UUID that has ever connected and
+// never shrinks. The retention comfortably exceeds the online-detection grace
+// window so CountOnlineUsers is unaffected; persistent traffic totals live in
+// the DB, so dropping the in-memory counter for a long-offline client is safe.
+func (m *XrayManager) pruneStaleRuntimeStats() {
+	retention := 2 * m.onlineWindow()
+	if retention < 5*time.Minute {
+		retention = 5 * time.Minute
+	}
+	cutoff := time.Now().Add(-retention)
+	m.statsMu.Lock()
+	for email, st := range m.statsByEmail {
+		if st.ActiveConnections <= 0 && (st.LastActive.IsZero() || st.LastActive.Before(cutoff)) {
+			delete(m.statsByEmail, email)
+		}
+	}
+	m.statsMu.Unlock()
 }
 
 func (m *XrayManager) flushNativeStatsToDB() {
