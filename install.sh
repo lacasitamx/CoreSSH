@@ -15,6 +15,7 @@ LOG_TMPFS_SIZE="${LOG_TMPFS_SIZE:-15m}"
 PANEL_LOG_MAX_BYTES="${PANEL_LOG_MAX_BYTES:-1048576}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GO_VERSION="${GO_VERSION:-$(awk '$1 == "go" {print $2; exit}' "$SCRIPT_DIR/go.mod" 2>/dev/null || echo "1.22.5")}"
+REPO_URL="${REPO_URL:-https://git.dr2.site/penguinehis/DragonCoreSSH-NewWEB.git}"
 MKDIR_BIN="$(command -v mkdir 2>/dev/null || true)"
 [[ -n "$MKDIR_BIN" ]] || MKDIR_BIN="/bin/mkdir"
 # ────────────────────────────────────────────────────────────────────────────
@@ -264,10 +265,25 @@ info "[5/10] Building SSH Panel binary…"
 cd "$SCRIPT_DIR"
 export GOPATH=/tmp/gopath_sshpanel
 export GOCACHE=/tmp/gocache_sshpanel
+BUILD_COMMIT="$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || true)"
+BUILD_BRANCH="$(git -C "$SCRIPT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+BUILD_REPO_URL="$(git -C "$SCRIPT_DIR" config --get remote.origin.url 2>/dev/null || true)"
+[[ -n "$BUILD_COMMIT" ]] || BUILD_COMMIT="unknown"
+[[ -n "$BUILD_BRANCH" && "$BUILD_BRANCH" != "HEAD" ]] || BUILD_BRANCH="main"
+[[ -n "$BUILD_REPO_URL" ]] || BUILD_REPO_URL="$REPO_URL"
+
 go mod download
 go mod tidy
-go build -ldflags="-s -w" -o "$INSTALL_DIR/sshpanel" .
+go build -ldflags="-s -w -X main.buildCommit=$BUILD_COMMIT -X main.buildBranch=$BUILD_BRANCH -X main.buildTime=$BUILD_TIME" -o "$INSTALL_DIR/sshpanel" .
+printf '%s\n' "$BUILD_COMMIT" > "$INSTALL_DIR/.installed_commit"
+printf '%s\n' "$BUILD_BRANCH" > "$INSTALL_DIR/.installed_branch"
+printf '%s\n' "$BUILD_TIME" > "$INSTALL_DIR/.installed_build_time"
+printf '%s\n' "$BUILD_REPO_URL" > "$INSTALL_DIR/.installed_repo_url"
+chmod 0644 "$INSTALL_DIR/.installed_commit" "$INSTALL_DIR/.installed_branch" "$INSTALL_DIR/.installed_build_time"
+chmod 0600 "$INSTALL_DIR/.installed_repo_url"
 info "  Binary: $INSTALL_DIR/sshpanel"
+info "  Build commit: $BUILD_COMMIT ($BUILD_BRANCH)"
 cp -r "$SCRIPT_DIR/admin/"* "$INSTALL_DIR/admin/"
 info "  Admin panel copied"
 if [[ -f "$SCRIPT_DIR/update.sh" ]]; then

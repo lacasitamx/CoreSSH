@@ -1567,6 +1567,7 @@ func startAdminAPI(store *Store, addr string, adminDir string) {
 	mux.Handle("/api/vnstat/reset", saSession(http.HandlerFunc(handleVnstatReset(store))))
 	mux.Handle("/api/system/logs", saSession(http.HandlerFunc(handleSystemLogs)))
 	mux.Handle("/api/system/logs/reset", saSession(http.HandlerFunc(handleSystemLogsReset)))
+	mux.Handle("/api/system/update-status", saSession(http.HandlerFunc(handleUpdateStatus)))
 	mux.Handle("/api/dnstt", saSession(http.HandlerFunc(handleDnsttStats)))
 	mux.Handle("/api/dnstt/logs", saSession(http.HandlerFunc(handleDnsttLogs)))
 

@@ -36,6 +36,10 @@ MKDIR_BIN="$(command -v mkdir 2>/dev/null || true)"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_DIR=""
 RESTART_NEEDED=false
+BUILD_COMMIT=""
+BUILD_BRANCH=""
+BUILD_TIME=""
+BUILD_REPO_URL=""
 
 [[ $EUID -ne 0 ]] && error "Run as root: sudo bash $0"
 
@@ -288,9 +292,18 @@ build_binary() {
   cd "$SOURCE_DIR"
   export GOPATH=/tmp/gopath_sshpanel
   export GOCACHE=/tmp/gocache_sshpanel
+
+  BUILD_COMMIT="$(git -C "$SOURCE_DIR" rev-parse HEAD 2>/dev/null || true)"
+  BUILD_BRANCH="${UPDATE_REF:-$(git -C "$SOURCE_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)}"
+  BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  BUILD_REPO_URL="$REPO_URL"
+  [[ -n "$BUILD_COMMIT" ]] || BUILD_COMMIT="unknown"
+  [[ -n "$BUILD_BRANCH" && "$BUILD_BRANCH" != "HEAD" ]] || BUILD_BRANCH="main"
+
   go mod download
   go mod tidy
-  go build -ldflags="-s -w" -o /tmp/sshpanel_new .
+  go build -ldflags="-s -w -X main.buildCommit=$BUILD_COMMIT -X main.buildBranch=$BUILD_BRANCH -X main.buildTime=$BUILD_TIME" -o /tmp/sshpanel_new .
+  info "  Build commit: $BUILD_COMMIT ($BUILD_BRANCH)"
   info "  Build complete."
 }
 
@@ -331,6 +344,14 @@ apply_update() {
   mv /tmp/sshpanel_new "$INSTALL_DIR/sshpanel"
   chmod 755 "$INSTALL_DIR/sshpanel"
   info "  Binary updated."
+
+  printf '%s\n' "$BUILD_COMMIT" > "$INSTALL_DIR/.installed_commit"
+  printf '%s\n' "$BUILD_BRANCH" > "$INSTALL_DIR/.installed_branch"
+  printf '%s\n' "$BUILD_TIME" > "$INSTALL_DIR/.installed_build_time"
+  printf '%s\n' "$BUILD_REPO_URL" > "$INSTALL_DIR/.installed_repo_url"
+  chmod 0644 "$INSTALL_DIR/.installed_commit" "$INSTALL_DIR/.installed_branch" "$INSTALL_DIR/.installed_build_time"
+  chmod 0600 "$INSTALL_DIR/.installed_repo_url"
+  info "  Build metadata updated."
 
   rsync -a --delete "$SOURCE_DIR/admin/" "$INSTALL_DIR/admin/"
   info "  Admin panel updated."

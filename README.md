@@ -286,6 +286,15 @@ https://git.dr2.site/penguinehis/DragonCoreSSH-NewWEB.git
 
 Depois ele recompila o binário e atualiza o painel web e os scripts auxiliares, mantendo as configurações e dados existentes.
 
+O painel do superadmin também mostra um cartão **Atualizações do painel** na tela inicial. Ele compara o commit compilado no servidor com o commit mais recente da branch configurada no Git. A verificação usa cache de 5 minutos; o botão **Verificar agora** força uma nova consulta.
+
+Variáveis opcionais do serviço para apontar a verificação para outro Git/branch:
+
+```text
+DRAGON_UPDATE_REPO_URL=https://git.dr2.site/penguinehis/DragonCoreSSH-NewWEB.git
+DRAGON_UPDATE_BRANCH=main
+```
+
 O update preserva:
 
 ```text
@@ -787,6 +796,15 @@ https://git.dr2.site/penguinehis/DragonCoreSSH-NewWEB.git
 ```
 
 Then it rebuilds the binary and updates the web panel and helper scripts while keeping existing configuration and user data.
+
+The superadmin dashboard also shows a **Panel Updates** card. It compares the commit compiled into the running server with the latest commit on the configured Git branch. Results are cached for 5 minutes; **Check now** forces a fresh lookup.
+
+Optional service variables for a different repository/branch:
+
+```text
+DRAGON_UPDATE_REPO_URL=https://git.dr2.site/penguinehis/DragonCoreSSH-NewWEB.git
+DRAGON_UPDATE_BRANCH=main
+```
 
 The update preserves:
 

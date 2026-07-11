@@ -638,3 +638,14 @@ select:disabled {
   color:#f3f7ff;
   font-size:.78rem;
 }
+
+/* Git update status card */
+.update-commit{
+  font-family:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;
+  font-size:1rem!important;
+  letter-spacing:.01em!important;
+  overflow-wrap:anywhere;
+}
+.update-check-time{font-size:.9rem!important;letter-spacing:0!important;}
+.update-statusbar{align-items:center;gap:12px;flex-wrap:wrap;}
+.btn-xs{padding:5px 8px!important;font-size:.67rem!important;border-radius:9px!important;}

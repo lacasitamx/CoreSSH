@@ -16,7 +16,7 @@
   setTimeout(function(){document.documentElement.classList.remove("i18n-pending");},2500);
 })();
 </script>
-<link rel="stylesheet" href="assets/app.css?v=20260511visualsafesave1"/>
+<link rel="stylesheet" href="assets/app.css?v=20260711updatecheck1"/>
 </head>
 <body>
 <div class="app">
@@ -155,6 +155,26 @@
           <small id="dashNetTotal">Total --</small>
         </div>
         <div class="dash-icon">⇅</div>
+      </div>
+    </div>
+
+    <div class="card superadmin-only hidden" id="updateStatusCard" style="margin-top:18px;">
+      <div class="card-hdr">
+        <div class="card-title">Panel Updates <span class="chip" id="updateStateChip">Checking…</span></div>
+        <div class="card-actions">
+          <a class="btn btn-ghost btn-sm" id="updateRepoLink" href="https://git.dr2.site/penguinehis/DragonCoreSSH-NewWEB" target="_blank" rel="noopener noreferrer">Open Git</a>
+          <button class="btn btn-ghost btn-sm" type="button" id="checkUpdateBtn">Check now</button>
+        </div>
+      </div>
+      <div class="metrics">
+        <div class="metric"><div class="m-label">Installed version</div><div class="m-val update-commit" id="updateCurrentCommit">--</div></div>
+        <div class="metric"><div class="m-label">Latest Git version</div><div class="m-val update-commit" id="updateLatestCommit">--</div></div>
+        <div class="metric"><div class="m-label">Branch</div><div class="m-val update-commit" id="updateBranch">main</div></div>
+        <div class="metric"><div class="m-label">Last checked</div><div class="m-val update-check-time" id="updateCheckedAt">--</div></div>
+      </div>
+      <div class="statusbar update-statusbar">
+        <span id="updateStatusText">Comparing the installed version with the Git repository.</span>
+        <span class="hint hidden" id="updateCommandWrap">To update: <code>sudo bash /opt/sshpanel/update.sh</code> <button class="btn btn-ghost btn-xs" type="button" id="copyUpdateCommandBtn">Copy command</button></span>
       </div>
     </div>
 
@@ -1241,15 +1261,16 @@
 <!-- app.js was split into ordered modules for maintainability. They are plain
      classic scripts sharing one global scope; `defer` preserves execution order,
      so behavior is identical to the old single file. Keep this load order. -->
-<script defer src="assets/js/01-core.js?v=20260704ytquicfix1"></script>
-<script defer src="assets/js/02-shell.js?v=20260704ytquicfix1"></script>
-<script defer src="assets/js/03-ssh-users.js?v=20260704ytquicfix1"></script>
-<script defer src="assets/js/04-xray.js?v=20260704ytquicfix1"></script>
-<script defer src="assets/js/05-resellers.js?v=20260704ytquicfix1"></script>
-<script defer src="assets/js/06-servers.js?v=20260704ytquicfix1"></script>
-<script defer src="assets/js/07-stats-logs.js?v=20260704ytquicfix1"></script>
-<script defer src="assets/js/08-server-config.js?v=20260704ytquicfix1"></script>
-<script defer src="assets/js/09-xray-wizard.js?v=20260704ytquicfix1"></script>
-<script defer src="assets/js/10-boot.js?v=20260704ytquicfix1"></script>
+<script defer src="assets/js/01-core.js?v=20260711updatecheck1"></script>
+<script defer src="assets/js/02-shell.js?v=20260711updatecheck1"></script>
+<script defer src="assets/js/03-ssh-users.js?v=20260711updatecheck1"></script>
+<script defer src="assets/js/04-xray.js?v=20260711updatecheck1"></script>
+<script defer src="assets/js/05-resellers.js?v=20260711updatecheck1"></script>
+<script defer src="assets/js/06-servers.js?v=20260711updatecheck1"></script>
+<script defer src="assets/js/07-stats-logs.js?v=20260711updatecheck1"></script>
+<script defer src="assets/js/08-server-config.js?v=20260711updatecheck1"></script>
+<script defer src="assets/js/09-xray-wizard.js?v=20260711updatecheck1"></script>
+<script defer src="assets/js/11-update-status.js?v=20260711updatecheck1"></script>
+<script defer src="assets/js/10-boot.js?v=20260711updatecheck1"></script>
 </body>
 </html>

@@ -124,6 +124,7 @@ function initAfterLogin() {
 
   if (currentRole === "superadmin") {
     loadDashboardStats();
+    if (typeof loadUpdateStatus === "function") loadUpdateStatus();
     statsTimer = setInterval(() => {
       loadDashboardStats();
       if (currentTab === "stats") loadStats();
