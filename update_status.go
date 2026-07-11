@@ -86,13 +86,13 @@ func getUpdateStatus(parent context.Context, force bool) updateStatusResponse {
 }
 
 func checkRemoteUpdate(parent context.Context) updateStatusResponse {
-	repoURL := firstNonEmpty(
+	repoURL := firstNonEmptyTrimmed(
 		strings.TrimSpace(os.Getenv("DRAGON_UPDATE_REPO_URL")),
 		readSingleLineFile("/opt/sshpanel/.installed_repo_url"),
 		strings.TrimSpace(buildRepoURL),
 		defaultUpdateRepoURL,
 	)
-	branch := firstNonEmpty(
+	branch := firstNonEmptyTrimmed(
 		strings.TrimSpace(os.Getenv("DRAGON_UPDATE_BRANCH")),
 		strings.TrimSpace(buildBranch),
 		readSingleLineFile("/opt/sshpanel/.installed_branch"),
@@ -235,7 +235,7 @@ func readSingleLineFile(path string) string {
 	return line
 }
 
-func firstNonEmpty(values ...string) string {
+func firstNonEmptyTrimmed(values ...string) string {
 	for _, value := range values {
 		if strings.TrimSpace(value) != "" {
 			return strings.TrimSpace(value)
