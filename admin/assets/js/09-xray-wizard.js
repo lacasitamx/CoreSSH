@@ -143,23 +143,40 @@ function wzToggleAddInbound() {
 }
 
 function onWzProtoChange(val) {
-  const usesClientTransport = val === "vless" || val === "vmess";
-  document.getElementById("wzVlessFields").style.display   = usesClientTransport    ? "grid" : "none";
+  const isSSH = val === "ssh";
+  // SSH tunnels reuse the VLESS/VMess transport block to expose the XHTTP
+  // fields, but carry no proxy client list of their own.
+  const usesTransportFields = val === "vless" || val === "vmess" || isSSH;
+  document.getElementById("wzVlessFields").style.display   = usesTransportFields  ? "grid" : "none";
   document.getElementById("wzTrojanFields").style.display  = val === "trojan"       ? "" : "none";
   document.getElementById("wzSSFields").style.display      = val === "shadowsocks"  ? "grid" : "none";
+
+  // SSH runs only over XHTTP: force the network to xhttp and lock the dropdown
+  // so the wizard can only emit a valid xhttp+ssh inbound.
+  const netSel = document.getElementById("wzNetwork");
+  if (isSSH) {
+    netSel.value = "xhttp";
+    netSel.disabled = true;
+    onWzNetworkChange("xhttp");
+  } else {
+    netSel.disabled = false;
+  }
 
   const tlsSel = document.getElementById("wzTLS");
   const realityOpt = document.querySelector("#wzTLS option[value='reality']");
   if (realityOpt) {
-    realityOpt.disabled = val === "vmess";
-    if (val === "vmess" && tlsSel.value === "reality") {
+    // REALITY is not wired for the native XHTTP listener (tls/none only) and is
+    // unavailable for VMess, so disable it for both.
+    const noReality = val === "vmess" || isSSH;
+    realityOpt.disabled = noReality;
+    if (noReality && tlsSel.value === "reality") {
       tlsSel.value = "none";
       onWzTLSChange("none");
     }
   }
 
-  const portMap = { vless:10086, vmess:10087, trojan:8443, shadowsocks:8388, socks:10808 };
-  const tagMap  = { vless:"vless-in", vmess:"vmess-in", trojan:"trojan-in", shadowsocks:"ss-in", socks:"socks-local" };
+  const portMap = { vless:10086, vmess:10087, ssh:2087, trojan:8443, shadowsocks:8388, socks:10808 };
+  const tagMap  = { vless:"vless-in", vmess:"vmess-in", ssh:"ssh-xhttp-in", trojan:"trojan-in", shadowsocks:"ss-in", socks:"socks-local" };
   const portEl = document.getElementById("wzPort");
   const tagEl  = document.getElementById("wzTag");
   const lisEl  = document.getElementById("wzListenIP");
@@ -263,6 +280,24 @@ function wzSaveInbound() {
         serverNames: [document.getElementById("wzRealitySNI").value.trim()].filter(Boolean),
         privateKey:  document.getElementById("wzRealityPriv").value.trim(),
         shortIds:    [document.getElementById("wzRealityShortID").value.trim()].filter(Boolean),
+      };
+    }
+  } else if (proto === "ssh") {
+    // SSH tunnel over XHTTP: no proxy clients — the decoded stream is handed to
+    // the SSH server, so authentication is an ordinary SSH account.
+    ib.settings = {};
+    ib.streamSettings = { network: "xhttp" };
+    ib.streamSettings.xhttpSettings = {
+      path: document.getElementById("wzXHTTPPath").value.trim() || "/xhttp",
+      host: document.getElementById("wzXHTTPHost").value.trim() || undefined,
+      mode: document.getElementById("wzXHTTPMode").value,
+    };
+    if (!ib.streamSettings.xhttpSettings.host) delete ib.streamSettings.xhttpSettings.host;
+    const tlsVal = document.getElementById("wzTLS").value;
+    if (tlsVal === "tls") {
+      ib.streamSettings.security = "tls";
+      ib.streamSettings.tlsSettings = {
+        certificates: [{ certificateFile: document.getElementById("wzTLSCert").value.trim(), keyFile: document.getElementById("wzTLSKey").value.trim() }],
       };
     }
   } else if (proto === "trojan") {

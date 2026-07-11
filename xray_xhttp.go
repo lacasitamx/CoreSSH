@@ -728,6 +728,17 @@ func (ib *nativeInbound) dispatchXHTTPConn(xc net.Conn, remote net.Addr) {
 		ib.handleVLESS(xc, remote)
 	case "vmess":
 		ib.handleVMess(xc, remote)
+	case "ssh":
+		// XHTTP->SSH tunnel: the decoded stream is a raw SSH transport. Hand it to
+		// the same SSH handler the TLS/DNSTT listeners use so tunneled clients
+		// authenticate with ordinary SSH accounts. getSSHConfig() is the live,
+		// hot-reloadable config; it can be nil only before the SSH server is set up.
+		cfg := getSSHConfig()
+		if cfg == nil {
+			xrayLogf("native xray: inbound %q XHTTP->SSH has no SSH config available yet", ib.tag)
+			return
+		}
+		handleConn(xc, cfg)
 	default:
 		xrayLogf("native xray: inbound %q XHTTP protocol %q not supported", ib.tag, ib.protocol)
 	}

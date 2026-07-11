@@ -62,7 +62,7 @@ type nativeXrayClient struct {
 // nativeInbound is a single listener built from one JSON inbound entry.
 type nativeInbound struct {
 	tag       string
-	protocol  string // "vless" | "vmess"
+	protocol  string // "vless" | "vmess" | "ssh" (XHTTP->SSH tunnel)
 	listen    string // bind host, default 0.0.0.0
 	port      int
 	transport string // "tcp" | "ws" | "xhttp" | ...
@@ -959,7 +959,11 @@ func parseNativeInbounds(configFile string) ([]*nativeInbound, error) {
 	var out []*nativeInbound
 	for _, in := range cf.Inbounds {
 		proto := strings.ToLower(strings.TrimSpace(in.Protocol))
-		if !xrayClientProtos[proto] {
+		// "ssh" is a DragonCore extension: an XHTTP inbound whose decoded byte
+		// stream is handed to the SSH server (handleConn) instead of a proxy
+		// protocol. It carries no proxy clients (auth is the SSH account), so it
+		// intentionally bypasses the client-bearing protocol gate below.
+		if proto != "ssh" && !xrayClientProtos[proto] {
 			continue // only vless/vmess/trojan carry clients; skip api/freedom/etc.
 		}
 		port, ok := parseSinglePort(in.Port)
@@ -1019,6 +1023,19 @@ func parseNativeInbounds(configFile string) ([]*nativeInbound, error) {
 				continue
 			}
 			ib.tlsConfig = tc
+		}
+
+		// XHTTP->SSH inbounds have no proxy clients: the SSH handshake performed by
+		// handleConn is the authentication step. Skip proxy-client loading and the
+		// clientCount()==0 gate below, but enforce that "ssh" is only valid on the
+		// XHTTP transport (that is the only path that reaches dispatchXHTTPConn).
+		if ib.protocol == "ssh" {
+			if !ib.isXHTTP() {
+				xrayLogf("native xray: inbound %q protocol \"ssh\" requires xhttp transport; skipping", in.Tag)
+				continue
+			}
+			out = append(out, ib)
+			continue
 		}
 
 		configClients := in.Settings.Clients
