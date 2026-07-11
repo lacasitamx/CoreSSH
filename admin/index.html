@@ -424,7 +424,7 @@
               <div class="field" id="wzWSPathField" style="display:none;"><label>Path</label><input type="text" id="wzWSPath" placeholder="/ws"/></div>
               <!-- XHTTP -->
               <div class="field" id="wzXHTTPPathField" style="display:none;"><label>Path</label><input type="text" id="wzXHTTPPath" placeholder="/xhttp" value="/xhttp"/></div>
-              <div class="field" id="wzXHTTPHostField" style="display:none;"><label>Host <span class="hint">(SNI)</span></label><input type="text" id="wzXHTTPHost" placeholder="example.com"/></div>
+              <div class="field" id="wzXHTTPHostField" style="display:none;"><label>HTTP Host <span class="hint">(separate from TLS SNI)</span></label><input type="text" id="wzXHTTPHost" placeholder="example.com"/></div>
               <div class="field" id="wzXHTTPModeField" style="display:none;">
                 <label>Mode</label>
                 <select id="wzXHTTPMode">
@@ -670,6 +670,7 @@
             <div class="form-grid">
               <div class="field"><label>Default Upload Limit (Mbps)</label><input type="number" id="managedCfgLimitUp" min="0" placeholder="0"/></div>
               <div class="field"><label>Default Download Limit (Mbps)</label><input type="number" id="managedCfgLimitDown" min="0" placeholder="0"/></div>
+              <div class="field"><label>SSH Idle Timeout <span class="hint">0s/off = disabled</span></label><input type="text" id="managedCfgSSHIdleTimeout" placeholder="0s" title="Keep disabled for VPN/XHTTP connections."/></div>
               <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;"><input type="checkbox" id="managedCfgQuiet"/> Quiet Logs</label>
               <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;"><input type="checkbox" id="managedCfgUserCount"/> User Count Display</label>
             </div>
@@ -980,6 +981,10 @@
             <div class="field">
               <label>Max Total SSH Connections <span class="hint">0 = default (10000) · -1 = unlimited</span></label>
               <input type="number" id="cfgMaxTotalConns" min="-1" placeholder="10000" title="Global cap across all users. New connections past this are rejected before the SSH handshake, so a surge cannot exhaust memory/CPU. Raise it if the server has resources for more; set -1 to remove the cap entirely."/>
+            </div>
+            <div class="field">
+              <label>SSH Idle Timeout <span class="hint">0s/off = disabled</span></label>
+              <input type="text" id="cfgSSHIdleTimeout" placeholder="0s" title="Closes an authenticated SSH connection only after this period with no bytes in either direction. Keep disabled for VPN/XHTTP connections."/>
             </div>
           </div>
           <div style="display:flex;gap:16px;margin-top:8px;flex-wrap:wrap;">

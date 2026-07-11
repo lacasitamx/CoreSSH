@@ -376,6 +376,7 @@ async function loadManagedServerConfig(id) {
 
     document.getElementById("managedCfgLimitUp").value = c.default_limit_mbps_up || 0;
     document.getElementById("managedCfgLimitDown").value = c.default_limit_mbps_down || 0;
+    document.getElementById("managedCfgSSHIdleTimeout").value = c.ssh_idle_timeout || "0s";
     document.getElementById("managedCfgQuiet").checked = !!c.quiet;
     document.getElementById("managedCfgUserCount").checked = !!c.user_count;
     document.getElementById("managedCfgBanner").value = c.banner || "";
@@ -444,6 +445,7 @@ function managedConfigFromForm() {
     admin_dir: "/opt/sshpanel/admin",
     default_limit_mbps_up: parseInt(document.getElementById("managedCfgLimitUp").value || "0", 10),
     default_limit_mbps_down: parseInt(document.getElementById("managedCfgLimitDown").value || "0", 10),
+    ssh_idle_timeout: document.getElementById("managedCfgSSHIdleTimeout").value.trim() || "0s",
     quiet: document.getElementById("managedCfgQuiet").checked,
     user_count: document.getElementById("managedCfgUserCount").checked,
     banner: document.getElementById("managedCfgBanner").value,

@@ -96,6 +96,7 @@ async function loadServerConfig() {
     document.getElementById("cfgLimitUp").value      = c.default_limit_mbps_up || 0;
     document.getElementById("cfgLimitDown").value    = c.default_limit_mbps_down || 0;
     document.getElementById("cfgMaxTotalConns").value = c.max_total_connections || 0;
+    document.getElementById("cfgSSHIdleTimeout").value = c.ssh_idle_timeout || "0s";
     document.getElementById("cfgQuiet").checked      = !!c.quiet;
     document.getElementById("cfgUserCount").checked  = !!c.user_count;
 
@@ -178,6 +179,7 @@ async function saveServerConfig() {
     default_limit_mbps_up:   parseInt(document.getElementById("cfgLimitUp").value  || "0", 10),
     default_limit_mbps_down: parseInt(document.getElementById("cfgLimitDown").value || "0", 10),
     max_total_connections:   parseInt(document.getElementById("cfgMaxTotalConns").value || "0", 10),
+    ssh_idle_timeout:         document.getElementById("cfgSSHIdleTimeout").value.trim() || "0s",
     quiet:      document.getElementById("cfgQuiet").checked,
     user_count: document.getElementById("cfgUserCount").checked,
     banner:      document.getElementById("cfgBanner").value,

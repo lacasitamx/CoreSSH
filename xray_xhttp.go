@@ -712,6 +712,11 @@ func (ib *nativeInbound) handleXHTTPDownload(w http.ResponseWriter, r *http.Requ
 	go func() {
 		select {
 		case <-r.Context().Done():
+			// The stream-down HTTP request is the lifetime owner of an XHTTP
+			// session. Log the actual transport cancellation so a CDN/proxy
+			// timeout can be distinguished from a server idle policy.
+			xrayLogf("native xray: xhttp stream-down ended inbound=%q session=%q remote=%s err=%v",
+				ib.tag, sessionID, r.RemoteAddr, r.Context().Err())
 			_ = xc.Close()
 		case <-sess.done:
 		}

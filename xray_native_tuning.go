@@ -24,13 +24,12 @@ const (
 	defaultNativeXHTTPMaxSessions   = 16384
 	defaultNativeXHTTPBufferedPosts = 512
 
-	// Connected XHTTP sessions are torn down primarily by request-context
-	// cancellation. This idle timeout is the backstop that reaps a connected
-	// session whose client vanished without the transport ever reporting it
-	// (common for XHTTP behind a CDN, where no TCP FIN reaches the origin).
-	// Matches the SSH idle default so a genuinely idle-but-live tunnel is not
-	// closed prematurely.
-	fixedNativeXHTTPIdleMS = 300000
+	// Do not impose an application-level lifetime on a connected XHTTP VPN
+	// session. The official Xray server keeps a connected session for the
+	// lifetime of its stream-down GET; request cancellation and I/O errors own
+	// cleanup. A fixed five-minute sweeper incorrectly killed healthy but idle
+	// VPNs. Zero disables the connected-session sweeper.
+	fixedNativeXHTTPIdleMS = 0
 )
 
 var (

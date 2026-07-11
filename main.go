@@ -41,9 +41,11 @@ const (
 	tlsHandshakeTimeout = 15 * time.Second
 	// Dial timeout for direct-tcpip backend connections.
 	directTCPIPDialTimeout = 10 * time.Second
-	// Default post-auth SSH inactivity timeout. This is based on real bytes
-	// moving in either direction, so live upload/download tunnels are not closed.
-	defaultSSHIdleTimeout = 5 * time.Minute
+	// VPN transports must remain connected even when the user is temporarily
+	// idle. Dead peers are released by transport errors/request cancellation,
+	// not by a short application-level inactivity timer. Operators may still
+	// set ssh_idle_timeout explicitly when they intentionally want one.
+	defaultSSHIdleTimeout time.Duration = 0
 )
 
 // ---------- Config types ----------
@@ -97,7 +99,8 @@ type Config struct {
 
 	// SSHIdleTimeout controls how long an authenticated SSH connection may
 	// remain with no bytes moving in either direction before it is closed and
-	// released from the active user count. Empty = default 5m. Use "0s" to disable.
+	// released from the active user count. Empty, "0", or "0s" disables it.
+	// VPN/XHTTP connections should normally leave this disabled.
 	SSHIdleTimeout string `json:"ssh_idle_timeout,omitempty"`
 
 	// MaxTotalConnections caps the total number of concurrent SSH connections
@@ -575,17 +578,17 @@ func copyWithRateLimit(dst io.Writer, src io.Reader, lim *rate.Limiter) (written
 
 func parseSSHIdleTimeout(raw string) time.Duration {
 	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return defaultSSHIdleTimeout
+	if raw == "" || raw == "0" || raw == "0s" || strings.EqualFold(raw, "off") || strings.EqualFold(raw, "disabled") {
+		return 0
 	}
 	d, err := time.ParseDuration(raw)
 	if err != nil {
-		log.Printf("invalid ssh_idle_timeout %q: %v; using default %s", raw, err, defaultSSHIdleTimeout)
-		return defaultSSHIdleTimeout
+		log.Printf("invalid ssh_idle_timeout %q: %v; disabling SSH idle timeout", raw, err)
+		return 0
 	}
 	if d < 0 {
-		log.Printf("invalid negative ssh_idle_timeout %q; using default %s", raw, defaultSSHIdleTimeout)
-		return defaultSSHIdleTimeout
+		log.Printf("invalid negative ssh_idle_timeout %q; disabling SSH idle timeout", raw)
+		return 0
 	}
 	return d
 }
