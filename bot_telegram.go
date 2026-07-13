@@ -206,18 +206,6 @@ func (c *tgClient) sendPhotoBytes(ctx context.Context, chatID int64, photo []byt
 	return m.MessageID, nil
 }
 
-func (c *tgClient) setWebhook(ctx context.Context, webhookURL, secret string) error {
-	payload := map[string]interface{}{
-		"url":             webhookURL,
-		"allowed_updates": []string{"message", "callback_query"},
-	}
-	if secret != "" {
-		payload["secret_token"] = secret
-	}
-	_, err := c.call(ctx, "setWebhook", payload)
-	return err
-}
-
 func (c *tgClient) deleteWebhook(ctx context.Context) error {
 	_, err := c.call(ctx, "deleteWebhook", map[string]interface{}{"drop_pending_updates": false})
 	return err
@@ -241,13 +229,4 @@ func htmlEscape(s string) string {
 	s = strings.ReplaceAll(s, "<", "&lt;")
 	s = strings.ReplaceAll(s, ">", "&gt;")
 	return s
-}
-
-// parseWebhookUpdate decodes a Telegram webhook POST body.
-func parseWebhookUpdate(r io.Reader) (*tgUpdate, error) {
-	var u tgUpdate
-	if err := json.NewDecoder(io.LimitReader(r, 4<<20)).Decode(&u); err != nil {
-		return nil, err
-	}
-	return &u, nil
 }

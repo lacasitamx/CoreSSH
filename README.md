@@ -1260,9 +1260,10 @@ Public status lookup for SSH users and Xray/V2Ray UUIDs (CORS `*`). See the **Pu
 ### Como configurar
 1. Abra o painel → aba **Bot / Vendas**.
 2. Em **Configuração**: marque *Bot ativo*, cole o **Token do Telegram** (via @BotFather) e o **Access Token do Mercado Pago**. Clique **Testar conexão** e depois **Salvar**.
-3. **Webhook × Polling** (o painel deixa você escolher): 
-   - **Telegram**: `polling` (padrão, não precisa de domínio/HTTPS) ou `webhook` (informe a URL pública `https://SEU_DOMINIO/api/telegram/webhook`).
-   - **Mercado Pago**: `polling` (o bot consulta o status a cada intervalo) ou `webhook` (configure no painel do Mercado Pago a URL `https://SEU_DOMINIO/api/mp/webhook`).
+3. **Confirmação do pagamento — Webhook × Polling** (o painel deixa você escolher): 
+   - **Polling** (padrão): o bot consulta o status do PIX a cada intervalo. Não precisa de domínio/HTTPS.
+   - **Webhook**: configure no painel do Mercado Pago a URL `https://SEU_DOMINIO/api/mp/webhook`. O painel mostra a URL exata quando você seleciona esse modo.
+   - O **Telegram** usa long-polling automático — não requer domínio, webhook nem configuração extra.
 4. Em **Planos**: crie planos SSH e/ou Xray (dias, conexões, preço em R$, e — para Xray — o *inbound* e protocolo). Para revendedores, defina o *custo em créditos*.
 5. Em **Pacotes de Crédito**: defina os valores de recarga dos revendedores.
 6. Em **Clientes do Bot**: promova um usuário a **revendedor** (vinculando-o a uma conta de revendedor em *Revendedores*), ajuste créditos ou bloqueie.
@@ -1279,7 +1280,6 @@ Os tokens (Telegram, Mercado Pago e segredos de webhook) são gravados **criptog
 - `GET/POST /api/bot/transactions` — lista pagamentos; POST com `action` = `refund` \| `reprocess`.
 - `GET/POST /api/bot/settings` — textos do bot (chave/valor).
 - `POST /api/bot/test` — testa token do Telegram e do Mercado Pago.
-- `POST /api/mp/webhook` — **público**, chamado pelo Mercado Pago (valida `x-signature` se houver segredo; sempre reconfirma o pagamento na API antes de liberar).
-- `POST /api/telegram/webhook` — **público**, chamado pelo Telegram (valida o header `X-Telegram-Bot-Api-Secret-Token`).
+- `POST /api/mp/webhook` — **público**, chamado pelo Mercado Pago quando o modo de confirmação é *webhook* (valida `x-signature` se houver segredo; sempre reconfirma o pagamento na API antes de liberar). Ignorado em modo *polling*.
 
-**EN-US:** The panel ships an in-process Telegram bot that sells **SSH and Xray** accounts via **PIX (Mercado Pago)**, with free trial, renewal, and a **credit-based reseller system** — all managed from the superadmin **Bot / Vendas** tab. Bot secrets are stored **AES-256-GCM encrypted** in PostgreSQL; the master key lives outside the DB (`BOT_MASTER_KEY` env or a `0600` `/opt/sshpanel/bot_master.key` auto-generated on first use — back it up). Both Telegram delivery and Mercado Pago confirmation can be toggled between **polling** (default, no public HTTPS needed) and **webhook** in the panel.
+**EN-US:** The panel ships an in-process Telegram bot that sells **SSH and Xray** accounts via **PIX (Mercado Pago)**, with free trial, renewal, and a **credit-based reseller system** — all managed from the superadmin **Bot / Vendas** tab. Bot secrets are stored **AES-256-GCM encrypted** in PostgreSQL; the master key lives outside the DB (`BOT_MASTER_KEY` env or a `0600` `/opt/sshpanel/bot_master.key` auto-generated on first use — back it up). Telegram runs on long-polling (no domain needed); only **Mercado Pago confirmation** is toggleable between **polling** (default) and **webhook** in the panel.

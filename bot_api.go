@@ -1,6 +1,6 @@
 package main
 
-// bot_api.go — /api/bot/* admin endpoints (superadmin) + Telegram webhook route.
+// bot_api.go — /api/bot/* admin endpoints (superadmin).
 
 import (
 	"encoding/json"
@@ -25,30 +25,26 @@ func botStoreReady(w http.ResponseWriter, store *Store) bool {
 // ---------- Config ----------
 
 type botConfigDTO struct {
-	Enabled                  bool    `json:"enabled"`
-	TelegramMode             string  `json:"telegram_mode"`
-	TelegramWebhookURL       string  `json:"telegram_webhook_url"`
-	MPConfirmMode            string  `json:"mp_confirm_mode"`
-	MPPollInterval           string  `json:"mp_poll_interval"`
-	PixExpirationMinutes     int     `json:"pix_expiration_minutes"`
-	TrialEnabled             bool    `json:"trial_enabled"`
-	TrialHours               int     `json:"trial_hours"`
-	TrialMaxConnections      int     `json:"trial_max_connections"`
-	TrialKind                string  `json:"trial_kind"`
-	TrialInboundTag          string  `json:"trial_inbound_tag"`
-	AdminTelegramIDs         []int64 `json:"admin_telegram_ids"`
-	Currency                 string  `json:"currency"`
-	PublicHost               string  `json:"public_host"`
-	XrayPublicHost           string  `json:"xray_public_host"`
-	HasTelegramToken         bool    `json:"has_telegram_token"`
-	HasMPAccessToken         bool    `json:"has_mp_access_token"`
-	HasTelegramWebhookSecret bool    `json:"has_telegram_webhook_secret"`
-	HasMPWebhookSecret       bool    `json:"has_mp_webhook_secret"`
+	Enabled              bool    `json:"enabled"`
+	MPConfirmMode        string  `json:"mp_confirm_mode"`
+	MPPollInterval       string  `json:"mp_poll_interval"`
+	PixExpirationMinutes int     `json:"pix_expiration_minutes"`
+	TrialEnabled         bool    `json:"trial_enabled"`
+	TrialHours           int     `json:"trial_hours"`
+	TrialMaxConnections  int     `json:"trial_max_connections"`
+	TrialKind            string  `json:"trial_kind"`
+	TrialInboundTag      string  `json:"trial_inbound_tag"`
+	AdminTelegramIDs     []int64 `json:"admin_telegram_ids"`
+	Currency             string  `json:"currency"`
+	PublicHost           string  `json:"public_host"`
+	XrayPublicHost       string  `json:"xray_public_host"`
+	HasTelegramToken     bool    `json:"has_telegram_token"`
+	HasMPAccessToken     bool    `json:"has_mp_access_token"`
+	HasMPWebhookSecret   bool    `json:"has_mp_webhook_secret"`
 	// Write-only secret fields (empty on GET; empty on POST = keep existing).
-	TelegramToken         string `json:"telegram_token"`
-	MPAccessToken         string `json:"mp_access_token"`
-	TelegramWebhookSecret string `json:"telegram_webhook_secret"`
-	MPWebhookSecret       string `json:"mp_webhook_secret"`
+	TelegramToken   string `json:"telegram_token"`
+	MPAccessToken   string `json:"mp_access_token"`
+	MPWebhookSecret string `json:"mp_webhook_secret"`
 }
 
 func handleBotConfig(store *Store) http.HandlerFunc {
@@ -65,25 +61,22 @@ func handleBotConfig(store *Store) http.HandlerFunc {
 				return
 			}
 			botWriteJSON(w, botConfigDTO{
-				Enabled:                  cfg.Enabled,
-				TelegramMode:             cfg.TelegramMode,
-				TelegramWebhookURL:       cfg.TelegramWebhookURL,
-				MPConfirmMode:            cfg.MPConfirmMode,
-				MPPollInterval:           cfg.MPPollInterval,
-				PixExpirationMinutes:     cfg.PixExpirationMinutes,
-				TrialEnabled:             cfg.TrialEnabled,
-				TrialHours:               cfg.TrialHours,
-				TrialMaxConnections:      cfg.TrialMaxConnections,
-				TrialKind:                cfg.TrialKind,
-				TrialInboundTag:          cfg.TrialInboundTag,
-				AdminTelegramIDs:         cfg.AdminTelegramIDs,
-				Currency:                 cfg.Currency,
-				PublicHost:               cfg.PublicHost,
-				XrayPublicHost:           cfg.XrayPublicHost,
-				HasTelegramToken:         cfg.TelegramToken != "",
-				HasMPAccessToken:         cfg.MPAccessToken != "",
-				HasTelegramWebhookSecret: cfg.TelegramWebhookSecret != "",
-				HasMPWebhookSecret:       cfg.MPWebhookSecret != "",
+				Enabled:              cfg.Enabled,
+				MPConfirmMode:        cfg.MPConfirmMode,
+				MPPollInterval:       cfg.MPPollInterval,
+				PixExpirationMinutes: cfg.PixExpirationMinutes,
+				TrialEnabled:         cfg.TrialEnabled,
+				TrialHours:           cfg.TrialHours,
+				TrialMaxConnections:  cfg.TrialMaxConnections,
+				TrialKind:            cfg.TrialKind,
+				TrialInboundTag:      cfg.TrialInboundTag,
+				AdminTelegramIDs:     cfg.AdminTelegramIDs,
+				Currency:             cfg.Currency,
+				PublicHost:           cfg.PublicHost,
+				XrayPublicHost:       cfg.XrayPublicHost,
+				HasTelegramToken:     cfg.TelegramToken != "",
+				HasMPAccessToken:     cfg.MPAccessToken != "",
+				HasMPWebhookSecret:   cfg.MPWebhookSecret != "",
 			})
 		case http.MethodPost:
 			var dto botConfigDTO
@@ -92,25 +85,22 @@ func handleBotConfig(store *Store) http.HandlerFunc {
 				return
 			}
 			cfg := &BotConfig{
-				Enabled:               dto.Enabled,
-				TelegramToken:         strings.TrimSpace(dto.TelegramToken),
-				TelegramMode:          dto.TelegramMode,
-				TelegramWebhookURL:    strings.TrimSpace(dto.TelegramWebhookURL),
-				TelegramWebhookSecret: strings.TrimSpace(dto.TelegramWebhookSecret),
-				MPAccessToken:         strings.TrimSpace(dto.MPAccessToken),
-				MPConfirmMode:         dto.MPConfirmMode,
-				MPWebhookSecret:       strings.TrimSpace(dto.MPWebhookSecret),
-				MPPollInterval:        dto.MPPollInterval,
-				PixExpirationMinutes:  dto.PixExpirationMinutes,
-				TrialEnabled:          dto.TrialEnabled,
-				TrialHours:            dto.TrialHours,
-				TrialMaxConnections:   dto.TrialMaxConnections,
-				TrialKind:             dto.TrialKind,
-				TrialInboundTag:       strings.TrimSpace(dto.TrialInboundTag),
-				AdminTelegramIDs:      dto.AdminTelegramIDs,
-				Currency:              dto.Currency,
-				PublicHost:            strings.TrimSpace(dto.PublicHost),
-				XrayPublicHost:        strings.TrimSpace(dto.XrayPublicHost),
+				Enabled:              dto.Enabled,
+				TelegramToken:        strings.TrimSpace(dto.TelegramToken),
+				MPAccessToken:        strings.TrimSpace(dto.MPAccessToken),
+				MPConfirmMode:        dto.MPConfirmMode,
+				MPWebhookSecret:      strings.TrimSpace(dto.MPWebhookSecret),
+				MPPollInterval:       dto.MPPollInterval,
+				PixExpirationMinutes: dto.PixExpirationMinutes,
+				TrialEnabled:         dto.TrialEnabled,
+				TrialHours:           dto.TrialHours,
+				TrialMaxConnections:  dto.TrialMaxConnections,
+				TrialKind:            dto.TrialKind,
+				TrialInboundTag:      strings.TrimSpace(dto.TrialInboundTag),
+				AdminTelegramIDs:     dto.AdminTelegramIDs,
+				Currency:             dto.Currency,
+				PublicHost:           strings.TrimSpace(dto.PublicHost),
+				XrayPublicHost:       strings.TrimSpace(dto.XrayPublicHost),
 			}
 			if err := SaveBotConfig(ctx, store, cfg); err != nil {
 				http.Error(w, "save config: "+err.Error(), http.StatusInternalServerError)
@@ -420,26 +410,4 @@ func handleBotTest(store *Store) http.HandlerFunc {
 		}
 		botWriteJSON(w, out)
 	}
-}
-
-// ---------- Telegram webhook (public) ----------
-
-func handleTelegramWebhook(w http.ResponseWriter, r *http.Request) {
-	b := currentBot()
-	if b == nil {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-	if b.cfg.TelegramWebhookSecret != "" &&
-		r.Header.Get("X-Telegram-Bot-Api-Secret-Token") != b.cfg.TelegramWebhookSecret {
-		w.WriteHeader(http.StatusUnauthorized)
-		return
-	}
-	up, err := parseWebhookUpdate(r.Body)
-	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-	go b.handleUpdate(up)
-	w.WriteHeader(http.StatusOK)
 }

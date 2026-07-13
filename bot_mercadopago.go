@@ -162,6 +162,12 @@ func handleMPWebhook(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK) // bot disabled; acknowledge to stop retries
 		return
 	}
+	// Only honor webhooks when confirmation mode is "webhook". In polling mode
+	// the poller drives fulfillment; ignore unsolicited posts to this endpoint.
+	if b.cfg.MPConfirmMode != "webhook" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	// Extract the payment id from body or query.
 	dataID := r.URL.Query().Get("data.id")
 	if dataID == "" {

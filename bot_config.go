@@ -14,26 +14,25 @@ var errInsufficientCredits = errors.New("insufficient credits")
 func botItoa(n int) string { return strconv.Itoa(n) }
 
 // BotConfig is the decrypted, ready-to-use bot configuration.
+// Telegram always uses long-polling (no webhook). The webhook/polling toggle
+// applies only to Mercado Pago payment confirmation (MPConfirmMode).
 type BotConfig struct {
-	Enabled               bool
-	TelegramToken         string
-	TelegramMode          string // polling | webhook
-	TelegramWebhookURL    string
-	TelegramWebhookSecret string
-	MPAccessToken         string
-	MPConfirmMode         string // webhook | polling
-	MPWebhookSecret       string
-	MPPollInterval        string
-	PixExpirationMinutes  int
-	TrialEnabled          bool
-	TrialHours            int
-	TrialMaxConnections   int
-	TrialKind             string // ssh | xray
-	TrialInboundTag       string
-	AdminTelegramIDs      []int64
-	Currency              string
-	PublicHost            string // SSH connection host shown to buyers
-	XrayPublicHost        string // host used to build vless/vmess links
+	Enabled              bool
+	TelegramToken        string
+	MPAccessToken        string
+	MPConfirmMode        string // webhook | polling
+	MPWebhookSecret      string
+	MPPollInterval       string
+	PixExpirationMinutes int
+	TrialEnabled         bool
+	TrialHours           int
+	TrialMaxConnections  int
+	TrialKind            string // ssh | xray
+	TrialInboundTag      string
+	AdminTelegramIDs     []int64
+	Currency             string
+	PublicHost           string // SSH connection host shown to buyers
+	XrayPublicHost       string // host used to build vless/vmess links
 }
 
 // LoadBotConfig reads the config row and decrypts secrets into a BotConfig.
@@ -43,10 +42,6 @@ func LoadBotConfig(ctx context.Context, store *Store) (*BotConfig, error) {
 		return nil, err
 	}
 	tok, err := decryptSecret(r.TelegramTokenEnc)
-	if err != nil {
-		return nil, err
-	}
-	tgSec, err := decryptSecret(r.TelegramWebhookSecretEnc)
 	if err != nil {
 		return nil, err
 	}
@@ -60,34 +55,28 @@ func LoadBotConfig(ctx context.Context, store *Store) (*BotConfig, error) {
 	}
 
 	cfg := &BotConfig{
-		Enabled:               r.Enabled,
-		TelegramToken:         tok,
-		TelegramMode:          r.TelegramMode,
-		TelegramWebhookURL:    r.TelegramWebhookURL,
-		TelegramWebhookSecret: tgSec,
-		MPAccessToken:         mp,
-		MPConfirmMode:         r.MPConfirmMode,
-		MPWebhookSecret:       mpSec,
-		MPPollInterval:        r.MPPollInterval,
-		PixExpirationMinutes:  r.PixExpirationMinutes,
-		TrialEnabled:          r.TrialEnabled,
-		TrialHours:            r.TrialHours,
-		TrialMaxConnections:   r.TrialMaxConnections,
-		TrialKind:             r.TrialKind,
-		TrialInboundTag:       r.TrialInboundTag,
-		AdminTelegramIDs:      r.AdminTelegramIDs,
-		Currency:              r.Currency,
-		PublicHost:            r.PublicHost,
-		XrayPublicHost:        r.XrayPublicHost,
+		Enabled:              r.Enabled,
+		TelegramToken:        tok,
+		MPAccessToken:        mp,
+		MPConfirmMode:        r.MPConfirmMode,
+		MPWebhookSecret:      mpSec,
+		MPPollInterval:       r.MPPollInterval,
+		PixExpirationMinutes: r.PixExpirationMinutes,
+		TrialEnabled:         r.TrialEnabled,
+		TrialHours:           r.TrialHours,
+		TrialMaxConnections:  r.TrialMaxConnections,
+		TrialKind:            r.TrialKind,
+		TrialInboundTag:      r.TrialInboundTag,
+		AdminTelegramIDs:     r.AdminTelegramIDs,
+		Currency:             r.Currency,
+		PublicHost:           r.PublicHost,
+		XrayPublicHost:       r.XrayPublicHost,
 	}
 	cfg.applyDefaults()
 	return cfg, nil
 }
 
 func (c *BotConfig) applyDefaults() {
-	if c.TelegramMode == "" {
-		c.TelegramMode = "polling"
-	}
 	if c.MPConfirmMode == "" {
 		c.MPConfirmMode = "polling"
 	}
@@ -126,8 +115,8 @@ func SaveBotConfig(ctx context.Context, store *Store, cfg *BotConfig) error {
 	cfg.applyDefaults()
 	row := &botConfigRow{
 		Enabled:              cfg.Enabled,
-		TelegramMode:         cfg.TelegramMode,
-		TelegramWebhookURL:   cfg.TelegramWebhookURL,
+		TelegramMode:         "polling", // Telegram is always long-polling
+		TelegramWebhookURL:   "",
 		MPConfirmMode:        cfg.MPConfirmMode,
 		MPPollInterval:       cfg.MPPollInterval,
 		PixExpirationMinutes: cfg.PixExpirationMinutes,
@@ -141,15 +130,10 @@ func SaveBotConfig(ctx context.Context, store *Store, cfg *BotConfig) error {
 		PublicHost:           cfg.PublicHost,
 		XrayPublicHost:       cfg.XrayPublicHost,
 	}
-	var tokEnc, tgSecEnc, mpEnc, mpSecEnc []byte
+	var tokEnc, mpEnc, mpSecEnc []byte
 	var err error
 	if cfg.TelegramToken != "" {
 		if tokEnc, err = encryptSecret(cfg.TelegramToken); err != nil {
-			return err
-		}
-	}
-	if cfg.TelegramWebhookSecret != "" {
-		if tgSecEnc, err = encryptSecret(cfg.TelegramWebhookSecret); err != nil {
 			return err
 		}
 	}
@@ -163,5 +147,6 @@ func SaveBotConfig(ctx context.Context, store *Store, cfg *BotConfig) error {
 			return err
 		}
 	}
-	return store.saveBotConfigRow(ctx, row, tokEnc, tgSecEnc, mpEnc, mpSecEnc)
+	// tgSecEnc is always nil now (no Telegram webhook secret).
+	return store.saveBotConfigRow(ctx, row, tokEnc, nil, mpEnc, mpSecEnc)
 }

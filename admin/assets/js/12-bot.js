@@ -32,8 +32,6 @@ async function loadBotConfig() {
     const set = (id, v) => { const e = document.getElementById(id); if (e) e.value = v ?? ""; };
     const chk = (id, v) => { const e = document.getElementById(id); if (e) e.checked = !!v; };
     chk("botEnabled", c.enabled);
-    set("botTelegramMode", c.telegram_mode);
-    set("botTelegramWebhookURL", c.telegram_webhook_url);
     set("botMPConfirmMode", c.mp_confirm_mode);
     set("botMPPollInterval", c.mp_poll_interval);
     set("botPixExp", c.pix_expiration_minutes);
@@ -45,12 +43,21 @@ async function loadBotConfig() {
     set("botAdminIDs", (c.admin_telegram_ids || []).join(","));
     set("botPublicHost", c.public_host);
     set("botXrayPublicHost", c.xray_public_host);
-    document.getElementById("botHasTgToken").textContent = c.has_telegram_token ? "✓ configurado" : "não definido";
-    document.getElementById("botHasTgSecret").textContent = c.has_telegram_webhook_secret ? "✓ configurado" : "não definido";
-    document.getElementById("botHasMpToken").textContent = c.has_mp_access_token ? "✓ configurado" : "não definido";
-    document.getElementById("botHasMpSecret").textContent = c.has_mp_webhook_secret ? "✓ configurado" : "não definido";
+    const hint = (id, ok) => { const e = document.getElementById(id); if (e) e.textContent = ok ? "✓ configurado" : "não definido"; };
+    hint("botHasTgToken", c.has_telegram_token);
+    hint("botHasMpToken", c.has_mp_access_token);
+    hint("botHasMpSecret", c.has_mp_webhook_secret);
+    botToggleMPWebhookBox();
     botStatus("botConfigStatus", "Carregado.");
   } catch (e) { if (e.message !== "auth") botStatus("botConfigStatus", "Erro ao carregar.", false); }
+}
+
+function botToggleMPWebhookBox() {
+  const mode = document.getElementById("botMPConfirmMode")?.value;
+  const box = document.getElementById("botMPWebhookBox");
+  if (box) box.style.display = mode === "webhook" ? "" : "none";
+  const url = document.getElementById("botMPWebhookURL");
+  if (url) url.textContent = location.origin + "/api/mp/webhook";
 }
 
 async function saveBotConfig() {
@@ -61,9 +68,6 @@ async function saveBotConfig() {
   const body = {
     enabled: chk("botEnabled"),
     telegram_token: val("botTelegramToken"),
-    telegram_mode: val("botTelegramMode"),
-    telegram_webhook_url: val("botTelegramWebhookURL"),
-    telegram_webhook_secret: val("botTelegramWebhookSecret"),
     mp_access_token: val("botMPToken"),
     mp_confirm_mode: val("botMPConfirmMode"),
     mp_webhook_secret: val("botMPWebhookSecret"),
@@ -80,7 +84,7 @@ async function saveBotConfig() {
   };
   try {
     await api("/api/bot/config", { method: "POST", body: JSON.stringify(body) });
-    ["botTelegramToken", "botTelegramWebhookSecret", "botMPToken", "botMPWebhookSecret"].forEach(id => { const e = document.getElementById(id); if (e) e.value = ""; });
+    ["botTelegramToken", "botMPToken", "botMPWebhookSecret"].forEach(id => { const e = document.getElementById(id); if (e) e.value = ""; });
     botStatus("botConfigStatus", "Configuração salva e bot reiniciado.");
     loadBotConfig();
   } catch (e) { if (e.message !== "auth") botStatus("botConfigStatus", "Erro ao salvar.", false); }
@@ -309,6 +313,7 @@ async function saveBotSettings() {
 document.getElementById("botConfigSaveBtn")?.addEventListener("click", saveBotConfig);
 document.getElementById("botConfigReloadBtn")?.addEventListener("click", loadBotConfig);
 document.getElementById("botTestBtn")?.addEventListener("click", testBot);
+document.getElementById("botMPConfirmMode")?.addEventListener("change", botToggleMPWebhookBox);
 document.getElementById("botReloadPlansBtn")?.addEventListener("click", loadBotPlans);
 document.getElementById("botNewPlanBtn")?.addEventListener("click", botClearPlanForm);
 document.getElementById("botCancelPlanBtn")?.addEventListener("click", botClearPlanForm);

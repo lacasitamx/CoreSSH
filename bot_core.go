@@ -81,18 +81,13 @@ func startBotService(store *Store) {
 func reloadBotService(store *Store) { startBotService(store) }
 
 func (b *Bot) start() {
-	log.Printf("[bot] starting (telegram_mode=%s mp_confirm=%s)", b.cfg.TelegramMode, b.cfg.MPConfirmMode)
-	if b.cfg.TelegramMode == "webhook" && b.cfg.TelegramWebhookURL != "" {
-		if err := b.tg.setWebhook(b.ctx, b.cfg.TelegramWebhookURL, b.cfg.TelegramWebhookSecret); err != nil {
-			log.Printf("[bot] setWebhook failed, falling back to polling: %v", err)
-			go b.runPolling()
-		} else {
-			log.Printf("[bot] webhook registered at %s", b.cfg.TelegramWebhookURL)
-		}
-	} else {
+	log.Printf("[bot] starting (telegram=long-polling, mp_confirm=%s)", b.cfg.MPConfirmMode)
+	// Telegram uses long-polling only. Clearing any stale webhook + polling both
+	// hit the network, so run off the goroutine that holds botMgrMu.
+	go func() {
 		_ = b.tg.deleteWebhook(b.ctx)
-		go b.runPolling()
-	}
+		b.runPolling()
+	}()
 	if b.mp != nil && b.cfg.MPConfirmMode == "polling" {
 		go b.runPaymentPoller()
 	}

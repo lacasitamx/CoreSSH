@@ -1620,9 +1620,8 @@ func startAdminAPI(store *Store, addr string, adminDir string) {
 	mux.Handle("/api/bot/settings", saSession(http.HandlerFunc(handleBotSettings(store))))
 	mux.Handle("/api/bot/test", saSession(http.HandlerFunc(handleBotTest(store))))
 
-	// Public: payment + Telegram webhooks (secured by signature/secret inside).
+	// Public: Mercado Pago payment webhook (validated by signature inside).
 	mux.Handle("/api/mp/webhook", http.HandlerFunc(handleMPWebhook))
-	mux.Handle("/api/telegram/webhook", http.HandlerFunc(handleTelegramWebhook))
 
 	// Public: user/UUID check — no auth, CORS *.
 	mux.Handle("/check", http.HandlerFunc(handleCheck))

@@ -16,7 +16,7 @@
   setTimeout(function(){document.documentElement.classList.remove("i18n-pending");},2500);
 })();
 </script>
-<link rel="stylesheet" href="assets/app.css?v=20260711updatecheck1"/>
+<link rel="stylesheet" href="assets/app.css?v=20260713bot2"/>
 </head>
 <body>
 <div class="app">
@@ -952,39 +952,69 @@
   <!-- ═══════════ Bot / Vendas Tab (superadmin only) ═══════════ -->
   <div class="tab-pane" id="tab-bot">
 
-    <!-- Config -->
+    <!-- Config: sticky action bar -->
     <div class="card">
       <div class="card-hdr">
         <div class="card-title">🤖 Configuração do Bot</div>
-        <div style="display:flex;gap:5px;">
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+          <span id="botConfigStatus" class="hint">Pronto.</span>
           <button class="btn btn-ghost btn-sm" id="botTestBtn">Testar conexão</button>
           <button class="btn btn-ghost btn-sm" id="botConfigReloadBtn">Recarregar</button>
+          <button class="btn btn-sm" id="botConfigSaveBtn">Salvar configuração</button>
         </div>
       </div>
-      <div class="form-grid">
-        <div class="field"><label>Bot ativo</label><input id="botEnabled" type="checkbox" style="width:16px;height:16px;margin-top:10px;"/></div>
-        <div class="field"><label>Token do Telegram <span class="hint" id="botHasTgToken"></span></label><input id="botTelegramToken" type="password" autocomplete="new-password" placeholder="(em branco = manter)"/></div>
-        <div class="field"><label>Modo do Telegram</label><select id="botTelegramMode"><option value="polling">polling (recomendado)</option><option value="webhook">webhook</option></select></div>
-        <div class="field"><label>Telegram Webhook URL</label><input id="botTelegramWebhookURL" placeholder="https://seu.dominio/api/telegram/webhook"/></div>
-        <div class="field"><label>Telegram Webhook Secret <span class="hint" id="botHasTgSecret"></span></label><input id="botTelegramWebhookSecret" type="password" autocomplete="new-password" placeholder="(em branco = manter)"/></div>
-        <div class="field"><label>Mercado Pago Access Token <span class="hint" id="botHasMpToken"></span></label><input id="botMPToken" type="password" autocomplete="new-password" placeholder="(em branco = manter)"/></div>
-        <div class="field"><label>Confirmação do pagamento</label><select id="botMPConfirmMode"><option value="polling">polling (recomendado)</option><option value="webhook">webhook</option></select></div>
-        <div class="field"><label>MP Webhook Secret <span class="hint" id="botHasMpSecret"></span></label><input id="botMPWebhookSecret" type="password" autocomplete="new-password" placeholder="(em branco = manter)"/></div>
-        <div class="field"><label>Intervalo de verificação (polling)</label><input id="botMPPollInterval" placeholder="20s"/></div>
-        <div class="field"><label>Expiração do PIX (min)</label><input id="botPixExp" type="number" min="1" placeholder="30"/></div>
-        <div class="field"><label>Teste grátis ativo</label><input id="botTrialEnabled" type="checkbox" style="width:16px;height:16px;margin-top:10px;"/></div>
-        <div class="field"><label>Teste: horas</label><input id="botTrialHours" type="number" min="1" placeholder="1"/></div>
-        <div class="field"><label>Teste: conexões</label><input id="botTrialMaxConns" type="number" min="1" placeholder="1"/></div>
-        <div class="field"><label>Teste: tipo</label><select id="botTrialKind"><option value="ssh">SSH</option><option value="xray">Xray</option></select></div>
-        <div class="field"><label>Teste: inbound Xray</label><input id="botTrialInbound" placeholder="tag do inbound (se Xray)"/></div>
-        <div class="field"><label>IDs admin no Telegram <span class="hint">(vírgula)</span></label><input id="botAdminIDs" placeholder="111111111,222222222"/></div>
-        <div class="field"><label>Host público SSH</label><input id="botPublicHost" placeholder="seu.dominio ou IP"/></div>
-        <div class="field"><label>Host público Xray</label><input id="botXrayPublicHost" placeholder="seu.dominio (para links vless/vmess)"/></div>
+      <p class="hint" style="margin:2px 0 0;">1) Cole os tokens abaixo e clique <b>Testar</b> · 2) Crie os <b>Planos</b> · 3) Promova revendedores em <b>Clientes</b>. O Telegram funciona por long-polling — não precisa de domínio.</p>
+    </div>
+
+    <div class="grid2">
+      <!-- Telegram -->
+      <div class="card">
+        <div class="card-hdr"><div class="card-title">✈️ Telegram</div></div>
+        <label style="display:flex;align-items:center;gap:8px;margin-bottom:12px;cursor:pointer;">
+          <input id="botEnabled" type="checkbox" style="width:16px;height:16px;"/> <span>Bot ativo</span>
+        </label>
+        <div class="field"><label>Token do bot <span class="hint" id="botHasTgToken"></span></label><input id="botTelegramToken" type="password" autocomplete="new-password" placeholder="cole o token do @BotFather (em branco = manter)"/></div>
+        <div class="field"><label>IDs de admin <span class="hint">separados por vírgula</span></label><input id="botAdminIDs" placeholder="111111111,222222222"/></div>
       </div>
-      <div class="form-actions">
-        <button class="btn" id="botConfigSaveBtn">Salvar configuração</button>
+
+      <!-- Mercado Pago -->
+      <div class="card">
+        <div class="card-hdr"><div class="card-title">💠 Mercado Pago (PIX)</div></div>
+        <div class="field"><label>Access Token <span class="hint" id="botHasMpToken"></span></label><input id="botMPToken" type="password" autocomplete="new-password" placeholder="APP_USR-... (em branco = manter)"/></div>
+        <div class="form-grid">
+          <div class="field"><label>Confirmação</label><select id="botMPConfirmMode"><option value="polling">Polling (sem domínio)</option><option value="webhook">Webhook</option></select></div>
+          <div class="field"><label>Intervalo do polling</label><input id="botMPPollInterval" placeholder="20s"/></div>
+          <div class="field"><label>Expiração do PIX (min)</label><input id="botPixExp" type="number" min="1" placeholder="30"/></div>
+        </div>
+        <div id="botMPWebhookBox" style="display:none;margin-top:6px;">
+          <div class="field"><label>Webhook Secret <span class="hint" id="botHasMpSecret"></span></label><input id="botMPWebhookSecret" type="password" autocomplete="new-password" placeholder="(em branco = manter)"/></div>
+          <p class="hint" style="margin:4px 0 0;">No Mercado Pago, cadastre a URL de notificação:<br><code id="botMPWebhookURL">https://SEU_HOST/api/mp/webhook</code></p>
+        </div>
       </div>
-      <div class="statusbar"><span id="botConfigStatus">Ready.</span></div>
+    </div>
+
+    <div class="grid2">
+      <!-- Trial -->
+      <div class="card">
+        <div class="card-hdr"><div class="card-title">⏳ Teste Grátis</div></div>
+        <label style="display:flex;align-items:center;gap:8px;margin-bottom:12px;cursor:pointer;">
+          <input id="botTrialEnabled" type="checkbox" style="width:16px;height:16px;"/> <span>Oferecer teste grátis</span>
+        </label>
+        <div class="form-grid">
+          <div class="field"><label>Duração (horas)</label><input id="botTrialHours" type="number" min="1" placeholder="1"/></div>
+          <div class="field"><label>Conexões</label><input id="botTrialMaxConns" type="number" min="1" placeholder="1"/></div>
+          <div class="field"><label>Tipo</label><select id="botTrialKind"><option value="ssh">SSH</option><option value="xray">Xray</option></select></div>
+          <div class="field"><label>Inbound (se Xray)</label><input id="botTrialInbound" list="botInboundList" placeholder="tag"/></div>
+        </div>
+      </div>
+
+      <!-- Delivery host -->
+      <div class="card">
+        <div class="card-hdr"><div class="card-title">🌐 Host de entrega</div></div>
+        <div class="field"><label>Host/IP para SSH</label><input id="botPublicHost" placeholder="seu.dominio ou IP público"/></div>
+        <div class="field"><label>Host para links Xray</label><input id="botXrayPublicHost" placeholder="seu.dominio (vless/vmess)"/></div>
+        <p class="hint" style="margin:4px 0 0;">Enviado ao cliente nas credenciais após o pagamento.</p>
+      </div>
     </div>
 
     <div class="grid2">
@@ -1433,17 +1463,17 @@
 <!-- app.js was split into ordered modules for maintainability. They are plain
      classic scripts sharing one global scope; `defer` preserves execution order,
      so behavior is identical to the old single file. Keep this load order. -->
-<script defer src="assets/js/01-core.js?v=20260711updatecheck1"></script>
-<script defer src="assets/js/02-shell.js?v=20260711updatecheck1"></script>
-<script defer src="assets/js/03-ssh-users.js?v=20260711updatecheck1"></script>
-<script defer src="assets/js/04-xray.js?v=20260711updatecheck1"></script>
-<script defer src="assets/js/05-resellers.js?v=20260711updatecheck1"></script>
-<script defer src="assets/js/06-servers.js?v=20260711updatecheck1"></script>
-<script defer src="assets/js/07-stats-logs.js?v=20260711updatecheck1"></script>
-<script defer src="assets/js/08-server-config.js?v=20260711updatecheck1"></script>
-<script defer src="assets/js/09-xray-wizard.js?v=20260711updatecheck1"></script>
-<script defer src="assets/js/11-update-status.js?v=20260711updatecheck1"></script>
-<script defer src="assets/js/12-bot.js?v=20260711updatecheck1"></script>
-<script defer src="assets/js/10-boot.js?v=20260711updatecheck1"></script>
+<script defer src="assets/js/01-core.js?v=20260713bot2"></script>
+<script defer src="assets/js/02-shell.js?v=20260713bot2"></script>
+<script defer src="assets/js/03-ssh-users.js?v=20260713bot2"></script>
+<script defer src="assets/js/04-xray.js?v=20260713bot2"></script>
+<script defer src="assets/js/05-resellers.js?v=20260713bot2"></script>
+<script defer src="assets/js/06-servers.js?v=20260713bot2"></script>
+<script defer src="assets/js/07-stats-logs.js?v=20260713bot2"></script>
+<script defer src="assets/js/08-server-config.js?v=20260713bot2"></script>
+<script defer src="assets/js/09-xray-wizard.js?v=20260713bot2"></script>
+<script defer src="assets/js/11-update-status.js?v=20260713bot2"></script>
+<script defer src="assets/js/12-bot.js?v=20260713bot2"></script>
+<script defer src="assets/js/10-boot.js?v=20260713bot2"></script>
 </body>
 </html>
