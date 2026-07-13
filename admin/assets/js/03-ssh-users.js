@@ -1,15 +1,21 @@
 // ─── SSH Users ────────────────────────────────────────────────────────────────
 document.getElementById("reloadUsersBtn").addEventListener("click", loadUsers);
 document.getElementById("sshHeroRefreshBtn")?.addEventListener("click", loadUsers);
-newUserBtn.addEventListener("click", () => {
-  setFormCollapsed(false);
+newUserBtn.addEventListener("click", () => navigateWorkspaceSection("ssh", "create"));
+cancelUserBtn.addEventListener("click", () => {
+  prepareNewSSHUser();
+  setWorkspaceSection("ssh", "users");
+});
+function prepareNewSSHUser() {
   userForm.reset();
   fTotpPeriod.value = 60; fTotpWindow.value = 1; fTotpDigits.value = 6;
+  const heading = document.getElementById("userFormHeading");
+  const title = document.getElementById("userFormTitle");
+  if (heading) heading.textContent = t("Create user");
+  if (title) title.textContent = t("Create SSH user");
   userStatus.textContent = t("New user.");
-  fUsername.focus();
-});
-cancelUserBtn.addEventListener("click", () => setFormCollapsed(true));
-toggleFormBtn.addEventListener("click", () => setFormCollapsed(!formCollapsed));
+  requestAnimationFrame(() => fUsername.focus());
+}
 document.getElementById("genTotpBtn").addEventListener("click", () => {
   fTotpSecret.value = genBase32();
   if (!fTotpPeriod.value) fTotpPeriod.value = 60;
@@ -18,12 +24,6 @@ document.getElementById("genTotpBtn").addEventListener("click", () => {
   userStatus.textContent = t("TOTP secret generated.");
 });
 document.getElementById("clearTotpBtn").addEventListener("click", () => { fTotpSecret.value = ""; });
-
-function setFormCollapsed(v) {
-  formCollapsed = v;
-  userFormWrap.classList.toggle("collapsed", v);
-  toggleFormBtn.textContent = v ? t("Show form") : t("Hide form");
-}
 
 async function loadUsers() {
   userStatus.textContent = t("Loading…");
@@ -113,7 +113,7 @@ function renderUsers(users) {
 }
 
 function fillUserForm(u) {
-  setFormCollapsed(false);
+  setWorkspaceSection("ssh", "create");
   fUsername.value       = u.username || "";
   fPassword.value       = "";
   fTotpSecret.value     = u.totp_secret || "";
@@ -125,6 +125,10 @@ function fillUserForm(u) {
   fUp.value             = u.limit_mbps_up || "";
   fDown.value           = u.limit_mbps_down || "";
   fExpires.value        = u.expires_at ? localFromISO(u.expires_at) : "";
+  const heading = document.getElementById("userFormHeading");
+  const title = document.getElementById("userFormTitle");
+  if (heading) heading.textContent = t("Edit user");
+  if (title) title.textContent = t("Editing {name}", {name:u.username});
   userStatus.textContent = t("Editing {name}", {name: u.username});
 }
 
@@ -153,6 +157,8 @@ userForm.addEventListener("submit", async e => {
     fPassword.value = "";
     loadUsers();
     if (currentRole === "reseller") loadMe();
+    showPanelToast(t("SSH user saved successfully."), "success", t("SSH / SlowDNS"));
+    setWorkspaceSection("ssh", "users");
   } catch (e) {
     if (e.message==="auth") doAuthError();
     else userStatus.textContent = t("Error: {error}", {error: e.message});

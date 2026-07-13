@@ -9,6 +9,14 @@ document.getElementById("xLoadInboundsBtn").addEventListener("click", () => load
 document.getElementById("xLoadCfgBtn").addEventListener("click", loadXrayCfg);
 document.getElementById("xSaveCfgBtn").addEventListener("click", saveXrayCfg);
 document.getElementById("xLoadLogsBtn").addEventListener("click", loadXrayLogs);
+document.getElementById("xrayOpenCreateBtn")?.addEventListener("click", () => navigateWorkspaceSection("xray", "create"));
+document.getElementById("xCreateCancelBtn")?.addEventListener("click", () => setWorkspaceSection("xray", "users"));
+document.getElementById("xCreateUUIDBtn")?.addEventListener("click", () => {
+  const field = document.getElementById("xCreateUUID");
+  if (field) field.value = genUUID();
+});
+document.getElementById("xCreateInbound")?.addEventListener("change", updateXrayCreatorInboundLabel);
+document.getElementById("xCreateClientForm")?.addEventListener("submit", submitXrayClientCreator);
 
 
 async function loadXrayStatus() {
@@ -160,6 +168,7 @@ async function copyText(text) {
 function renderInbounds(inbounds, options = {}) {
   const { silent = false, force = false } = options || {};
   updateDashboardXray(inbounds);
+  syncXrayCreatorInbounds(inbounds);
   const nextStructure = inboundStructure(inbounds);
 
   if (silent && !force && nextStructure === lastInboundsStructure && patchRenderedInbounds(inbounds)) return;
@@ -176,8 +185,7 @@ function renderInbounds(inbounds, options = {}) {
   }
   inboundsContainer.innerHTML = "";
   lastInboundsStructure = nextStructure;
-  inbounds.forEach((ib, inboundIndex) => {
-	const formKey = String(inboundIndex);
+  inbounds.forEach(ib => {
     const section = document.createElement("div");
     section.dataset.inboundTag = String(ib.tag || "");
     section.dataset.inboundProtocol = String(ib.protocol || "");
@@ -199,38 +207,10 @@ function renderInbounds(inbounds, options = {}) {
 	const openButton = document.createElement("button");
 	openButton.className = "btn btn-sm";
 	openButton.type = "button";
-	openButton.textContent = t("+ Add Client");
-	openButton.addEventListener("click", () => openAddClient(ib.tag, formKey));
+	openButton.textContent = t("Create user");
+	openButton.addEventListener("click", () => openAddClient(ib.tag));
 	hdr.appendChild(openButton);
     section.appendChild(hdr);
-
-    // Add client mini-form (hidden by default)
-    const addForm = document.createElement("div");
-    addForm.id = `add-form-${formKey}`;
-    addForm.className = "hidden";
-    addForm.style = "background:rgba(15,23,42,.9);border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:8px;";
-    addForm.innerHTML = `
-      <div class="form-grid" style="grid-template-columns:1fr 1fr;">
-        <div class="field">
-          <label>UUID</label>
-          <div class="field-row">
-			<input id="newUUID-${formKey}" placeholder="auto-generate" style="border-radius:6px;"/>
-			<button class="btn btn-ghost btn-sm" id="genUUID-${formKey}" type="button">Gen</button>
-          </div>
-        </div>
-		<div class="field"><label>${t("Email / label")}</label><input id="newEmail-${formKey}" placeholder="user@example" style="border-radius:6px;"/></div>
-		<div class="field"><label>${t("Display Name")}</label><input id="newName-${formKey}" placeholder="e.g. Maykinho01" style="border-radius:6px;"/></div>
-		<div class="field"><label>${t("Expiry Date")}</label><input type="datetime-local" id="newExpiry-${formKey}" style="border-radius:6px;color-scheme:dark;"/></div>
-		<div class="field"><label>${t("Max Connections")} <span class="hint">${t("(0 = unlimited)")}</span></label><input type="number" min="0" id="newMaxConns-${formKey}" placeholder="0" style="border-radius:6px;"/></div>
-      </div>
-      <div class="form-actions" style="margin-top:6px;">
-		<button class="btn btn-sm" id="addClient-${formKey}" type="button">${t("Add")}</button>
-		<button class="btn btn-ghost btn-sm" id="cancelAddClient-${formKey}" type="button">${t("Cancel")}</button>
-      </div>`;
-	addForm.querySelector(`#genUUID-${formKey}`).addEventListener("click", () => { document.getElementById(`newUUID-${formKey}`).value = genUUID(); });
-	addForm.querySelector(`#addClient-${formKey}`).addEventListener("click", () => addClient(ib.tag, formKey));
-	addForm.querySelector(`#cancelAddClient-${formKey}`).addEventListener("click", () => addForm.classList.add("hidden"));
-    section.appendChild(addForm);
 
     // Clients table
     const tblWrap = document.createElement("div");
@@ -286,36 +266,122 @@ function renderInbounds(inbounds, options = {}) {
   });
 }
 
-function openAddClient(tag, formKey = tag) {
-	const form = document.getElementById(`add-form-${formKey}`);
-  if (form) { form.classList.remove("hidden"); }
-	const uuidField = document.getElementById(`newUUID-${formKey}`);
-  if (uuidField && !uuidField.value) uuidField.value = genUUID();
+let xrayCreatorInbounds = [];
+let xrayCreatorInboundSignature = "";
+
+function syncXrayCreatorInbounds(inbounds = []) {
+  const select = document.getElementById("xCreateInbound");
+  if (!select) return;
+  const previous = select.value;
+  const nextInbounds = (inbounds || []).filter(ib => ib?.tag).map(ib => ({
+    tag: String(ib.tag),
+    protocol: String(ib.protocol || "xray").toUpperCase(),
+    port: ib.port ?? "?",
+  }));
+  const nextSignature = JSON.stringify(nextInbounds);
+  xrayCreatorInbounds = nextInbounds;
+  if (nextSignature === xrayCreatorInboundSignature) {
+    updateXrayCreatorInboundLabel();
+    return;
+  }
+  xrayCreatorInboundSignature = nextSignature;
+  select.replaceChildren();
+  if (!xrayCreatorInbounds.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = t("No compatible inbound found");
+    select.appendChild(option);
+    select.disabled = true;
+  } else {
+    xrayCreatorInbounds.forEach(inbound => {
+      const option = document.createElement("option");
+      option.value = inbound.tag;
+      option.textContent = `${inbound.protocol} · ${inbound.tag} · :${inbound.port}`;
+      select.appendChild(option);
+    });
+    select.disabled = false;
+    select.value = xrayCreatorInbounds.some(inbound => inbound.tag === previous) ? previous : xrayCreatorInbounds[0].tag;
+  }
+  updateXrayCreatorInboundLabel();
 }
 
-async function addClient(tag, formKey = tag) {
-	const uuidEl     = document.getElementById(`newUUID-${formKey}`);
-	const emailEl    = document.getElementById(`newEmail-${formKey}`);
-	const nameEl     = document.getElementById(`newName-${formKey}`);
-	const expiryEl   = document.getElementById(`newExpiry-${formKey}`);
-	const maxConnsEl = document.getElementById(`newMaxConns-${formKey}`);
-  const uuid       = (uuidEl?.value || "").trim();
-  const email      = (emailEl?.value || "").trim();
-  const name       = (nameEl?.value || "").trim();
-  const expiresAt  = isoFromLocal(expiryEl?.value || "");
-  const maxConns   = parseInt(maxConnsEl?.value || "0", 10) || 0;
-  if (!uuid) { xStatus.textContent = t("UUID required."); return; }
+function updateXrayCreatorInboundLabel() {
+  const selected = document.getElementById("xCreateInbound")?.value || "";
+  const inbound = xrayCreatorInbounds.find(item => item.tag === selected);
+  const chip = document.getElementById("xCreateProtocolChip");
+  const hint = document.getElementById("xCreateInboundHint");
+  if (chip) chip.textContent = inbound ? inbound.protocol : t("No inbound");
+  if (hint) hint.textContent = inbound
+    ? t("The client will be added to {tag} on port {port}.", {tag:inbound.tag, port:inbound.port})
+    : t("Create or enable a compatible inbound before adding a client.");
+}
+
+function prepareXrayClientCreator(preferredTag = "") {
+  const form = document.getElementById("xCreateClientForm");
+  form?.reset();
+  const inbound = document.getElementById("xCreateInbound");
+  if (inbound && preferredTag && xrayCreatorInbounds.some(item => item.tag === preferredTag)) inbound.value = preferredTag;
+  const uuid = document.getElementById("xCreateUUID");
+  if (uuid) uuid.value = genUUID();
+  const maxConns = document.getElementById("xCreateMaxConns");
+  if (maxConns) maxConns.value = "0";
+  const status = document.getElementById("xCreateClientStatus");
+  if (status) status.textContent = xrayCreatorInbounds.length ? t("Ready to create a new Xray client.") : t("Waiting for a compatible inbound.");
+  updateXrayCreatorInboundLabel();
+  requestAnimationFrame(() => document.getElementById("xCreateName")?.focus());
+}
+
+function openAddClient(tag) {
+  setWorkspaceSection("xray", "create");
+  prepareXrayClientCreator(tag);
+}
+
+async function submitXrayClientCreator(event) {
+  event?.preventDefault?.();
+  const tag = document.getElementById("xCreateInbound")?.value || "";
+  const uuid = (document.getElementById("xCreateUUID")?.value || "").trim();
+  const status = document.getElementById("xCreateClientStatus");
+  const button = document.getElementById("xCreateClientBtn");
+  if (!tag) { if (status) status.textContent = t("Select a compatible inbound."); return false; }
+  if (!uuid) { if (status) status.textContent = t("UUID required."); return false; }
+  const payload = {
+    inbound_tag: tag,
+    uuid,
+    email: (document.getElementById("xCreateEmail")?.value || "").trim(),
+    name: (document.getElementById("xCreateName")?.value || "").trim(),
+    expires_at: isoFromLocal(document.getElementById("xCreateExpiry")?.value || ""),
+    max_connections: parseInt(document.getElementById("xCreateMaxConns")?.value || "0", 10) || 0,
+    server_id: selectedXrayServer(),
+  };
+  if (button) button.disabled = true;
+  if (status) status.textContent = t("Creating Xray client…");
   try {
-    const res = await api("/api/xray/clients/add", {
-      method: "POST",
-      body: JSON.stringify({ inbound_tag: tag, uuid, email, name, expires_at: expiresAt, max_connections: maxConns, server_id: selectedXrayServer() }),
-    });
+    const res = await api("/api/xray/clients/add", { method:"POST", body:JSON.stringify(payload) });
     if (!res.ok) throw new Error(await res.text());
-    xStatus.textContent = t("Client {id}… added. Native mode hot-reloads without restart.", {id: uuid.slice(0,8)});
-    setTimeout(() => { loadInbounds({ force: true }); if (currentRole === "reseller") loadMe(); }, 1500);
+    const success = t("Client {id}… added. Native mode hot-reloads without restart.", {id:uuid.slice(0,8)});
+    if (status) status.textContent = success;
+    xStatus.textContent = success;
+    showPanelToast(t("Xray user created successfully."), "success", t("Xray user"));
+    setTimeout(() => { loadInbounds({ force:true }); if (currentRole === "reseller") loadMe(); }, 700);
+    const name = document.getElementById("xCreateName");
+    const email = document.getElementById("xCreateEmail");
+    const expiry = document.getElementById("xCreateExpiry");
+    if (name) name.value = "";
+    if (email) email.value = "";
+    if (expiry) expiry.value = "";
+    const nextUUID = document.getElementById("xCreateUUID");
+    if (nextUUID) nextUUID.value = genUUID();
+    return true;
   } catch (e) {
-    if (e.message==="auth") doAuthError();
-    else xStatus.textContent = t("Error: {error}", {error: e.message});
+    if (e.message === "auth") doAuthError();
+    else {
+      if (status) status.textContent = t("Error: {error}", {error:e.message});
+      xStatus.textContent = t("Error: {error}", {error:e.message});
+      showPanelToast(t("Could not create the Xray user: {error}", {error:e.message}), "error", t("Xray user"));
+    }
+    return false;
+  } finally {
+    if (button) button.disabled = false;
   }
 }
 

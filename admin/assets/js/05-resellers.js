@@ -1,16 +1,20 @@
 // ─── Resellers ────────────────────────────────────────────────────────────────
 document.getElementById("reloadResellersBtn").addEventListener("click", loadResellers);
-document.getElementById("newResellerBtn").addEventListener("click", () => {
+document.getElementById("newResellerBtn").addEventListener("click", () => navigateWorkspaceSection("resellers", "create"));
+document.getElementById("cancelResellerBtn").addEventListener("click", () => {
+  prepareNewReseller();
+  setWorkspaceSection("resellers", "users");
+});
+
+function prepareNewReseller() {
   resellerFormTitle.textContent = "Create Reseller";
+  const heading = document.getElementById("resellerFormHeading");
+  if (heading) heading.textContent = t("Create reseller");
   resellerForm.reset();
   rActive.checked = true;
   resellerStatus.textContent = "New reseller.";
-});
-document.getElementById("cancelResellerBtn").addEventListener("click", () => {
-  resellerForm.reset();
-  rActive.checked = true;
-  resellerFormTitle.textContent = "Create Reseller";
-});
+  requestAnimationFrame(() => rUsername.focus());
+}
 
 document.querySelector("[data-tab='resellers']")?.addEventListener("click", loadResellers);
 
@@ -63,7 +67,10 @@ function renderResellers(list) {
 }
 
 function fillResellerForm(r) {
+  setWorkspaceSection("resellers", "create");
   resellerFormTitle.textContent = `Edit: ${r.username}`;
+  const heading = document.getElementById("resellerFormHeading");
+  if (heading) heading.textContent = t("Edit reseller");
   rUsername.value  = r.username;
   rPassword.value  = "";
   rMaxUsers.value  = r.max_users || 0;
@@ -91,6 +98,8 @@ resellerForm.addEventListener("submit", async e => {
     resellerForm.reset(); rActive.checked = true;
     resellerFormTitle.textContent = "Create Reseller";
     loadResellers();
+    showPanelToast(t("Reseller saved successfully."), "success", t("Resellers"));
+    setWorkspaceSection("resellers", "users");
   } catch (e) {
     if (e.message==="auth") doAuthError();
     else resellerStatus.textContent = "Error: "+e.message;

@@ -15,6 +15,7 @@ DragonCoreSSH V40 é um painel/servidor em Go para SSH com HTTP Injection, paine
 - Endpoint XHTTP compartilhado no modo nativo: VLESS **ou** VMess em `/` e SSH em `/ssh`, usando o mesmo domínio/porta/TLS
 - Área compacta de infraestrutura com Servidores, Status, Monitoramento e Tráfego no mesmo seletor visual
 - Cartões de status ao vivo nos espaços SSH, Xray e Infraestrutura, com confirmações integradas ao painel
+- Navegação interna consistente com o Bot: SSH/SlowDNS e Revendedores separam consulta de cadastro; Xray separa Usuários, Criar usuário, Configuração e Logs; Configurações separa Rede/SSH, SlowDNS, UDP, TLS e Xray
 - Contas de revendedor (reseller) com cota de usuários e escopo próprio
 - Gerenciamento multi-servidor (master/slave) direto pelo painel
 - API HTTP completa para bots/automações (ver **HTTP API Reference**)
@@ -543,6 +544,7 @@ DragonCoreSSH V40 is a Go-based SSH HTTP Injection server with a web panel, Post
 - Native shared XHTTP endpoint: VLESS **or** VMess on `/` and SSH on `/ssh`, using the same domain/port/TLS
 - Compact infrastructure workspace with Servers, Status, Monitoring, and Traffic in one visual switcher
 - Live status cards across SSH, Xray, and Infrastructure, with panel-native confirmations
+- Bot-style section navigation throughout the panel: SSH/SlowDNS and Resellers separate lists from creation; Xray separates Users, Create User, Configuration, and Logs; Settings separates Network/SSH, SlowDNS, UDP, TLS, and Xray
 - Reseller accounts with a user quota and self-scoped access
 - Multi-server (master/slave) management directly from the panel
 - Full HTTP API for bots/automations (see **HTTP API Reference**)

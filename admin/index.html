@@ -16,7 +16,7 @@
   setTimeout(function(){document.documentElement.classList.remove("i18n-pending");},2500);
 })();
 </script>
-<link rel="stylesheet" href="assets/app.css?v=20260713infra4"/>
+  <link rel="stylesheet" href="assets/app.css?v=20260713sections5"/>
 </head>
 <body>
 <div class="app">
@@ -85,8 +85,7 @@
   <!-- ═══════════ Dashboard Tab ═══════════ -->
   <div class="tab-pane active" id="tab-dashboard">
     <section class="page-hero" data-tone="cyan">
-      <div class="page-hero-copy"><span class="page-kicker">Command center</span><h2>Visão geral</h2><p>Contas, conexões e infraestrutura em uma leitura rápida.</p></div>
-      <div class="page-hero-mark" aria-hidden="true">DC</div>
+      <div class="page-hero-copy"><h2>Visão geral</h2><p>Contas, conexões e infraestrutura em uma leitura rápida.</p></div>
     </section>
     <div class="dash-grid">
       <div class="dash-card accent-blue">
@@ -221,6 +220,16 @@
       </div>
     </section>
 
+    <div class="workspace-nav-shell" data-tone="green">
+      <nav class="workspace-section-nav" id="sshSectionNav" aria-label="Áreas SSH e SlowDNS" style="--workspace-nav-columns:2">
+        <button class="active" type="button" data-workspace="ssh" data-workspace-section="users"><span>◎</span> Usuários</button>
+        <button type="button" data-workspace="ssh" data-workspace-section="create"><span>＋</span> Criar usuário</button>
+      </nav>
+      <select id="sshSection" class="workspace-section-select" data-workspace-select="ssh" aria-label="Área SSH e SlowDNS">
+        <option value="users">Usuários</option><option value="create">Criar usuário</option>
+      </select>
+    </div>
+
     <!-- Reseller info card (visible to resellers only) -->
     <div id="resellerInfoCard" class="card hidden" style="margin-bottom:12px;">
       <div class="card-hdr"><div class="card-title">My Account</div></div>
@@ -252,7 +261,8 @@
       <div class="hint" id="sshServerHint">Servers with SSH enabled are available here.</div>
     </div>
 
-    <div class="grid2">
+    <section class="workspace-section active" data-workspace-panel="ssh" data-workspace-section-panel="users">
+      <div class="workspace-section-heading"><div><span>01 · Gestão</span><h3>Usuários SSH e SlowDNS</h3><p>Consulte conexões, limites, validade e ações de cada conta.</p></div></div>
       <!-- Users list -->
       <div class="card">
         <div class="card-hdr">
@@ -273,16 +283,17 @@
             <tbody id="usersBody"></tbody>
           </table>
         </div>
-        <div class="statusbar"><span id="userStatus">Ready.</span><span id="lastReload"></span></div>
       </div>
+    </section>
 
+    <section class="workspace-section" data-workspace-panel="ssh" data-workspace-section-panel="create">
+      <div class="workspace-section-heading"><div><span>02 · Cadastro</span><h3 id="userFormHeading">Criar usuário</h3><p>Defina autenticação, validade, conexões e velocidade em uma tela dedicada.</p></div></div>
       <!-- Create / edit user form -->
-      <div class="card">
+      <div class="card workspace-form-card">
         <div class="card-hdr">
-          <div class="card-title">Create / update user</div>
-          <button class="btn btn-ghost btn-sm" id="toggleFormBtn">Show form</button>
+          <div class="card-title" id="userFormTitle">Criar usuário SSH</div>
         </div>
-        <div id="userFormWrap" class="collapsible collapsed">
+        <div id="userFormWrap">
           <form id="userForm">
             <div class="form-grid">
               <div class="field"><label>Username</label><input id="fUsername" required autocomplete="off"/></div>
@@ -310,7 +321,8 @@
           </form>
         </div>
       </div>
-    </div>
+    </section>
+    <div class="statusbar workspace-section-status"><span id="userStatus">Ready.</span><span id="lastReload"></span></div>
   </div><!-- /tab-ssh -->
 
   <!-- ═══════════ Xray Tab (superadmin only) ═══════════ -->
@@ -337,6 +349,21 @@
         </div>
       </div>
     </section>
+
+    <div class="workspace-nav-shell" data-tone="purple">
+      <nav class="workspace-section-nav" id="xraySectionNav" aria-label="Áreas do Xray" style="--workspace-nav-columns:4">
+        <button class="active" type="button" data-workspace="xray" data-workspace-section="users"><span>◎</span> Usuários</button>
+        <button type="button" data-workspace="xray" data-workspace-section="create"><span>＋</span> Criar usuário</button>
+        <button class="xray-admin-only" type="button" data-workspace="xray" data-workspace-section="config"><span>⚙</span> Configuração</button>
+        <button class="xray-admin-only" type="button" data-workspace="xray" data-workspace-section="logs"><span>☰</span> Logs</button>
+      </nav>
+      <select id="xraySection" class="workspace-section-select" data-workspace-select="xray" aria-label="Área do Xray">
+        <option value="users">Usuários</option><option value="create">Criar usuário</option>
+        <option class="xray-admin-only" value="config">Configuração</option><option class="xray-admin-only" value="logs">Logs</option>
+      </select>
+    </div>
+
+    <section class="workspace-section active" data-workspace-panel="xray" data-workspace-section-panel="users">
     <!-- Edit Client Panel (hidden by default) -->
     <div id="editXrayClientPanel" class="card hidden" style="margin-bottom:12px;border-color:rgba(245,158,11,.4);">
       <div class="card-hdr">
@@ -355,6 +382,7 @@
       </div>
       <div id="editXrayClientStatus" class="hint" style="margin-top:4px;"></div>
     </div>
+    </section>
     <div class="card reseller-only hidden reseller-helper-card">
       <div class="card-hdr"><div class="card-title">Área do revendedor</div><span class="chip green">cota única</span></div>
       <p class="hint">Crie clientes Xray com a mesma experiência do painel principal. Cada cliente Xray desconta do mesmo limite usado pelas contas SSH.</p>
@@ -377,8 +405,10 @@
       <div class="hint hidden" id="xrayServerHint"></div>
     </div>
 
+    <section class="workspace-section active" data-workspace-panel="xray" data-workspace-section-panel="users">
+      <div class="workspace-section-heading"><div><span>01 · Gestão</span><h3>Usuários Xray</h3><p>Consulte clientes, conexões, validade e tráfego separados por inbound.</p></div><button class="btn btn-sm" id="xrayOpenCreateBtn" type="button">Criar usuário</button></div>
     <!-- Inbounds & clients -->
-    <div class="card" style="margin-top:12px;">
+    <div class="card">
       <div class="card-hdr">
         <div class="card-title">Inbounds &amp; Clients</div>
         <div class="card-actions"><button class="btn btn-ghost btn-sm" id="xLoadInboundsBtn">Reload</button></div>
@@ -387,9 +417,31 @@
         <div class="hint" style="padding:8px 0;">Loading inbounds…</div>
       </div>
     </div>
+    </section>
 
+    <section class="workspace-section" data-workspace-panel="xray" data-workspace-section-panel="create">
+      <div class="workspace-section-heading"><div><span>02 · Cadastro</span><h3>Criar usuário Xray</h3><p>Escolha o inbound e cadastre o cliente sem abrir a tabela de usuários.</p></div></div>
+      <div class="card workspace-form-card">
+        <div class="card-hdr"><div class="card-title">Novo cliente Xray</div><span class="chip" id="xCreateProtocolChip">inbound</span></div>
+        <form id="xCreateClientForm">
+          <div class="form-grid">
+            <div class="field" style="grid-column:1/-1"><label>Inbound</label><select id="xCreateInbound" required><option value="">Carregando inbounds…</option></select><span class="hint" id="xCreateInboundHint">Selecione onde o cliente será adicionado.</span></div>
+            <div class="field"><label>UUID</label><div class="field-row"><input id="xCreateUUID" required autocomplete="off" placeholder="Gerado automaticamente"/><button class="btn btn-ghost btn-sm" id="xCreateUUIDBtn" type="button">Gerar</button></div></div>
+            <div class="field"><label>Nome de exibição</label><input id="xCreateName" autocomplete="off" placeholder="Ex.: Cliente 01"/></div>
+            <div class="field"><label>Email / identificação</label><input id="xCreateEmail" autocomplete="off" placeholder="cliente@example"/></div>
+            <div class="field"><label>Expira em</label><input id="xCreateExpiry" type="datetime-local"/></div>
+            <div class="field"><label>Máximo de conexões <span class="hint">0 = ilimitado</span></label><input id="xCreateMaxConns" type="number" min="0" value="0"/></div>
+          </div>
+          <div class="form-actions"><button class="btn" id="xCreateClientBtn" type="submit">Criar usuário</button><button class="btn btn-ghost" id="xCreateCancelBtn" type="button">Voltar aos usuários</button></div>
+          <div class="statusbar"><span id="xCreateClientStatus">Preencha os dados do novo cliente.</span></div>
+        </form>
+      </div>
+    </section>
+
+    <section class="workspace-section xray-admin-only" data-workspace-panel="xray" data-workspace-section-panel="config">
+      <div class="workspace-section-heading"><div><span>03 · Serviço</span><h3>Configuração Xray</h3><p>Edite endpoint, inbounds, TLS e opções avançadas visualmente ou em JSON.</p></div></div>
     <!-- Config editor -->
-    <div class="card xray-admin-only" style="margin-top:12px;">
+    <div class="card">
       <div class="card-hdr">
         <div class="card-title">Xray Config</div>
         <div class="card-actions">
@@ -592,21 +644,35 @@
         </div>
       </div>
     </div>
+    </section>
 
+    <section class="workspace-section xray-admin-only" data-workspace-panel="xray" data-workspace-section-panel="logs">
+      <div class="workspace-section-heading"><div><span>04 · Diagnóstico</span><h3>Logs do Xray</h3><p>Acompanhe as últimas mensagens do serviço em uma tela focada.</p></div></div>
     <!-- Logs -->
-    <div class="card xray-admin-only" style="margin-top:12px;">
+    <div class="card">
       <div class="card-hdr">
         <div class="card-title">Logs <span class="chip">last 200 lines</span></div>
         <div class="card-actions"><button class="btn btn-ghost btn-sm" id="xLoadLogsBtn">Refresh</button></div>
       </div>
       <pre class="log-box" id="xLogsBox"></pre>
     </div>
+    </section>
   </div><!-- /tab-xray -->
 
   <!-- ═══════════ Resellers Tab (superadmin only) ═══════════ -->
   <div class="tab-pane" id="tab-resellers">
-    <section class="page-hero" data-tone="amber"><div class="page-hero-copy"><span class="page-kicker">Partner operations</span><h2>Revendedores</h2><p>Controle cotas, validade e acesso dos parceiros em um só lugar.</p></div><div class="page-hero-pills"><span>Cotas</span><span>Expiração</span><span>Auditoria</span></div></section>
-    <div class="grid2">
+    <section class="page-hero" data-tone="amber"><div class="page-hero-copy"><span class="page-kicker">Partner operations</span><h2>Revendedores</h2><p>Controle cotas, validade e acesso dos parceiros em um só lugar.</p></div></section>
+    <div class="workspace-nav-shell" data-tone="amber">
+      <nav class="workspace-section-nav" id="resellerSectionNav" aria-label="Áreas de revendedores" style="--workspace-nav-columns:2">
+        <button class="active" type="button" data-workspace="resellers" data-workspace-section="users"><span>◎</span> Revendedores</button>
+        <button type="button" data-workspace="resellers" data-workspace-section="create"><span>＋</span> Criar revendedor</button>
+      </nav>
+      <select id="resellerSection" class="workspace-section-select" data-workspace-select="resellers" aria-label="Área de revendedores">
+        <option value="users">Revendedores</option><option value="create">Criar revendedor</option>
+      </select>
+    </div>
+    <section class="workspace-section active" data-workspace-panel="resellers" data-workspace-section-panel="users">
+      <div class="workspace-section-heading"><div><span>01 · Gestão</span><h3>Revendedores cadastrados</h3><p>Consulte cotas, consumo compartilhado, validade e situação de cada parceiro.</p></div></div>
       <!-- Resellers list -->
       <div class="card">
         <div class="card-hdr">
@@ -624,11 +690,13 @@
             <tbody id="resellersBody"></tbody>
           </table>
         </div>
-        <div class="statusbar"><span id="resellerStatus">Ready.</span></div>
       </div>
+    </section>
 
+    <section class="workspace-section" data-workspace-panel="resellers" data-workspace-section-panel="create">
+      <div class="workspace-section-heading"><div><span>02 · Cadastro</span><h3 id="resellerFormHeading">Criar revendedor</h3><p>Defina login, limite compartilhado, validade e acesso em uma tela dedicada.</p></div></div>
       <!-- Create / edit reseller form -->
-      <div class="card">
+      <div class="card workspace-form-card">
         <div class="card-hdr">
           <div class="card-title" id="resellerFormTitle">Create Reseller</div>
           <button class="btn btn-ghost btn-sm" id="cancelResellerBtn">Cancel</button>
@@ -646,7 +714,8 @@
           </div>
         </form>
       </div>
-    </div>
+    </section>
+    <div class="statusbar workspace-section-status"><span id="resellerStatus">Ready.</span></div>
   </div><!-- /tab-resellers -->
 
   <!-- ═══════════ Servers Tab (superadmin only) ═══════════ -->
@@ -1123,11 +1192,25 @@
 
   <!-- ═══════════ Server Config Tab (superadmin only) ═══════════ -->
   <div class="tab-pane" id="tab-server">
-    <section class="page-hero" data-tone="blue"><div class="page-hero-copy"><span class="page-kicker">System studio</span><h2>Configurações</h2><p>Rede, SSH, túneis e TLS organizados em blocos visuais e aplicados ao vivo.</p></div><div class="page-hero-pills"><span>Network</span><span>Tunnels</span><span>TLS</span></div></section>
+    <section class="page-hero" data-tone="blue"><div class="page-hero-copy"><span class="page-kicker">System studio</span><h2>Configurações</h2><p>Rede, SSH, túneis e TLS organizados em blocos visuais e aplicados ao vivo.</p></div></section>
 
-    <div class="grid2">
-      <!-- ── Left column ── -->
-      <div>
+    <div class="workspace-nav-shell" data-tone="blue">
+      <nav class="workspace-section-nav" id="configSectionNav" aria-label="Áreas de configuração" style="--workspace-nav-columns:5">
+        <button class="active" type="button" data-workspace="config" data-workspace-section="general"><span>⌁</span> Rede e SSH</button>
+        <button type="button" data-workspace="config" data-workspace-section="slowdns"><span>DNS</span> SlowDNS</button>
+        <button type="button" data-workspace="config" data-workspace-section="udp"><span>⇅</span> UDP Gateway</button>
+        <button type="button" data-workspace="config" data-workspace-section="tls"><span>◇</span> TLS</button>
+        <button type="button" data-workspace="config" data-workspace-section="xray"><span>◆</span> Xray</button>
+      </nav>
+      <select id="configSection" class="workspace-section-select" data-workspace-select="config" aria-label="Área de configuração">
+        <option value="general">Rede e SSH</option><option value="slowdns">SlowDNS</option><option value="udp">UDP Gateway</option><option value="tls">TLS</option><option value="xray">Xray</option>
+      </select>
+    </div>
+
+    <div class="settings-workspace">
+      <section class="workspace-section active" data-workspace-panel="config" data-workspace-section-panel="general">
+        <div class="workspace-section-heading"><div><span>01 · Base</span><h3>Rede e SSH</h3><p>Configure listeners, limites padrão, tempo ocioso e o banner de conexão.</p></div></div>
+        <div class="settings-panel-grid">
 
         <!-- Network -->
         <div class="card">
@@ -1192,7 +1275,7 @@
         </div>
 
         <!-- Banner -->
-        <div class="card" style="margin-top:12px">
+        <div class="card settings-span-all" style="margin-top:12px">
           <div class="card-hdr">
             <div class="card-title">SSH Banner</div>
             <span class="chip green">live</span>
@@ -1204,11 +1287,11 @@
           <div class="hint" style="margin-top:6px;">Banner file: /opt/sshpanel/banner.txt</div>
         </div>
 
-      </div><!-- /left -->
+        </div>
+      </section>
 
-      <!-- ── Right column ── -->
-      <div>
-
+      <section class="workspace-section" data-workspace-panel="config" data-workspace-section-panel="slowdns">
+        <div class="workspace-section-heading"><div><span>02 · Túnel DNS</span><h3>SlowDNS / DNSTT</h3><p>Gerencie domínios, DNS local, capacidade, filas e reinício controlado.</p></div></div>
         <!-- DNSTT -->
         <div class="card">
           <div class="card-hdr">
@@ -1290,6 +1373,10 @@
           </div>
         </div>
 
+      </section>
+
+      <section class="workspace-section" data-workspace-panel="config" data-workspace-section-panel="udp">
+        <div class="workspace-section-heading"><div><span>03 · UDP</span><h3>UDP Gateway</h3><p>Defina listener, capacidade, expiração de mapa e reinício do serviço.</p></div></div>
         <!-- UDPGW -->
         <div class="card" style="margin-top:12px">
           <div class="card-hdr">
@@ -1335,6 +1422,10 @@
           </div>
         </div>
 
+      </section>
+
+      <section class="workspace-section" data-workspace-panel="config" data-workspace-section-panel="tls">
+        <div class="workspace-section-heading"><div><span>04 · Segurança</span><h3>Encaminhadores TLS</h3><p>Crie listeners TLS com certificado automático, colado ou armazenado em arquivo.</p></div></div>
         <!-- TLS Forwarders -->
         <div class="card" style="margin-top:12px">
           <div class="card-hdr">
@@ -1385,6 +1476,10 @@
           </div>
         </div>
 
+      </section>
+
+      <section class="workspace-section" data-workspace-panel="config" data-workspace-section-panel="xray">
+        <div class="workspace-section-heading"><div><span>05 · Core</span><h3>Xray</h3><p>Ative o core, escolha o runtime e aplique os ajustes nativos seguros.</p></div></div>
         <!-- Xray -->
         <div class="card" style="margin-top:12px">
           <div class="card-hdr">
@@ -1411,8 +1506,8 @@
           </details>
         </div>
 
-      </div><!-- /right -->
-    </div><!-- /grid2 -->
+      </section>
+    </div><!-- /settings-workspace -->
 
     <!-- Save bar -->
     <div class="save-bar">
@@ -1446,17 +1541,17 @@
 <!-- app.js was split into ordered modules for maintainability. They are plain
      classic scripts sharing one global scope; `defer` preserves execution order,
      so behavior is identical to the old single file. Keep this load order. -->
-<script defer src="assets/js/01-core.js?v=20260713infra4"></script>
-<script defer src="assets/js/02-shell.js?v=20260713infra4"></script>
-<script defer src="assets/js/03-ssh-users.js?v=20260713infra4"></script>
-<script defer src="assets/js/04-xray.js?v=20260713infra4"></script>
-<script defer src="assets/js/05-resellers.js?v=20260713infra4"></script>
-<script defer src="assets/js/06-servers.js?v=20260713infra4"></script>
-<script defer src="assets/js/07-stats-logs.js?v=20260713infra4"></script>
-<script defer src="assets/js/08-server-config.js?v=20260713infra4"></script>
-<script defer src="assets/js/09-xray-wizard.js?v=20260713infra4"></script>
-<script defer src="assets/js/11-update-status.js?v=20260713infra4"></script>
-<script defer src="assets/js/12-bot.js?v=20260713infra4"></script>
-<script defer src="assets/js/10-boot.js?v=20260713infra4"></script>
+<script defer src="assets/js/01-core.js?v=20260713sections5"></script>
+<script defer src="assets/js/02-shell.js?v=20260713sections5"></script>
+<script defer src="assets/js/03-ssh-users.js?v=20260713sections5"></script>
+<script defer src="assets/js/04-xray.js?v=20260713sections5"></script>
+<script defer src="assets/js/05-resellers.js?v=20260713sections5"></script>
+<script defer src="assets/js/06-servers.js?v=20260713sections5"></script>
+<script defer src="assets/js/07-stats-logs.js?v=20260713sections5"></script>
+<script defer src="assets/js/08-server-config.js?v=20260713sections5"></script>
+<script defer src="assets/js/09-xray-wizard.js?v=20260713sections5"></script>
+<script defer src="assets/js/11-update-status.js?v=20260713sections5"></script>
+<script defer src="assets/js/12-bot.js?v=20260713sections5"></script>
+<script defer src="assets/js/10-boot.js?v=20260713sections5"></script>
 </body>
 </html>

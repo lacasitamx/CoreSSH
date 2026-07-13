@@ -57,6 +57,73 @@ function mountInfrastructureNavigation() {
   syncInfrastructureNavigation();
 }
 
+const workspaceSectionDefaults = {
+  ssh: "users",
+  xray: "users",
+  resellers: "users",
+  config: "general",
+};
+
+function workspaceSectionRoot(workspace) {
+  const tab = workspace === "config" ? "server" : workspace;
+  return document.getElementById(`tab-${tab}`);
+}
+
+function activeWorkspaceSection(workspace) {
+  const root = workspaceSectionRoot(workspace);
+  return root?.querySelector(`[data-workspace-panel="${workspace}"].active`)?.dataset.workspaceSectionPanel
+    || workspaceSectionDefaults[workspace]
+    || "";
+}
+
+function setWorkspaceSection(workspace, section, options = {}) {
+  const root = workspaceSectionRoot(workspace);
+  if (!root) return false;
+  const panels = Array.from(root.querySelectorAll(`[data-workspace-panel="${workspace}"]`));
+  const targets = panels.filter(panel => panel.dataset.workspaceSectionPanel === section && !panel.classList.contains("hidden"));
+  if (!targets.length) {
+    section = workspaceSectionDefaults[workspace] || panels.find(panel => !panel.classList.contains("hidden"))?.dataset.workspaceSectionPanel || "";
+  }
+  panels.forEach(panel => panel.classList.toggle("active", panel.dataset.workspaceSectionPanel === section));
+  root.querySelectorAll(`[data-workspace="${workspace}"][data-workspace-section]`).forEach(button => {
+    const active = button.dataset.workspaceSection === section;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", String(active));
+    button.tabIndex = active ? 0 : -1;
+  });
+  const select = root.querySelector(`[data-workspace-select="${workspace}"]`);
+  if (select) select.value = section;
+
+  if (!options.silent) {
+    if (workspace === "xray" && section === "config" && currentRole === "superadmin" && typeof loadWizardFromConfig === "function") loadWizardFromConfig();
+    if (workspace === "xray" && section === "logs" && currentRole === "superadmin" && typeof loadXrayLogs === "function") loadXrayLogs();
+  }
+  return true;
+}
+
+function prepareWorkspaceSection(workspace, section) {
+  if (section !== "create") return;
+  if (workspace === "ssh" && typeof prepareNewSSHUser === "function") prepareNewSSHUser();
+  if (workspace === "xray" && typeof prepareXrayClientCreator === "function") prepareXrayClientCreator();
+  if (workspace === "resellers" && typeof prepareNewReseller === "function") prepareNewReseller();
+}
+
+function navigateWorkspaceSection(workspace, section) {
+  prepareWorkspaceSection(workspace, section);
+  return setWorkspaceSection(workspace, section);
+}
+
+function mountWorkspaceSectionNavigation() {
+  document.querySelectorAll("[data-workspace][data-workspace-section]").forEach(button => {
+    button.setAttribute("role", "tab");
+    button.addEventListener("click", () => navigateWorkspaceSection(button.dataset.workspace, button.dataset.workspaceSection));
+  });
+  document.querySelectorAll("[data-workspace-select]").forEach(select => {
+    select.addEventListener("change", () => navigateWorkspaceSection(select.dataset.workspaceSelect, select.value));
+  });
+  Object.entries(workspaceSectionDefaults).forEach(([workspace, section]) => setWorkspaceSection(workspace, section, { silent:true }));
+}
+
 function updatePageHeading() {
   const [eyebrow, title] = tabTitles[currentTab] || ["Dashboard", currentTab];
   if (pageEyebrow) pageEyebrow.textContent = t(eyebrow);
@@ -81,7 +148,7 @@ function selectTab(tab) {
   if (tab === "xray") {
     loadXrayStatus();
     loadInbounds({ silent: true });
-    if (currentRole === "superadmin") loadWizardFromConfig();
+    if (currentRole === "superadmin" && activeWorkspaceSection("xray") === "config") loadWizardFromConfig();
   }
   if (tab === "stats" && currentRole === "superadmin") loadStats();
   if (tab === "vnstat" && currentRole === "superadmin") loadVnstat();
@@ -92,6 +159,7 @@ function selectTab(tab) {
 }
 
 mountInfrastructureNavigation();
+mountWorkspaceSectionNavigation();
 document.querySelectorAll(".tab-btn").forEach(btn => btn.addEventListener("click", () => selectTab(btn.dataset.tab)));
 menuToggle?.addEventListener("click", () => document.body.classList.add("sidebar-open"));
 drawerBackdrop?.addEventListener("click", () => document.body.classList.remove("sidebar-open"));
@@ -166,6 +234,13 @@ function initAfterLogin() {
   document.querySelectorAll(".xray-admin-only").forEach(el => {
     el.classList.toggle("hidden", currentRole !== "superadmin");
   });
+  document.querySelectorAll("option.xray-admin-only").forEach(option => {
+    option.hidden = currentRole !== "superadmin";
+    option.disabled = currentRole !== "superadmin";
+  });
+  if (currentRole !== "superadmin" && ["config", "logs"].includes(activeWorkspaceSection("xray"))) {
+    setWorkspaceSection("xray", "users", { silent:true });
+  }
 
   resellerInfoCard.classList.toggle("hidden", currentRole !== "reseller");
   dashboardQuotaCard?.classList.toggle("hidden", currentRole !== "reseller");
