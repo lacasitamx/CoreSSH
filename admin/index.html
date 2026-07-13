@@ -16,7 +16,7 @@
   setTimeout(function(){document.documentElement.classList.remove("i18n-pending");},2500);
 })();
 </script>
-<link rel="stylesheet" href="assets/app.css?v=20260713bot2"/>
+<link rel="stylesheet" href="assets/app.css?v=20260713bot3"/>
 </head>
 <body>
 <div class="app">
@@ -952,10 +952,27 @@
   <!-- ═══════════ Bot / Vendas Tab (superadmin only) ═══════════ -->
   <div class="tab-pane" id="tab-bot">
 
+    <!-- Section switcher -->
+    <div class="card">
+      <div class="card-hdr" style="align-items:center;">
+        <div class="card-title">🤖 Bot / Vendas</div>
+        <select id="botSection" class="btn-sm" style="min-width:230px;font-weight:600;">
+          <option value="config">⚙️ Configuração</option>
+          <option value="plans">💎 Planos</option>
+          <option value="packages">💳 Pacotes de Crédito</option>
+          <option value="messages">✉️ Mensagens</option>
+          <option value="users">👥 Clientes</option>
+          <option value="transactions">💰 Pagamentos</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- ═══ Section: Config ═══ -->
+    <div class="bot-section" id="botSec-config">
     <!-- Config: sticky action bar -->
     <div class="card">
       <div class="card-hdr">
-        <div class="card-title">🤖 Configuração do Bot</div>
+        <div class="card-title">⚙️ Configuração do Bot</div>
         <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
           <span id="botConfigStatus" class="hint">Pronto.</span>
           <button class="btn btn-ghost btn-sm" id="botTestBtn">Testar conexão</button>
@@ -1016,7 +1033,10 @@
         <p class="hint" style="margin:4px 0 0;">Enviado ao cliente nas credenciais após o pagamento.</p>
       </div>
     </div>
+    </div><!-- /botSec-config -->
 
+    <!-- ═══ Section: Plans ═══ -->
+    <div class="bot-section" id="botSec-plans" style="display:none;">
     <div class="grid2">
       <!-- Plans -->
       <div class="card">
@@ -1063,8 +1083,10 @@
         </form>
       </div>
     </div>
+    </div><!-- /botSec-plans -->
 
-    <div class="grid2">
+    <!-- ═══ Section: Credit packages ═══ -->
+    <div class="bot-section" id="botSec-packages" style="display:none;">
       <!-- Credit packages -->
       <div class="card">
         <div class="card-hdr">
@@ -1093,7 +1115,10 @@
         </form>
         <div class="statusbar"><span id="botPkgStatus">Ready.</span></div>
       </div>
+    </div><!-- /botSec-packages -->
 
+    <!-- ═══ Section: Messages ═══ -->
+    <div class="bot-section" id="botSec-messages" style="display:none;">
       <!-- Messages -->
       <div class="card">
         <div class="card-hdr">
@@ -1107,8 +1132,10 @@
         <div class="form-actions"><button class="btn" id="botSaveSettingsBtn">Salvar mensagens</button></div>
         <div class="statusbar"><span id="botSettingsStatus">Ready.</span></div>
       </div>
-    </div>
+    </div><!-- /botSec-messages -->
 
+    <!-- ═══ Section: Users ═══ -->
+    <div class="bot-section" id="botSec-users" style="display:none;">
     <!-- Bot users -->
     <div class="card">
       <div class="card-hdr">
@@ -1123,7 +1150,10 @@
       </div>
       <div class="statusbar"><span id="botUsersStatus">Ready.</span></div>
     </div>
+    </div><!-- /botSec-users -->
 
+    <!-- ═══ Section: Transactions ═══ -->
+    <div class="bot-section" id="botSec-transactions" style="display:none;">
     <!-- Transactions -->
     <div class="card">
       <div class="card-hdr">
@@ -1147,6 +1177,7 @@
       </div>
       <div class="statusbar"><span id="botTxnStatus">Ready.</span></div>
     </div>
+    </div><!-- /botSec-transactions -->
 
   </div><!-- /tab-bot -->
 
@@ -1463,17 +1494,17 @@
 <!-- app.js was split into ordered modules for maintainability. They are plain
      classic scripts sharing one global scope; `defer` preserves execution order,
      so behavior is identical to the old single file. Keep this load order. -->
-<script defer src="assets/js/01-core.js?v=20260713bot2"></script>
-<script defer src="assets/js/02-shell.js?v=20260713bot2"></script>
-<script defer src="assets/js/03-ssh-users.js?v=20260713bot2"></script>
-<script defer src="assets/js/04-xray.js?v=20260713bot2"></script>
-<script defer src="assets/js/05-resellers.js?v=20260713bot2"></script>
-<script defer src="assets/js/06-servers.js?v=20260713bot2"></script>
-<script defer src="assets/js/07-stats-logs.js?v=20260713bot2"></script>
-<script defer src="assets/js/08-server-config.js?v=20260713bot2"></script>
-<script defer src="assets/js/09-xray-wizard.js?v=20260713bot2"></script>
-<script defer src="assets/js/11-update-status.js?v=20260713bot2"></script>
-<script defer src="assets/js/12-bot.js?v=20260713bot2"></script>
-<script defer src="assets/js/10-boot.js?v=20260713bot2"></script>
+<script defer src="assets/js/01-core.js?v=20260713bot3"></script>
+<script defer src="assets/js/02-shell.js?v=20260713bot3"></script>
+<script defer src="assets/js/03-ssh-users.js?v=20260713bot3"></script>
+<script defer src="assets/js/04-xray.js?v=20260713bot3"></script>
+<script defer src="assets/js/05-resellers.js?v=20260713bot3"></script>
+<script defer src="assets/js/06-servers.js?v=20260713bot3"></script>
+<script defer src="assets/js/07-stats-logs.js?v=20260713bot3"></script>
+<script defer src="assets/js/08-server-config.js?v=20260713bot3"></script>
+<script defer src="assets/js/09-xray-wizard.js?v=20260713bot3"></script>
+<script defer src="assets/js/11-update-status.js?v=20260713bot3"></script>
+<script defer src="assets/js/12-bot.js?v=20260713bot3"></script>
+<script defer src="assets/js/10-boot.js?v=20260713bot3"></script>
 </body>
 </html>

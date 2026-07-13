@@ -15,13 +15,24 @@ function brl(cents) {
 }
 
 async function loadBotTab() {
-  loadBotConfig();
   loadBotInbounds();
-  loadBotPlans();
-  loadBotPkgs();
-  loadBotUsers();
-  loadBotTxns();
-  loadBotSettings();
+  const sel = document.getElementById("botSection");
+  botShowSection(sel ? sel.value : "config");
+}
+
+// Show one section at a time and lazy-load its data.
+function botShowSection(name) {
+  document.querySelectorAll("#tab-bot .bot-section").forEach(s => { s.style.display = "none"; });
+  const el = document.getElementById("botSec-" + name);
+  if (el) el.style.display = "";
+  switch (name) {
+    case "config": loadBotConfig(); break;
+    case "plans": loadBotPlans(); break;
+    case "packages": loadBotPkgs(); break;
+    case "messages": loadBotSettings(); break;
+    case "users": loadBotUsers(); break;
+    case "transactions": loadBotTxns(); break;
+  }
 }
 
 // ─── Config ───
@@ -314,6 +325,7 @@ document.getElementById("botConfigSaveBtn")?.addEventListener("click", saveBotCo
 document.getElementById("botConfigReloadBtn")?.addEventListener("click", loadBotConfig);
 document.getElementById("botTestBtn")?.addEventListener("click", testBot);
 document.getElementById("botMPConfirmMode")?.addEventListener("change", botToggleMPWebhookBox);
+document.getElementById("botSection")?.addEventListener("change", e => botShowSection(e.target.value));
 document.getElementById("botReloadPlansBtn")?.addEventListener("click", loadBotPlans);
 document.getElementById("botNewPlanBtn")?.addEventListener("click", botClearPlanForm);
 document.getElementById("botCancelPlanBtn")?.addEventListener("click", botClearPlanForm);
