@@ -1,0 +1,5 @@
+# Trusted Go archives used by install.sh and update.sh.
+# Format: version architecture sha256
+1.25.12 amd64 234828b7a89e0e303d2556310ee549fbcf253d28de937bac3da13d6294262ac1
+1.25.12 arm64 8b5884aef89600aef5b0b051fb971f11f49bb996521e911f30f02a66884f7bd2
+1.25.12 armv6l 6cd7311c02c73ba0b482a1cf8c885268edf23519261bf4b5cef3353ad934d1f1

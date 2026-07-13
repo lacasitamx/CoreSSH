@@ -5,7 +5,11 @@ function openEditXrayClient(tag, client) {
   document.getElementById("editXrayName").value    = client.name  || "";
   document.getElementById("editXrayEmail").value   = client.email || "";
   document.getElementById("editXrayExpiry").value  = client.expires_at ? localFromISO(client.expires_at) : "";
-  document.getElementById("editXrayMaxConns").value = client.max_conns || 0;
+  const maxInput = document.getElementById("editXrayMaxConns");
+  maxInput.value = client.max_conns || 0;
+  maxInput.min = currentRole === "reseller" ? "1" : "0";
+  maxInput.disabled = currentRole === "reseller" && currentQuotaMode === "credits";
+  maxInput.title = maxInput.disabled ? "Em planos por crédito, o limite de conexões fica fixo." : "";
   document.getElementById("editXrayClientStatus").textContent = "";
   document.getElementById("editXrayClientPanel").classList.remove("hidden");
   document.getElementById("editXrayClientPanel").scrollIntoView({ behavior:"smooth", block:"nearest" });
@@ -24,7 +28,9 @@ async function saveEditXrayClient() {
     uuid:            editingXrayClientId,
     name:            document.getElementById("editXrayName").value.trim(),
     email:           document.getElementById("editXrayEmail").value.trim(),
-    expires_at:      isoFromLocal(document.getElementById("editXrayExpiry").value),
+    expires_at:      currentRole === "reseller" && currentQuotaMode === "credits"
+      ? ""
+      : isoFromLocal(document.getElementById("editXrayExpiry").value),
     max_connections: parseInt(document.getElementById("editXrayMaxConns").value || "0", 10),
     server_id: selectedXrayServer(),
   };

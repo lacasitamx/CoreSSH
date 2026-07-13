@@ -16,7 +16,7 @@ DragonCoreSSH V40 é um painel/servidor em Go para SSH com HTTP Injection, paine
 - Área compacta de infraestrutura com Servidores, Status, Monitoramento e Tráfego no mesmo seletor visual
 - Cartões de status ao vivo nos espaços SSH, Xray e Infraestrutura, com confirmações integradas ao painel
 - Navegação interna consistente com o Bot: SSH/SlowDNS e Revendedores separam consulta de cadastro; Xray separa Usuários, Criar usuário, Configuração e Logs; Configurações separa Rede/SSH, SlowDNS, UDP, TLS e Xray
-- Contas de revendedor (reseller) com cota de usuários e escopo próprio
+- Revendedores hierárquicos com sub-revendas, planos por validade/slots ou créditos, auditoria e escopo próprio
 - Gerenciamento multi-servidor (master/slave) direto pelo painel
 - API HTTP completa para bots/automações (ver **HTTP API Reference**)
 - API pública `/check` para consultar usuário ou UUID
@@ -66,12 +66,31 @@ Para configurações XHTTP antigas, carregue a configuração visual e clique em
 
 A confirmação dessa migração é exibida dentro do próprio painel. Se a gravação falhar, o inbound SSH temporário é removido do rascunho e o inbound antigo permanece intacto, permitindo tentar novamente após corrigir o erro exibido.
 
+### Revendedores compatíveis com o painel PHP antigo
+
+A área **Revendedores** mantém o fluxo mais importante do DraconCore PHP, com autorização refeita no servidor:
+
+- cada revendedor gerencia apenas suas contas e seus sub-revendedores diretos;
+- o superadmin enxerga toda a hierarquia;
+- plano **Validade / slots** compartilha a cota entre a capacidade `max_connections` das contas SSH/Xray e os slots reservados aos sub-revendedores;
+- plano **Créditos** debita no cadastro e na renovação; o custo acompanha `max_connections`, com mínimo de uma conexão, e esse limite fica congelado após a criação;
+- contas de plano por crédito recebem 31 dias por cadastro ou renovação;
+- criação, edição, renovação, suspensão, reativação e exclusão de revendedores ficam registradas em auditoria;
+- suspensão bloqueia a árvore e remove os clientes Xray do runtime sem apagar seus metadados; a reativação restaura os clientes ainda válidos;
+- exclusão remove a árvore, suas contas SSH/Xray e devolve ao pai os créditos ainda não usados;
+- a cota considera todos os nós gerenciados, mesmo temporariamente desativados, para impedir liberação artificial de limite;
+- o estado de acesso é sincronizado com nós gerenciados sem copiar senha ou hash de login.
+
+Revendedores existentes são migrados automaticamente como contas principais no modo **Validade / slots**. Não é necessário recriá-los. Por segurança, as funções antigas de revelar senha em texto puro e de alterar a sessão para “entrar como revendedor” não foram copiadas.
+
 ### Requisitos
 
 - Servidor Linux com `systemd`
 - Acesso `root` ou `sudo`
 - Gerenciador de pacotes `apt`, `yum` ou `dnf`
 - Portas liberadas no firewall/security group conforme a configuração usada
+
+O instalador usa Go 1.25.12 e baixa as dependências fixadas no `go.mod`. As bibliotecas oficiais `golang.org/x/crypto`, `x/net`, `x/sys`, `x/text` e `x/time` estão fixadas nas versões de segurança revisadas em 13/07/2026.
 
 Distribuições alvo:
 
@@ -92,6 +111,7 @@ sudo bash install.sh
 Durante a instalação, o script instala/configura:
 
 - Go
+- verificação SHA-256 dos arquivos oficiais de Go e Xray antes da extração
 - PostgreSQL
 - Xray-core
 - Binário do DragonCoreSSH V40
@@ -545,7 +565,8 @@ DragonCoreSSH V40 is a Go-based SSH HTTP Injection server with a web panel, Post
 - Compact infrastructure workspace with Servers, Status, Monitoring, and Traffic in one visual switcher
 - Live status cards across SSH, Xray, and Infrastructure, with panel-native confirmations
 - Bot-style section navigation throughout the panel: SSH/SlowDNS and Resellers separate lists from creation; Xray separates Users, Create User, Configuration, and Logs; Settings separates Network/SSH, SlowDNS, UDP, TLS, and Xray
-- Reseller accounts with a user quota and self-scoped access
+- Full reseller workflow compatible with the useful parts of the legacy PHP panel: direct-child hierarchy, validity/slot and credit plans, weighted SSH/Xray connection quotas, renew, suspend/reactivate, delete, and audit history
+- Existing reseller-owned SSH/Xray accounts with a legacy zero connection limit are migrated to one slot automatically; they do not need to be recreated
 - Multi-server (master/slave) management directly from the panel
 - Full HTTP API for bots/automations (see **HTTP API Reference**)
 - Public `/check` API for checking username or UUID
@@ -602,6 +623,8 @@ The migration confirmation is rendered inside the panel. If saving fails, the te
 - `apt`, `yum`, or `dnf` package manager
 - Required ports opened in the firewall/security group
 
+The installer uses Go 1.25.12 and downloads the versions pinned in `go.mod`. The official `golang.org/x/crypto`, `x/net`, `x/sys`, `x/text`, and `x/time` modules are pinned to the security-reviewed versions current on 2026-07-13.
+
 Target distributions:
 
 - Ubuntu / Debian / Linux Mint
@@ -621,6 +644,7 @@ sudo bash install.sh
 During installation, the script installs/configures:
 
 - Go
+- SHA-256 verification of the official Go and Xray archives before extraction
 - PostgreSQL
 - Xray-core
 - DragonCoreSSH V40 binary
@@ -1112,7 +1136,7 @@ curl -s "http://SERVER_IP:9090/api/users" -H "X-Session-Token: $TOKEN"
 - No body. Deletes the session for the supplied `X-Session-Token`. Returns `200` (empty).
 
 #### `GET /api/auth/me` — session
-- `200`: `{ "username": string, "role": string }`. If the role is `reseller`, it also includes `max_users` (int), `used_users` (int, combined SSH+Xray), `used_ssh_users` (int), `used_xray_users` (int), `expires_at` (string RFC3339 or null), `is_active` (bool).
+- `200`: `{ "username": string, "role": string }`. Reseller responses also include `max_users`, weighted `used_users`, SSH/Xray account counts across managed nodes, `parent_username`, `quota_mode`, `credit_balance`, child allocation/count, expiry, and direct/effective active status.
 
 ---
 
@@ -1180,19 +1204,35 @@ Creates or updates (upsert) an SSH user.
 
 ---
 
-### Resellers (superadmin only)
+### Resellers (authenticated; hierarchy scoped)
 
-#### `GET /api/resellers` — superadmin
-- `200`: array of `{ "id": int, "username": string, "role": string, "max_users": int, "used_users": int, "used_ssh_users": int, "used_xray_users": int, "expires_at": string/null, "is_active": bool, "created_at": string }`.
+Superadmins manage every reseller. A reseller sees and manages only its direct children; it cannot skip a hierarchy level. Child plans inherit the parent's `slots` or `credits` mode.
 
-#### `POST /api/resellers/create` — superadmin
-Creates or updates a reseller (upsert by username).
-- Body: `username` (string, required); `password` (string, optional — required only when creating; if given on an existing account it is changed); `max_users` (int); `expires_at` (string, optional RFC3339; empty clears expiry); `is_active` (bool).
-- `201 Created` (empty). Errors: `400 username required`, `400 password required for new account`, `400 invalid expires_at (RFC3339 required)`; `500 db error`.
+#### `GET /api/resellers`
+- `200`: direct-child array with hierarchy, plan, weighted quota, account-count breakdown, contact, price, expiry, and effective status fields: `{ "id", "username", "parent_username", "quota_mode", "max_users", "credit_balance", "used_users", "used_ssh_users", "used_xray_users", "child_allocation", "child_count", "available", "usage_incomplete", "whatsapp", "monthly_price_cents", "expires_at", "is_active", "effective_active", "created_at" }`.
+- `used_users` is weighted by each SSH/Xray account's connection limit and includes every configured managed node. If a node cannot be verified, `usage_incomplete` is true and provisioning remains fail-closed.
 
-#### `DELETE /api/resellers/delete` — superadmin
-- Query: `username` (string, required). Also disconnects/removes the reseller's owned SSH users and Xray clients.
-- `204 No Content`. Errors: `400 username required`; `500 db error`.
+#### `POST /api/resellers/create`
+Creates or edits a reseller.
+- Body: `username` (required); `password` (required only on create); `parent_username`; `quota_mode` (`slots` or `credits`); `max_users`; `credits`; `expires_at` (RFC3339 for slot plans); `is_active`; `whatsapp`; `monthly_price_cents`.
+- For reseller callers, `parent_username` and `quota_mode` are forced to the signed-in parent. Parent and plan mode are immutable after creation.
+- Credit transfers are atomic and audited. Slot limits cannot be reduced below direct account use plus reserved child allocation.
+- `201`: `{ "username": string, "created": bool }`.
+
+#### `POST /api/resellers/action`
+- Body: `username`, `action` (`renew`, `suspend`, `reactivate`, or superadmin-only `pull`), and optional `days`.
+- `renew` extends a validity reseller from the later of now/current expiry. `suspend` and `reactivate` apply to the full descendant tree and owned SSH/Xray access on managed nodes. `pull` safely attaches a nested reseller directly to the main panel without duplicating transferred credits.
+- `200`: `{ "ok": true, "runtime_warning": string }`.
+
+#### `DELETE /api/resellers/delete`
+- Query: `username` (required). Suspends the subtree first, then removes all descendant reseller records and their owned SSH/Xray accounts locally and from every configured managed node. Unused descendant credit balances are returned once to the direct credit parent.
+- `204 No Content`.
+
+#### `GET /api/resellers/audit`
+- Returns the latest 200 lifecycle/credit events. Resellers receive only their own and direct-child activity.
+
+#### `POST /api/resellers/runtime` — superadmin/internal node synchronization
+- Password-free master-to-node hierarchy/status synchronization used for managed-server suspension, expiry, reactivation, and cleanup. Login passwords and password hashes are never replicated.
 
 ---
 

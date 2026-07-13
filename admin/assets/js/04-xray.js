@@ -244,12 +244,17 @@ function renderInbounds(inbounds, options = {}) {
         editBtn.style.marginLeft = "4px";
         editBtn.textContent = t("Edit");
         editBtn.onclick = () => openEditXrayClient(ib.tag, c);
+        const renewBtn = document.createElement("button");
+        renewBtn.className = "btn btn-ghost btn-sm";
+        renewBtn.style.marginLeft = "4px";
+        renewBtn.textContent = "+30d";
+        renewBtn.onclick = () => renewXrayClient(c);
         const delBtn = document.createElement("button");
         delBtn.className = "btn btn-danger btn-sm";
         delBtn.style.marginLeft = "4px";
         delBtn.textContent = t("Del");
         delBtn.onclick = () => removeClient(ib.tag, c.id);
-        actTd.append(copyBtn, editBtn, delBtn);
+        actTd.append(copyBtn, renewBtn, editBtn, delBtn);
         tr.appendChild(actTd);
         tbody.appendChild(tr);
       });
@@ -324,7 +329,10 @@ function prepareXrayClientCreator(preferredTag = "") {
   const uuid = document.getElementById("xCreateUUID");
   if (uuid) uuid.value = genUUID();
   const maxConns = document.getElementById("xCreateMaxConns");
-  if (maxConns) maxConns.value = "0";
+  if (maxConns) {
+    maxConns.min = currentRole === "reseller" ? "1" : "0";
+    maxConns.value = currentRole === "reseller" ? "1" : "0";
+  }
   const status = document.getElementById("xCreateClientStatus");
   if (status) status.textContent = xrayCreatorInbounds.length ? t("Ready to create a new Xray client.") : t("Waiting for a compatible inbound.");
   updateXrayCreatorInboundLabel();
@@ -402,6 +410,34 @@ async function removeClient(tag, uuid) {
   } catch (e) {
     if (e.message==="auth") doAuthError();
     else xStatus.textContent = t("Error: {error}", {error: e.message});
+  }
+}
+
+async function renewXrayClient(client) {
+  const creditCost = Math.max(1, Number(client.max_conns || 0));
+  const creditDetail = currentRole === "reseller" && currentQuotaMode === "credits"
+    ? `Serão usados ${creditCost} crédito(s) e a conta receberá 31 dias.`
+    : "A validade será estendida em 30 dias a partir da data atual ou da validade existente.";
+  const accepted = await panelConfirm({
+    icon:"+30", title:"Renovar Xray", message:`Renovar “${client.name || client.email || client.id.slice(0, 8)}”?`,
+    detail:creditDetail, confirmLabel:"Renovar conta",
+  });
+  if (!accepted) return;
+  xStatus.textContent = "Renovando cliente Xray…";
+  try {
+    const res = await api("/api/xray/clients/renew", {
+      method:"POST",
+      body:JSON.stringify({ uuid:client.id, days:30, server_id:selectedXrayServer() }),
+    });
+    if (!res.ok) throw new Error((await res.text()).trim());
+    const data = await res.json();
+    if (data.runtime_warning) showPanelToast(data.runtime_warning, "warning", "Renovar Xray");
+    else showPanelToast("Cliente Xray renovado.", "success", "Xray");
+    await loadInbounds({ force:true });
+    if (currentRole === "reseller") loadMe();
+  } catch (e) {
+    if (e.message === "auth") doAuthError();
+    else showPanelToast(e.message, "error", "Renovar Xray");
   }
 }
 

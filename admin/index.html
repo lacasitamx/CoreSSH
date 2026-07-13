@@ -16,7 +16,7 @@
   setTimeout(function(){document.documentElement.classList.remove("i18n-pending");},2500);
 })();
 </script>
-  <link rel="stylesheet" href="assets/app.css?v=20260713sections5"/>
+  <link rel="stylesheet" href="assets/app.css?v=20260713reseller10"/>
 </head>
 <body>
 <div class="app">
@@ -51,7 +51,7 @@
         <button class="tab-btn" data-tab="ssh"><span class="nav-icon">👥</span><span>SSH / SlowDNS</span></button>
         <button class="tab-btn" data-tab="xray"><span class="nav-icon">◇</span><span>Xray Users</span></button>
         <div class="nav-group-label superadmin-only hidden">Administração</div>
-        <button class="tab-btn superadmin-only hidden" data-tab="resellers"><span class="nav-icon">🏪</span><span>Revendedores</span></button>
+        <button class="tab-btn" data-tab="resellers"><span class="nav-icon">🏪</span><span>Revendedores</span></button>
         <button class="tab-btn superadmin-only hidden" data-tab="servers"><span class="nav-icon">▣</span><span>Infraestrutura</span></button>
         <button class="tab-btn superadmin-only hidden" data-tab="logs"><span class="nav-icon">☰</span><span>Logs</span></button>
         <button class="tab-btn superadmin-only hidden" data-tab="bot"><span class="nav-icon">🤖</span><span>Bot / Vendas</span></button>
@@ -656,16 +656,26 @@
     </section>
   </div><!-- /tab-xray -->
 
-  <!-- ═══════════ Resellers Tab (superadmin only) ═══════════ -->
+  <!-- ═══════════ Hierarchical reseller management ═══════════ -->
   <div class="tab-pane" id="tab-resellers">
-    <section class="page-hero" data-tone="amber"><div class="page-hero-copy"><span class="page-kicker">Partner operations</span><h2>Revendedores</h2><p>Controle cotas, validade e acesso dos parceiros em um só lugar.</p></div></section>
+    <section class="page-hero status-hero" data-tone="amber">
+      <div class="page-hero-copy"><span class="page-kicker">Partner operations</span><h2>Revendedores</h2><p>Controle hierarquia, créditos, cotas, validade e acesso dos parceiros em um só lugar.</p></div>
+      <div class="workspace-hero-actions"><span class="workspace-live-status is-loading" id="resellerLiveStatus">Aguardando dados</span><button class="btn btn-ghost btn-sm" id="resellerHeroReloadBtn" type="button">Atualizar</button></div>
+      <div class="workspace-overview-grid">
+        <article class="workspace-overview-card"><span class="workspace-overview-icon amber">◎</span><div><small>Revendedores</small><strong id="resellerMetricTotal">--</strong><span class="workspace-card-note">parceiros diretos</span></div></article>
+        <article class="workspace-overview-card"><span class="workspace-overview-icon green">●</span><div><small>Ativos</small><strong id="resellerMetricActive">--</strong><span class="workspace-card-note">acesso liberado</span></div></article>
+        <article class="workspace-overview-card"><span class="workspace-overview-icon purple">#</span><div><small>Alocação</small><strong id="resellerMetricAllocated">--</strong><span class="workspace-card-note">slots reservados</span></div></article>
+        <article class="workspace-overview-card"><span class="workspace-overview-icon blue">Cr</span><div><small>Créditos</small><strong id="resellerMetricCredits">--</strong><span class="workspace-card-note">saldo nos parceiros</span></div></article>
+      </div>
+    </section>
     <div class="workspace-nav-shell" data-tone="amber">
-      <nav class="workspace-section-nav" id="resellerSectionNav" aria-label="Áreas de revendedores" style="--workspace-nav-columns:2">
+      <nav class="workspace-section-nav" id="resellerSectionNav" aria-label="Áreas de revendedores" style="--workspace-nav-columns:3">
         <button class="active" type="button" data-workspace="resellers" data-workspace-section="users"><span>◎</span> Revendedores</button>
         <button type="button" data-workspace="resellers" data-workspace-section="create"><span>＋</span> Criar revendedor</button>
+        <button type="button" data-workspace="resellers" data-workspace-section="audit"><span>☰</span> Atividade</button>
       </nav>
       <select id="resellerSection" class="workspace-section-select" data-workspace-select="resellers" aria-label="Área de revendedores">
-        <option value="users">Revendedores</option><option value="create">Criar revendedor</option>
+        <option value="users">Revendedores</option><option value="create">Criar revendedor</option><option value="audit">Atividade</option>
       </select>
     </div>
     <section class="workspace-section active" data-workspace-panel="resellers" data-workspace-section-panel="users">
@@ -682,7 +692,7 @@
         <div class="tbl-wrap">
           <table>
             <thead><tr>
-              <th>Username</th><th>Users (used/max)</th><th>Expires</th><th>Status</th><th>Actions</th>
+              <th>Conta</th><th>Plano e uso</th><th>Validade</th><th>Status</th><th>Ações</th>
             </tr></thead>
             <tbody id="resellersBody"></tbody>
           </table>
@@ -702,14 +712,26 @@
           <div class="form-grid">
             <div class="field"><label>Username</label><input id="rUsername" required autocomplete="off"/></div>
             <div class="field"><label>Password <span class="hint">(blank = keep)</span></label><input id="rPassword" type="password" autocomplete="new-password"/></div>
-            <div class="field"><label>Max SSH users (0 = unlimited)</label><input id="rMaxUsers" type="number" min="0" placeholder="30"/></div>
-            <div class="field"><label>Expires at</label><input id="rExpires" type="datetime-local"/></div>
-            <div class="field"><label>Active</label><input id="rActive" type="checkbox" checked style="width:16px;height:16px;margin-top:10px;"/></div>
+            <div class="field superadmin-only" id="rParentField"><label>Revendedor pai <span class="hint">(vazio = principal)</span></label><select id="rParent"><option value="">Principal / sem pai</option></select></div>
+            <div class="field"><label>Modo do plano</label><select id="rQuotaMode"><option value="slots">Validade / slots</option><option value="credits">Créditos</option></select><span class="hint" id="rQuotaModeHint">Sub-revendedores herdam o modo da conta pai.</span></div>
+            <div class="field" id="rSlotsField"><label>Limite compartilhado <span class="hint">(0 = ilimitado só para principal)</span></label><input id="rMaxUsers" type="number" min="0" placeholder="30"/></div>
+            <div class="field hidden" id="rCreditsField"><label>Saldo de créditos</label><input id="rCredits" type="number" min="0" placeholder="30"/></div>
+            <div class="field" id="rExpiresField"><label>Expires at</label><input id="rExpires" type="datetime-local"/></div>
+            <div class="field"><label>WhatsApp</label><input id="rWhatsApp" autocomplete="tel" placeholder="+5511999999999"/></div>
+            <div class="field"><label>Valor mensal</label><input id="rMonthlyPrice" type="number" min="0" step="0.01" placeholder="0,00"/></div>
+            <label class="bot-check-field"><input id="rActive" type="checkbox" checked/> Acesso ativo</label>
           </div>
           <div class="form-actions">
             <button class="btn" type="submit" id="saveResellerBtn">Save reseller</button>
           </div>
         </form>
+      </div>
+    </section>
+
+    <section class="workspace-section" data-workspace-panel="resellers" data-workspace-section-panel="audit">
+      <div class="workspace-section-heading"><div><span>03 · Auditoria</span><h3>Atividade das revendas</h3><p>Veja quem criou, alterou, renovou, suspendeu ou removeu cada conta.</p></div><button class="btn btn-ghost btn-sm" id="reloadResellerAuditBtn" type="button">Atualizar</button></div>
+      <div class="card">
+        <div class="tbl-wrap"><table class="reseller-audit-table"><thead><tr><th>Quando</th><th>Responsável</th><th>Revendedor</th><th>Ação</th><th>Detalhes</th></tr></thead><tbody id="resellerAuditBody"></tbody></table></div>
       </div>
     </section>
     <div class="statusbar workspace-section-status"><span id="resellerStatus">Ready.</span></div>
@@ -1538,17 +1560,17 @@
 <!-- app.js was split into ordered modules for maintainability. They are plain
      classic scripts sharing one global scope; `defer` preserves execution order,
      so behavior is identical to the old single file. Keep this load order. -->
-<script defer src="assets/js/01-core.js?v=20260713sections5"></script>
-<script defer src="assets/js/02-shell.js?v=20260713sections5"></script>
-<script defer src="assets/js/03-ssh-users.js?v=20260713sections5"></script>
-<script defer src="assets/js/04-xray.js?v=20260713sections5"></script>
-<script defer src="assets/js/05-resellers.js?v=20260713sections5"></script>
-<script defer src="assets/js/06-servers.js?v=20260713sections5"></script>
-<script defer src="assets/js/07-stats-logs.js?v=20260713sections5"></script>
-<script defer src="assets/js/08-server-config.js?v=20260713sections5"></script>
-<script defer src="assets/js/09-xray-wizard.js?v=20260713sections5"></script>
-<script defer src="assets/js/11-update-status.js?v=20260713sections5"></script>
-<script defer src="assets/js/12-bot.js?v=20260713sections5"></script>
-<script defer src="assets/js/10-boot.js?v=20260713sections5"></script>
+<script defer src="assets/js/01-core.js?v=20260713reseller10"></script>
+<script defer src="assets/js/02-shell.js?v=20260713reseller10"></script>
+<script defer src="assets/js/03-ssh-users.js?v=20260713reseller10"></script>
+<script defer src="assets/js/04-xray.js?v=20260713reseller10"></script>
+<script defer src="assets/js/05-resellers.js?v=20260713reseller10"></script>
+<script defer src="assets/js/06-servers.js?v=20260713reseller10"></script>
+<script defer src="assets/js/07-stats-logs.js?v=20260713reseller10"></script>
+<script defer src="assets/js/08-server-config.js?v=20260713reseller10"></script>
+<script defer src="assets/js/09-xray-wizard.js?v=20260713reseller10"></script>
+<script defer src="assets/js/11-update-status.js?v=20260713reseller10"></script>
+<script defer src="assets/js/12-bot.js?v=20260713reseller10"></script>
+<script defer src="assets/js/10-boot.js?v=20260713reseller10"></script>
 </body>
 </html>

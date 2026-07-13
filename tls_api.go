@@ -78,7 +78,7 @@ func handleTLSGenerateSelfSigned(w http.ResponseWriter, r *http.Request) {
 
 	certDir := filepath.Join(tlsCertsDir, dirName)
 	if err := os.MkdirAll(certDir, 0o700); err != nil {
-		http.Error(w, "mkdir: "+err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, "create TLS certificate directory", err)
 		return
 	}
 	certFile := filepath.Join(certDir, "cert.pem")
@@ -86,7 +86,7 @@ func handleTLSGenerateSelfSigned(w http.ResponseWriter, r *http.Request) {
 
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		http.Error(w, "keygen: "+err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, "generate TLS private key", err)
 		return
 	}
 	serialLimit := new(big.Int).Lsh(big.NewInt(1), 128)
@@ -110,22 +110,22 @@ func handleTLSGenerateSelfSigned(w http.ResponseWriter, r *http.Request) {
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &priv.PublicKey, priv)
 	if err != nil {
-		http.Error(w, "certgen: "+err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, "generate TLS certificate", err)
 		return
 	}
 	privDER, err := x509.MarshalECPrivateKey(priv)
 	if err != nil {
-		http.Error(w, "marshal key: "+err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, "encode TLS private key", err)
 		return
 	}
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: privDER})
 	if err := writeFileAtomic(certFile, certPEM, 0o600); err != nil {
-		http.Error(w, "write cert: "+err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, "write TLS certificate", err)
 		return
 	}
 	if err := writeFileAtomic(keyFile, keyPEM, 0o600); err != nil {
-		http.Error(w, "write key: "+err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, "write TLS private key", err)
 		return
 	}
 
@@ -168,7 +168,7 @@ func handleTLSLetsEncrypt(w http.ResponseWriter, r *http.Request) {
 		"--agree-tos", "-m", email, "-d", domain)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		http.Error(w, fmt.Sprintf("certbot failed: %v\n%s", err, string(out)), http.StatusInternalServerError)
+		writeInternalError(w, "obtain Let's Encrypt certificate", fmt.Errorf("certbot: %w: %s", err, strings.TrimSpace(string(out))))
 		return
 	}
 
@@ -220,17 +220,17 @@ func handleTLSUploadPEM(w http.ResponseWriter, r *http.Request) {
 	}
 	certDir := filepath.Join(tlsCertsDir, name)
 	if err := os.MkdirAll(certDir, 0o700); err != nil {
-		http.Error(w, "mkdir: "+err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, "create uploaded TLS certificate directory", err)
 		return
 	}
 	certFile := filepath.Join(certDir, "cert.pem")
 	keyFile := filepath.Join(certDir, "key.pem")
 	if err := writeFileAtomic(certFile, []byte(req.Cert), 0o600); err != nil {
-		http.Error(w, "write cert: "+err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, "write uploaded TLS certificate", err)
 		return
 	}
 	if err := writeFileAtomic(keyFile, []byte(req.Key), 0o600); err != nil {
-		http.Error(w, "write key: "+err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, "write uploaded TLS private key", err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

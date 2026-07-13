@@ -616,7 +616,7 @@ func (ib *nativeInbound) handleXHTTPPacketUpload(w http.ResponseWriter, r *http.
 			return
 		}
 		xrayTracef("native xray: xhttp packet-up push failed inbound=%q session=%q seq=%d: %v", ib.tag, sess.id, seq, err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, "xhttp session queue failed", http.StatusInternalServerError)
 		return
 	}
 	if len(payload) == 0 {

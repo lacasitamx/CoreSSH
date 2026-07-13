@@ -66,7 +66,7 @@ func serverConfigGet(w http.ResponseWriter, _ *http.Request) {
 	}
 	data, err := os.ReadFile(globalCfgPath)
 	if err != nil {
-		http.Error(w, "failed to read config: "+err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, "read server configuration", err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -115,7 +115,7 @@ func serverConfigPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := writeFileAtomic(globalCfgPath, out, 0o600); err != nil {
-		http.Error(w, "failed to write config: "+err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, "write server configuration", err)
 		return
 	}
 

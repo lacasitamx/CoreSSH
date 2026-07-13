@@ -119,7 +119,7 @@ func handleBotConfig(store *Store) http.HandlerFunc {
 		case http.MethodGet:
 			cfg, err := LoadBotConfig(ctx, store)
 			if err != nil {
-				http.Error(w, "load config: "+err.Error(), http.StatusInternalServerError)
+				writeInternalError(w, "load bot configuration", err)
 				return
 			}
 			botWriteJSON(w, botConfigDTO{
@@ -224,7 +224,7 @@ func handleBotConfig(store *Store) http.HandlerFunc {
 				XrayPublicHost:       strings.TrimSpace(dto.XrayPublicHost),
 			}
 			if err := SaveBotConfig(ctx, store, cfg); err != nil {
-				http.Error(w, "save config: "+err.Error(), http.StatusInternalServerError)
+				writeInternalError(w, "save bot configuration", err)
 				return
 			}
 			reloadBotService(store)
@@ -265,7 +265,7 @@ func handleBotPlans(store *Store) http.HandlerFunc {
 				return
 			}
 			if err := store.UpsertPlan(ctx, &p); err != nil {
-				http.Error(w, "db error: "+err.Error(), http.StatusInternalServerError)
+				writeInternalError(w, "save bot plan", err)
 				return
 			}
 			botWriteJSON(w, p)

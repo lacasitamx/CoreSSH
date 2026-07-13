@@ -153,7 +153,7 @@ function selectTab(tab) {
   if (tab === "stats" && currentRole === "superadmin") loadStats();
   if (tab === "vnstat" && currentRole === "superadmin") loadVnstat();
   if (tab === "servers-status" && currentRole === "superadmin") loadServersStatus();
-  if (tab === "resellers" && currentRole === "superadmin") loadResellers();
+  if (tab === "resellers") loadResellers();
   if (tab === "servers" && currentRole === "superadmin") loadServers();
   if (tab === "bot" && currentRole === "superadmin" && typeof loadBotTab === "function") loadBotTab();
 }
@@ -218,6 +218,13 @@ function clearTimers() {
 }
 
 function initAfterLogin() {
+  if (currentRole === "superadmin") {
+    currentQuotaMode = "slots";
+    currentCreditBalance = 0;
+    [fExpires, document.getElementById("xCreateExpiry"), document.getElementById("editXrayExpiry")].forEach(input => {
+      if (input) { input.disabled = false; input.title = ""; }
+    });
+  }
   meUsername.textContent = currentUser;
   mainApp.classList.remove("role-superadmin", "role-reseller");
   mainApp.classList.add(currentRole === "superadmin" ? "role-superadmin" : "role-reseller");
@@ -276,13 +283,28 @@ async function loadMe() {
     const res = await api("/api/auth/me");
     const d   = await res.json();
     dashboardCache.me = d;
+    currentQuotaMode = d.quota_mode || "slots";
+    currentCreditBalance = d.credit_balance || 0;
+    const creditPlan = currentQuotaMode === "credits";
+    [fExpires, document.getElementById("xCreateExpiry"), document.getElementById("editXrayExpiry")].forEach(input => {
+      if (!input) return;
+      input.disabled = creditPlan;
+      input.title = creditPlan ? "Planos por crédito usam 31 dias e são renovados pelo botão +30d." : "";
+    });
     const used = d.used_users ?? 0;
     const max = d.max_users || 0;
-    rUsedMax.textContent = used + " / " + (max || "∞");
+    rUsedMax.textContent = currentQuotaMode === "credits"
+      ? `${currentCreditBalance} créditos`
+      : `${used + (d.child_allocation || 0)} / ${max || "∞"}`;
     rExpiry.textContent  = d.expires_at ? fmtDate(d.expires_at) : t("No expiration");
-    rStatus.textContent  = d.is_active  ? t("Active") : t("Suspended");
-    rStatus.style.color  = d.is_active  ? "var(--success)" : "var(--danger)";
-    updateQuotaCard(used, max, d.used_ssh_users || 0, d.used_xray_users || 0);
+    const effectiveActive = d.effective_active ?? d.is_active;
+    rStatus.textContent  = effectiveActive ? t("Active") : t("Suspended");
+    rStatus.style.color  = effectiveActive ? "var(--success)" : "var(--danger)";
+    if (currentQuotaMode === "credits") {
+      updateCreditQuotaCard(currentCreditBalance, d.used_ssh_users || 0, d.used_xray_users || 0, d.child_count || 0);
+    } else {
+      updateQuotaCard(used + (d.child_allocation || 0), max, d.used_ssh_users || 0, d.used_xray_users || 0);
+    }
     renderDashboardCounters();
   } catch {}
 }
@@ -331,6 +353,24 @@ function updateQuotaCard(used, max, sshUsed = 0, xrayUsed = 0) {
     setQuotaTone(xrayResellerQuotaRemaining, tone);
   }
   if (xrayResellerQuotaMix) xrayResellerQuotaMix.textContent = t("SSH {ssh} · Xray {xray}", {ssh: sshUsed, xray: xrayUsed});
+}
+
+function updateCreditQuotaCard(balance, sshUsed = 0, xrayUsed = 0, childCount = 0) {
+  if (!dashQuotaText) return;
+  dashQuotaChip.textContent = `${balance} Cr`;
+  dashQuotaChip.className = `chip ${balance <= 0 ? "red" : balance <= 5 ? "warn" : "green"}`;
+  dashQuotaText.textContent = `${balance} créditos disponíveis`;
+  dashQuotaBreakdown.textContent = `SSH ${sshUsed} · Xray ${xrayUsed} · ${childCount} sub-revendas`;
+  dashQuotaBar.style.width = "100%";
+  if (dashQuotaRemaining) {
+    dashQuotaRemaining.textContent = String(balance);
+    setQuotaTone(dashQuotaRemaining, balance <= 0 ? "quota-danger" : balance <= 5 ? "quota-warn" : "quota-good");
+  }
+  if (dashQuotaSummaryText) dashQuotaSummaryText.textContent = `${balance} créditos no saldo`;
+  if (dashQuotaMiniBar) dashQuotaMiniBar.style.width = balance > 0 ? "100%" : "0%";
+  if (xrayResellerQuotaUsed) xrayResellerQuotaUsed.textContent = `${balance} Cr`;
+  if (xrayResellerQuotaRemaining) xrayResellerQuotaRemaining.textContent = String(balance);
+  if (xrayResellerQuotaMix) xrayResellerQuotaMix.textContent = `SSH ${sshUsed} · Xray ${xrayUsed}`;
 }
 
 function flattenXrayClients(inbounds = []) {
@@ -391,7 +431,11 @@ function renderDashboardCounters() {
 
   const me = dashboardCache.me;
   if (currentRole === "reseller" && me) {
-    updateQuotaCard(me.used_users ?? total, me.max_users || 0, me.used_ssh_users ?? sshUsers.length, me.used_xray_users ?? xrayClients.length);
+    if ((me.quota_mode || "slots") === "credits") {
+      updateCreditQuotaCard(me.credit_balance || 0, me.used_ssh_users ?? sshUsers.length, me.used_xray_users ?? xrayClients.length, me.child_count || 0);
+    } else {
+      updateQuotaCard((me.used_users ?? total) + (me.child_allocation || 0), me.max_users || 0, me.used_ssh_users ?? sshUsers.length, me.used_xray_users ?? xrayClients.length);
+    }
   }
 }
 

@@ -24,6 +24,8 @@ import (
 const (
 	RoleSuperAdmin  = "superadmin"
 	RoleReseller    = "reseller"
+	QuotaModeSlots  = "slots"
+	QuotaModeCredit = "credits"
 	sessionTTL      = 12 * time.Hour
 	adminBcryptCost = 12
 )
@@ -33,14 +35,19 @@ var adminUsernamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$
 // ---------- AdminUser ----------
 
 type AdminUser struct {
-	ID           int
-	Username     string
-	PasswordHash string
-	Role         string
-	MaxUsers     int
-	ExpiresAt    *time.Time
-	IsActive     bool
-	CreatedAt    time.Time
+	ID                int
+	Username          string
+	PasswordHash      string
+	Role              string
+	MaxUsers          int
+	ParentUsername    string
+	QuotaMode         string
+	CreditBalance     int
+	WhatsApp          string
+	MonthlyPriceCents int
+	ExpiresAt         *time.Time
+	IsActive          bool
+	CreatedAt         time.Time
 }
 
 // ---------- Session store (in-memory) ----------
@@ -195,8 +202,7 @@ func sessionMiddleware(next http.Handler) http.Handler {
 		// Re-check the account on every request. This immediately revokes sessions
 		// after an account is suspended, expired, deleted, or has its role changed.
 		u, ok := adminUsers.get(s.Username)
-		if !ok || u.ID != s.UserID || !u.IsActive || u.Role != s.Role ||
-			(u.ExpiresAt != nil && time.Now().After(*u.ExpiresAt)) {
+		if !ok || u.ID != s.UserID || u.Role != s.Role || adminAccountChainActive(s.Username) != nil {
 			sessions.Delete(token)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -345,7 +351,47 @@ func (s *Store) EnsureAdminUsersSchema(ctx context.Context) error {
 			is_active     BOOLEAN NOT NULL DEFAULT TRUE,
 			created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
+		`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS parent_username TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS quota_mode TEXT NOT NULL DEFAULT 'slots'`,
+		`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS credit_balance INT NOT NULL DEFAULT 0`,
+		`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS whatsapp TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS monthly_price_cents INT NOT NULL DEFAULT 0`,
+		`CREATE INDEX IF NOT EXISTS idx_admin_users_parent ON admin_users(parent_username)`,
+		`CREATE TABLE IF NOT EXISTS reseller_audit_log (
+			id              BIGSERIAL PRIMARY KEY,
+			actor_username  TEXT NOT NULL,
+			target_username TEXT NOT NULL,
+			action          TEXT NOT NULL,
+			details         TEXT NOT NULL DEFAULT '',
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_reseller_audit_created ON reseller_audit_log(created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_reseller_audit_actor ON reseller_audit_log(actor_username, created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_reseller_audit_target ON reseller_audit_log(target_username, created_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS reseller_credit_ledger (
+			id              BIGSERIAL PRIMARY KEY,
+			reseller_username TEXT NOT NULL,
+			actor_username  TEXT NOT NULL,
+			delta           INT NOT NULL,
+			balance_after   INT NOT NULL,
+			action          TEXT NOT NULL,
+			target          TEXT NOT NULL DEFAULT '',
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_reseller_credit_ledger_owner ON reseller_credit_ledger(reseller_username, created_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS reseller_runtime_state (
+			owner_username  TEXT PRIMARY KEY,
+			parent_username TEXT NOT NULL DEFAULT '',
+			is_active       BOOLEAN NOT NULL DEFAULT FALSE,
+			expires_at      TIMESTAMPTZ,
+			updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
 		`ALTER TABLE ssh_users ADD COLUMN IF NOT EXISTS owner_username TEXT NOT NULL DEFAULT ''`,
+		// Older reseller-owned accounts used zero to mean "unlimited". The
+		// reseller quota model charges at least one slot per account, so normalize
+		// those rows once during schema setup instead of leaving a quota bypass.
+		`UPDATE ssh_users SET max_connections = 1
+			WHERE owner_username <> '' AND max_connections < 1`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
@@ -355,44 +401,50 @@ func (s *Store) EnsureAdminUsersSchema(ctx context.Context) error {
 	return nil
 }
 
-func (s *Store) GetAdminUserByUsername(ctx context.Context, username string) (*AdminUser, error) {
+const adminUserSelectColumns = `id, username, password_hash, role, max_users,
+	COALESCE(parent_username, ''), COALESCE(quota_mode, 'slots'), COALESCE(credit_balance, 0),
+	COALESCE(whatsapp, ''), COALESCE(monthly_price_cents, 0), expires_at, is_active, created_at`
+
+func scanAdminUser(scanner interface{ Scan(...interface{}) error }) (*AdminUser, error) {
 	u := &AdminUser{}
 	var expiresAt sql.NullTime
-	err := s.db.QueryRowContext(ctx,
-		`SELECT id, username, password_hash, role, max_users, expires_at, is_active, created_at
-		 FROM admin_users WHERE username = $1`, username,
-	).Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.MaxUsers,
+	err := scanner.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.MaxUsers,
+		&u.ParentUsername, &u.QuotaMode, &u.CreditBalance, &u.WhatsApp, &u.MonthlyPriceCents,
 		&expiresAt, &u.IsActive, &u.CreatedAt)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
 	if err != nil {
 		return nil, err
 	}
 	if expiresAt.Valid {
 		u.ExpiresAt = &expiresAt.Time
 	}
+	u.QuotaMode = normalizeQuotaMode(u.QuotaMode)
+	return u, nil
+}
+
+func (s *Store) GetAdminUserByUsername(ctx context.Context, username string) (*AdminUser, error) {
+	u, err := scanAdminUser(s.db.QueryRowContext(ctx,
+		`SELECT `+adminUserSelectColumns+` FROM admin_users WHERE username = $1`, username))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
 	return u, nil
 }
 
 func (s *Store) ListAdminUsers(ctx context.Context) ([]*AdminUser, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, username, password_hash, role, max_users, expires_at, is_active, created_at
-		 FROM admin_users ORDER BY role, username`)
+		`SELECT `+adminUserSelectColumns+` FROM admin_users ORDER BY role, username`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []*AdminUser
 	for rows.Next() {
-		u := &AdminUser{}
-		var expiresAt sql.NullTime
-		if err := rows.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role,
-			&u.MaxUsers, &expiresAt, &u.IsActive, &u.CreatedAt); err != nil {
+		u, err := scanAdminUser(rows)
+		if err != nil {
 			return nil, err
-		}
-		if expiresAt.Valid {
-			u.ExpiresAt = &expiresAt.Time
 		}
 		out = append(out, u)
 	}
@@ -406,15 +458,21 @@ func (s *Store) UpsertAdminUser(ctx context.Context, u *AdminUser) error {
 	}
 	if u.ID == 0 {
 		return s.db.QueryRowContext(ctx,
-			`INSERT INTO admin_users (username, password_hash, role, max_users, expires_at, is_active)
-			 VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
-			u.Username, u.PasswordHash, u.Role, u.MaxUsers, expiresAt, u.IsActive,
+			`INSERT INTO admin_users (username, password_hash, role, max_users, parent_username,
+			 quota_mode, credit_balance, whatsapp, monthly_price_cents, expires_at, is_active)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+			u.Username, u.PasswordHash, u.Role, u.MaxUsers, u.ParentUsername,
+			normalizeQuotaMode(u.QuotaMode), u.CreditBalance, u.WhatsApp, u.MonthlyPriceCents,
+			expiresAt, u.IsActive,
 		).Scan(&u.ID)
 	}
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE admin_users SET password_hash=$2, role=$3, max_users=$4,
-		 expires_at=$5, is_active=$6 WHERE id=$1`,
-		u.ID, u.PasswordHash, u.Role, u.MaxUsers, expiresAt, u.IsActive)
+		`UPDATE admin_users SET password_hash=$2, role=$3, max_users=$4, parent_username=$5,
+		 quota_mode=$6, credit_balance=$7, whatsapp=$8, monthly_price_cents=$9,
+		 expires_at=$10, is_active=$11 WHERE id=$1`,
+		u.ID, u.PasswordHash, u.Role, u.MaxUsers, u.ParentUsername,
+		normalizeQuotaMode(u.QuotaMode), u.CreditBalance, u.WhatsApp, u.MonthlyPriceCents,
+		expiresAt, u.IsActive)
 	return err
 }
 
@@ -435,8 +493,7 @@ func (s *Store) SetAdminUserActive(ctx context.Context, username string, active 
 
 func (s *Store) ListExpiredResellers(ctx context.Context) ([]*AdminUser, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, username, password_hash, role, max_users, expires_at, is_active, created_at
-		 FROM admin_users
+		`SELECT `+adminUserSelectColumns+` FROM admin_users
 		 WHERE role=$1 AND is_active=TRUE AND expires_at IS NOT NULL AND expires_at < NOW()`,
 		RoleReseller)
 	if err != nil {
@@ -448,8 +505,7 @@ func (s *Store) ListExpiredResellers(ctx context.Context) ([]*AdminUser, error) 
 
 func (s *Store) ListInactiveButRenewedResellers(ctx context.Context) ([]*AdminUser, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, username, password_hash, role, max_users, expires_at, is_active, created_at
-		 FROM admin_users
+		`SELECT `+adminUserSelectColumns+` FROM admin_users
 		 WHERE role=$1 AND is_active=FALSE AND (expires_at IS NULL OR expires_at > NOW())`,
 		RoleReseller)
 	if err != nil {
@@ -462,14 +518,9 @@ func (s *Store) ListInactiveButRenewedResellers(ctx context.Context) ([]*AdminUs
 func scanAdminUsers(rows *sql.Rows) ([]*AdminUser, error) {
 	var out []*AdminUser
 	for rows.Next() {
-		u := &AdminUser{}
-		var expiresAt sql.NullTime
-		if err := rows.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role,
-			&u.MaxUsers, &expiresAt, &u.IsActive, &u.CreatedAt); err != nil {
+		u, err := scanAdminUser(rows)
+		if err != nil {
 			return nil, err
-		}
-		if expiresAt.Valid {
-			u.ExpiresAt = &expiresAt.Time
 		}
 		out = append(out, u)
 	}
@@ -516,7 +567,12 @@ func loadAdminUsersIntoCache(ctx context.Context, store *Store) error {
 	if err != nil {
 		return err
 	}
+	states, err := store.ListResellerRuntimeStates(ctx)
+	if err != nil {
+		return err
+	}
 	adminUsers.replaceAll(users)
+	resellerRuntimeStates.replaceAll(states)
 	return nil
 }
 
@@ -524,20 +580,10 @@ func loadAdminUsersIntoCache(ctx context.Context, store *Store) error {
 
 // ownerIsActive returns nil if an SSH user's reseller owner is active, or an error if suspended/expired.
 func ownerIsActive(ownerUsername string) error {
-	if ownerUsername == "" {
-		return nil
+	if _, replicated := resellerRuntimeStates.get(ownerUsername); replicated {
+		return resellerRuntimeChainActive(ownerUsername)
 	}
-	u, ok := adminUsers.get(ownerUsername)
-	if !ok {
-		return fmt.Errorf("reseller account not found")
-	}
-	if !u.IsActive {
-		return fmt.Errorf("reseller account suspended")
-	}
-	if u.ExpiresAt != nil && time.Now().After(*u.ExpiresAt) {
-		return fmt.Errorf("reseller account expired")
-	}
-	return nil
+	return adminAccountChainActive(ownerUsername)
 }
 
 // disconnectOwnerUsers forcibly closes all active SSH connections for users owned by owner.
@@ -579,29 +625,38 @@ func startResellerExpiryChecker(store *Store) {
 			}
 			for _, u := range expired {
 				log.Printf("reseller %s expired — suspending", u.Username)
+				resellerLifecycleMu.Lock()
+				all, listErr := store.ListAdminUsers(ctx)
+				if listErr != nil {
+					resellerLifecycleMu.Unlock()
+					log.Printf("reseller expiry hierarchy for %s: %v", u.Username, listErr)
+					continue
+				}
+				quotaUnlock := lockResellerQuotaSet(resellerSubtreeUsernames(listResellerSubtree(all, u.Username)))
 				if err := store.SetAdminUserActive(ctx, u.Username, false); err != nil {
+					quotaUnlock()
+					resellerLifecycleMu.Unlock()
 					log.Printf("reseller expiry: %v", err)
 					continue
 				}
 				u.IsActive = false
 				adminUsers.set(u)
-				disconnectOwnerUsers(u.Username)
-				removeOwnerXrayClients(ctx, store, u.Username)
+				sessions.DeleteUser(u.ID)
+				if err := applyResellerSubtreeRuntime(ctx, store, u.Username, false); err != nil {
+					log.Printf("reseller expiry runtime for %s: %v", u.Username, err)
+				}
+				quotaUnlock()
+				resellerLifecycleMu.Unlock()
 			}
 
-			// Reactivate resellers that have been renewed (inactive but expiry now in future/nil)
-			renewed, err := store.ListInactiveButRenewedResellers(ctx)
-			if err != nil {
-				log.Printf("reseller renewal check: %v", err)
-			}
-			for _, u := range renewed {
-				log.Printf("reseller %s renewed — reactivating", u.Username)
-				if err := store.SetAdminUserActive(ctx, u.Username, true); err != nil {
-					log.Printf("reseller renewal: %v", err)
-					continue
+			// Replicated owner records on managed nodes also enforce expiration and
+			// inherited parent suspension without contacting the master on each login.
+			for _, state := range resellerRuntimeStates.list() {
+				if resellerRuntimeChainActive(state.OwnerUsername) != nil {
+					if err := applyOwnerRuntimeLocal(ctx, store, state.OwnerUsername, "suspend"); err != nil {
+						log.Printf("replicated reseller expiry runtime for %s: %v", state.OwnerUsername, err)
+					}
 				}
-				u.IsActive = true
-				adminUsers.set(u)
 			}
 
 			sessions.cleanup()
@@ -664,12 +719,8 @@ func handleLogin(store *Store) http.HandlerFunc {
 			http.Error(w, "invalid credentials", http.StatusUnauthorized)
 			return
 		}
-		if !u.IsActive {
-			http.Error(w, "account suspended", http.StatusForbidden)
-			return
-		}
-		if u.ExpiresAt != nil && time.Now().After(*u.ExpiresAt) {
-			http.Error(w, "account expired", http.StatusForbidden)
+		if adminAccountChainActive(u.Username) != nil {
+			http.Error(w, "account suspended or expired", http.StatusForbidden)
 			return
 		}
 
@@ -720,183 +771,35 @@ func handleMe(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.Role == RoleReseller {
 		if u, ok := adminUsers.get(s.Username); ok {
+			childAllocation, childCount := 0, 0
+			if statsStore != nil {
+				childAllocation, _ = statsStore.directChildAllocation(r.Context(), s.Username, "")
+				childCount = statsStore.directChildCount(r.Context(), s.Username)
+			}
 			resp["max_users"] = u.MaxUsers
-			resp["used_users"] = countOwnedQuota(r.Context(), statsStore, s.Username)
-			resp["used_ssh_users"] = countOwnedUsers(s.Username)
-			resp["used_xray_users"] = countOwnedXrayClients(r.Context(), statsStore, s.Username)
+			usage, usageErr := ownedQuotaUsageAcrossManagedServers(r.Context(), statsStore, s.Username)
+			if usageErr != nil {
+				usage = resellerQuotaUsage{
+					Weighted:     countOwnedQuota(r.Context(), statsStore, s.Username),
+					SSHAccounts:  countOwnedUsers(s.Username),
+					XrayAccounts: countOwnedXrayClients(r.Context(), statsStore, s.Username),
+				}
+			}
+			resp["used_users"] = usage.Weighted
+			resp["used_ssh_users"] = usage.SSHAccounts
+			resp["used_xray_users"] = usage.XrayAccounts
+			resp["parent_username"] = u.ParentUsername
+			resp["quota_mode"] = normalizeQuotaMode(u.QuotaMode)
+			resp["credit_balance"] = u.CreditBalance
+			resp["child_allocation"] = childAllocation
+			resp["child_count"] = childCount
 			resp["expires_at"] = u.ExpiresAt
 			resp["is_active"] = u.IsActive
+			resp["effective_active"] = adminAccountChainActive(u.Username) == nil
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
-// ---------- Reseller management (superadmin only) ----------
-
-type ResellerDTO struct {
-	ID        int        `json:"id"`
-	Username  string     `json:"username"`
-	Role      string     `json:"role"`
-	MaxUsers  int        `json:"max_users"`
-	UsedUsers int        `json:"used_users"`
-	UsedSSH   int        `json:"used_ssh_users"`
-	UsedXray  int        `json:"used_xray_users"`
-	ExpiresAt *time.Time `json:"expires_at,omitempty"`
-	IsActive  bool       `json:"is_active"`
-	CreatedAt time.Time  `json:"created_at"`
-}
-
-func handleListResellers(store *Store) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		users, err := store.ListAdminUsers(r.Context())
-		if err != nil {
-			http.Error(w, "db error", http.StatusInternalServerError)
-			return
-		}
-		out := make([]ResellerDTO, 0, len(users))
-		for _, u := range users {
-			out = append(out, ResellerDTO{
-				ID:        u.ID,
-				Username:  u.Username,
-				Role:      u.Role,
-				MaxUsers:  u.MaxUsers,
-				UsedUsers: countOwnedQuota(r.Context(), store, u.Username),
-				UsedSSH:   countOwnedUsers(u.Username),
-				UsedXray:  countOwnedXrayClients(r.Context(), store, u.Username),
-				ExpiresAt: u.ExpiresAt,
-				IsActive:  u.IsActive,
-				CreatedAt: u.CreatedAt,
-			})
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(out)
-	}
-}
-
-type ResellerPayload struct {
-	Username  string `json:"username"`
-	Password  string `json:"password,omitempty"`
-	MaxUsers  int    `json:"max_users"`
-	ExpiresAt string `json:"expires_at"`
-	IsActive  bool   `json:"is_active"`
-}
-
-func handleCreateReseller(store *Store) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		var p ResellerPayload
-		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
-			http.Error(w, "invalid json", http.StatusBadRequest)
-			return
-		}
-		p.Username = strings.TrimSpace(p.Username)
-		if err := validateAdminUsername(p.Username); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		if p.MaxUsers < 0 || p.MaxUsers > 1000000 {
-			http.Error(w, "max_users must be between 0 and 1000000", http.StatusBadRequest)
-			return
-		}
-
-		ctx := r.Context()
-		existing, err := store.GetAdminUserByUsername(ctx, p.Username)
-		if err != nil {
-			http.Error(w, "db error", http.StatusInternalServerError)
-			return
-		}
-
-		var u *AdminUser
-		if existing != nil {
-			u = existing
-		} else {
-			if p.Password == "" {
-				http.Error(w, "password required for new account", http.StatusBadRequest)
-				return
-			}
-			u = &AdminUser{Username: p.Username, Role: RoleReseller}
-		}
-
-		if p.Password != "" {
-			if err := validateAdminPassword(p.Password); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			passwordHash, err := hashAdminPassword(p.Password)
-			if err != nil {
-				http.Error(w, "failed to hash password", http.StatusInternalServerError)
-				return
-			}
-			u.PasswordHash = passwordHash
-		}
-		u.MaxUsers = p.MaxUsers
-		u.IsActive = p.IsActive
-		u.ExpiresAt = nil
-		if p.ExpiresAt != "" {
-			t, err := time.Parse(time.RFC3339, p.ExpiresAt)
-			if err != nil {
-				http.Error(w, "invalid expires_at (RFC3339 required)", http.StatusBadRequest)
-				return
-			}
-			u.ExpiresAt = &t
-		}
-
-		if err := store.UpsertAdminUser(ctx, u); err != nil {
-			log.Printf("upsert reseller: %v", err)
-			http.Error(w, "db error", http.StatusInternalServerError)
-			return
-		}
-		adminUsers.set(u)
-		if p.Password != "" && existing != nil {
-			sessions.DeleteUser(u.ID)
-		}
-
-		if u.Role == RoleReseller {
-			if !u.IsActive || (u.ExpiresAt != nil && time.Now().After(*u.ExpiresAt)) {
-				disconnectOwnerUsers(u.Username)
-				removeOwnerXrayClients(ctx, store, u.Username)
-			}
-		}
-
-		w.WriteHeader(http.StatusCreated)
-	}
-}
-
-func handleDeleteReseller(store *Store) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodDelete {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		username := strings.TrimSpace(r.URL.Query().Get("username"))
-		if err := validateAdminUsername(username); err != nil {
-			http.Error(w, "invalid username", http.StatusBadRequest)
-			return
-		}
-		ctx := r.Context()
-		u, _ := store.GetAdminUserByUsername(ctx, username)
-		if u != nil && u.Role == RoleSuperAdmin {
-			http.Error(w, "superadmin accounts cannot be deleted from the reseller endpoint", http.StatusForbidden)
-			return
-		}
-		if err := store.DeleteAdminUser(ctx, username); err != nil {
-			http.Error(w, "db error", http.StatusInternalServerError)
-			return
-		}
-		disconnectOwnerUsers(username)
-		removeOwnerXrayClients(ctx, store, username)
-		adminUsers.delete(username)
-		if u != nil {
-			sessions.DeleteUser(u.ID)
-		}
-		w.WriteHeader(http.StatusNoContent)
-	}
-}
+// Reseller management handlers live in reseller_management.go.

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -9,6 +10,20 @@ import (
 )
 
 const maxAdminRequestBody = 8 << 20
+
+func writeInternalError(w http.ResponseWriter, operation string, err error) {
+	if err != nil {
+		log.Printf("%s: %v", operation, err)
+	}
+	http.Error(w, "internal server error", http.StatusInternalServerError)
+}
+
+func writeBadGatewayError(w http.ResponseWriter, operation string, err error) {
+	if err != nil {
+		log.Printf("%s: %v", operation, err)
+	}
+	http.Error(w, "managed server request failed", http.StatusBadGateway)
+}
 
 // securePanelHandler applies baseline browser protections and a global request
 // body ceiling. Endpoint-specific handlers may impose a smaller limit.

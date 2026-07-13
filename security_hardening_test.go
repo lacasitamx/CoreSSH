@@ -50,6 +50,23 @@ func TestManagedServerURLValidation(t *testing.T) {
 	}
 }
 
+func TestRemoteErrorSnippetIsBoundedAndSingleLine(t *testing.T) {
+	input := make([]byte, 5000)
+	for i := range input {
+		input[i] = 'x'
+	}
+	copy(input, []byte("first\nsecond\r\tsecret"))
+	got := remoteErrorSnippet(input)
+	if len(got) > 4100 {
+		t.Fatalf("remote error snippet is too long: %d", len(got))
+	}
+	for _, r := range got {
+		if r < 0x20 || r == 0x7f {
+			t.Fatalf("remote error snippet retained control character %q", r)
+		}
+	}
+}
+
 func TestMPSignatureRequiresSecretAndValidHMAC(t *testing.T) {
 	const (
 		secret    = "test-secret-with-enough-entropy"

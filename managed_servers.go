@@ -35,6 +35,25 @@ func managedServerHTTPClient(timeout time.Duration) *http.Client {
 	}
 }
 
+func remoteErrorSnippet(data []byte) string {
+	const limit = 4096
+	truncated := len(data) > limit
+	if truncated {
+		data = data[:limit]
+	}
+	value := strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, string(data))
+	value = strings.TrimSpace(value)
+	if truncated {
+		value += "…"
+	}
+	return value
+}
+
 type ManagedServer struct {
 	ID            int
 	Name          string
@@ -344,6 +363,36 @@ func managedServerFromID(ctx context.Context, store *Store, id string) (*Managed
 	return ms, true, nil
 }
 
+func writeManagedServerSelectionError(w http.ResponseWriter, err error) {
+	if err == nil {
+		return
+	}
+	switch err.Error() {
+	case "invalid server id", "server not found", "server is disabled":
+		http.Error(w, err.Error(), http.StatusBadRequest)
+	case "database not configured":
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+	default:
+		writeInternalError(w, "select managed server", err)
+	}
+}
+
+func writeManagedServerSaveError(w http.ResponseWriter, err error) {
+	if err == nil {
+		return
+	}
+	message := err.Error()
+	safe := message == "server name required" || message == "invalid server name" ||
+		message == "invalid admin username" || message == "invalid admin credential" ||
+		message == "invalid server id" || message == "admin key/password required" ||
+		strings.HasPrefix(message, "base url") || message == "invalid base url"
+	if safe {
+		http.Error(w, message, http.StatusBadRequest)
+		return
+	}
+	writeInternalError(w, "save managed server", err)
+}
+
 func remoteLoginToken(ctx context.Context, ms *ManagedServer) (string, error) {
 	body, _ := json.Marshal(map[string]string{"username": ms.AdminUsername, "password": ms.AdminKey})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ms.BaseURL+"/api/auth/login", bytes.NewReader(body))
@@ -359,7 +408,7 @@ func remoteLoginToken(ctx context.Context, ms *ManagedServer) (string, error) {
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 128*1024))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("remote login failed: %s", strings.TrimSpace(string(data)))
+		return "", fmt.Errorf("remote login failed with HTTP %d: %q", resp.StatusCode, remoteErrorSnippet(data))
 	}
 	var out struct {
 		Token string `json:"token"`
@@ -407,6 +456,13 @@ func handleManagedProxyOrLocal(store *Store, local http.HandlerFunc) http.Handle
 }
 
 func writeProxyResponse(w http.ResponseWriter, status int, body []byte, contentType string) {
+	if status >= http.StatusInternalServerError {
+		if len(body) > 0 {
+			log.Printf("managed server returned HTTP %d: %q", status, remoteErrorSnippet(body))
+		}
+		body = []byte("managed server request failed\n")
+		contentType = "text/plain; charset=utf-8"
+	}
 	if contentType != "" {
 		w.Header().Set("Content-Type", contentType)
 	}
@@ -422,7 +478,7 @@ func writeProxyResponse(w http.ResponseWriter, status int, body []byte, contentT
 func proxyManagedServerFromRequest(w http.ResponseWriter, r *http.Request, store *Store, remotePath string, body []byte, filterOwner string) bool {
 	ms, remote, err := managedServerFromID(r.Context(), store, requestedServerID(r))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeManagedServerSelectionError(w, err)
 		return true
 	}
 	if !remote {
@@ -444,7 +500,7 @@ func proxyManagedServerFromRequest(w http.ResponseWriter, r *http.Request, store
 	}
 	status, data, ct, err := proxyManagedServer(r.Context(), ms, r.Method, remotePath, body, r.Header.Get("Content-Type"))
 	if err != nil {
-		http.Error(w, "remote server error: "+err.Error(), http.StatusBadGateway)
+		writeBadGatewayError(w, "proxy managed server request", err)
 		return true
 	}
 	if status >= 200 && status < 300 && filterOwner != "" && strings.Contains(ct, "json") {
@@ -535,7 +591,7 @@ func handleServers(store *Store) http.HandlerFunc {
 			}
 			ms, err := store.UpsertManagedServer(r.Context(), p)
 			if err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
+				writeManagedServerSaveError(w, err)
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -604,17 +660,17 @@ func handleServerTest(store *Store) http.HandlerFunc {
 		}
 		token, err := remoteLoginToken(r.Context(), ms)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
+			writeBadGatewayError(w, "test managed server login", err)
 			return
 		}
 		_ = token
 		status, data, _, err := proxyManagedServer(r.Context(), ms, http.MethodGet, "/api/auth/me", nil, "application/json")
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
+			writeBadGatewayError(w, "test managed server session", err)
 			return
 		}
 		if status < 200 || status >= 300 {
-			http.Error(w, strings.TrimSpace(string(data)), http.StatusBadGateway)
+			writeBadGatewayError(w, "test managed server session", fmt.Errorf("HTTP %d: %q", status, remoteErrorSnippet(data)))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -644,7 +700,7 @@ func handleManagedServerConfig(store *Store) http.HandlerFunc {
 		}
 		ms, remote, err := managedServerFromID(r.Context(), store, id)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			writeManagedServerSelectionError(w, err)
 			return
 		}
 		if !remote {
@@ -653,35 +709,42 @@ func handleManagedServerConfig(store *Store) http.HandlerFunc {
 		}
 		status, data, ct, err := proxyManagedServer(r.Context(), ms, r.Method, "/api/server/config", body, "application/json")
 		if err != nil {
-			log.Printf("managed server config proxy %s: %v", ms.BaseURL, err)
-			http.Error(w, "remote server error: "+err.Error(), http.StatusBadGateway)
+			writeBadGatewayError(w, "proxy managed server configuration", err)
 			return
 		}
 		writeProxyResponse(w, status, data, ct)
 	}
 }
 
-func remoteSSHUserOwner(ctx context.Context, ms *ManagedServer, username string) (owner string, exists bool, err error) {
+func remoteSSHUserInfo(ctx context.Context, ms *ManagedServer, username string) (map[string]interface{}, bool, error) {
 	if username == "" {
-		return "", false, nil
+		return nil, false, nil
 	}
 	status, data, _, err := proxyManagedServer(ctx, ms, http.MethodGet, "/api/users", nil, "application/json")
 	if err != nil || status < 200 || status >= 300 {
 		if err == nil {
 			err = fmt.Errorf("remote users returned HTTP %d", status)
 		}
-		return "", false, err
+		return nil, false, err
 	}
 	var rows []map[string]interface{}
 	if err := json.Unmarshal(data, &rows); err != nil {
-		return "", false, err
+		return nil, false, err
 	}
 	for _, row := range rows {
 		if fmt.Sprint(row["username"]) == username {
-			return strings.TrimSpace(fmt.Sprint(row["owner_username"])), true, nil
+			return row, true, nil
 		}
 	}
-	return "", false, nil
+	return nil, false, nil
+}
+
+func remoteSSHUserOwner(ctx context.Context, ms *ManagedServer, username string) (owner string, exists bool, err error) {
+	row, exists, err := remoteSSHUserInfo(ctx, ms, username)
+	if err != nil || !exists {
+		return "", exists, err
+	}
+	return strings.TrimSpace(fmt.Sprint(row["owner_username"])), true, nil
 }
 
 func remoteSSHUserOwned(ctx context.Context, ms *ManagedServer, username, owner string) bool {
@@ -689,31 +752,40 @@ func remoteSSHUserOwned(ctx context.Context, ms *ManagedServer, username, owner 
 	return err == nil && exists && actualOwner == owner
 }
 
-func remoteXrayClientOwner(ctx context.Context, ms *ManagedServer, uuid string) (owner string, exists bool, err error) {
+func remoteXrayClientInfo(ctx context.Context, ms *ManagedServer, uuid string) (map[string]interface{}, bool, error) {
 	if uuid == "" {
-		return "", false, nil
+		return nil, false, nil
 	}
 	status, data, _, err := proxyManagedServer(ctx, ms, http.MethodGet, "/api/xray/inbounds", nil, "application/json")
 	if err != nil || status < 200 || status >= 300 {
 		if err == nil {
 			err = fmt.Errorf("remote Xray inbounds returned HTTP %d", status)
 		}
-		return "", false, err
+		return nil, false, err
 	}
 	var inbounds []map[string]interface{}
 	if err := json.Unmarshal(data, &inbounds); err != nil {
-		return "", false, err
+		return nil, false, err
 	}
 	for _, ib := range inbounds {
 		clients, _ := ib["clients"].([]interface{})
 		for _, c := range clients {
 			m, _ := c.(map[string]interface{})
 			if fmt.Sprint(m["id"]) == uuid {
-				return strings.TrimSpace(fmt.Sprint(m["owner_username"])), true, nil
+				m["inbound_tag"] = fmt.Sprint(ib["tag"])
+				return m, true, nil
 			}
 		}
 	}
-	return "", false, nil
+	return nil, false, nil
+}
+
+func remoteXrayClientOwner(ctx context.Context, ms *ManagedServer, uuid string) (owner string, exists bool, err error) {
+	row, exists, err := remoteXrayClientInfo(ctx, ms, uuid)
+	if err != nil || !exists {
+		return "", exists, err
+	}
+	return strings.TrimSpace(fmt.Sprint(row["owner_username"])), true, nil
 }
 
 func remoteXrayClientOwned(ctx context.Context, ms *ManagedServer, uuid, owner string) bool {
@@ -721,59 +793,73 @@ func remoteXrayClientOwned(ctx context.Context, ms *ManagedServer, uuid, owner s
 	return err == nil && exists && actualOwner == owner
 }
 
-func countOwnedQuotaAcrossManagedServers(ctx context.Context, store *Store, owner string) (int, error) {
-	if store == nil || owner == "" {
-		return 0, nil
+type resellerQuotaUsage struct {
+	Weighted     int
+	SSHAccounts  int
+	XrayAccounts int
+}
+
+func ownedQuotaUsageAcrossManagedServers(ctx context.Context, store *Store, owner string) (resellerQuotaUsage, error) {
+	usage := resellerQuotaUsage{}
+	if owner == "" {
+		return usage, nil
 	}
-	total := countOwnedQuota(ctx, store, owner)
+	usage.Weighted = countOwnedQuota(ctx, store, owner)
+	usage.SSHAccounts = countOwnedUsers(owner)
+	usage.XrayAccounts = countOwnedXrayClients(ctx, store, owner)
+	if store == nil {
+		return usage, nil
+	}
 	servers, err := store.ListManagedServers(ctx)
 	if err != nil {
-		return 0, err
+		return resellerQuotaUsage{}, err
 	}
 	for _, ms := range servers {
-		if !ms.IsActive {
-			continue
+		// Count every configured node and both account types. Temporarily disabling
+		// a node or a protocol must not release its committed reseller quota.
+		status, data, _, err := proxyManagedServer(ctx, ms, http.MethodGet, "/api/users", nil, "application/json")
+		if err != nil || status < 200 || status >= 300 {
+			if err == nil {
+				err = fmt.Errorf("remote users returned HTTP %d", status)
+			}
+			return resellerQuotaUsage{}, err
 		}
-		if ms.EnableSSH {
-			status, data, _, err := proxyManagedServer(ctx, ms, http.MethodGet, "/api/users", nil, "application/json")
-			if err != nil || status < 200 || status >= 300 {
-				if err == nil {
-					err = fmt.Errorf("remote users returned HTTP %d", status)
-				}
-				return 0, err
-			}
-			var users []map[string]interface{}
-			if err := json.Unmarshal(data, &users); err != nil {
-				return 0, err
-			}
-			for _, user := range users {
-				if strings.TrimSpace(fmt.Sprint(user["owner_username"])) == owner {
-					total++
-				}
+		var users []map[string]interface{}
+		if err := json.Unmarshal(data, &users); err != nil {
+			return resellerQuotaUsage{}, err
+		}
+		for _, user := range users {
+			if strings.TrimSpace(fmt.Sprint(user["owner_username"])) == owner {
+				usage.Weighted += resellerProvisionCost(jsonInt(user["max_connections"]))
+				usage.SSHAccounts++
 			}
 		}
-		if ms.EnableXray {
-			status, data, _, err := proxyManagedServer(ctx, ms, http.MethodGet, "/api/xray/inbounds", nil, "application/json")
-			if err != nil || status < 200 || status >= 300 {
-				if err == nil {
-					err = fmt.Errorf("remote Xray inbounds returned HTTP %d", status)
-				}
-				return 0, err
+		status, data, _, err = proxyManagedServer(ctx, ms, http.MethodGet, "/api/xray/inbounds", nil, "application/json")
+		if err != nil || status < 200 || status >= 300 {
+			if err == nil {
+				err = fmt.Errorf("remote Xray inbounds returned HTTP %d", status)
 			}
-			var inbounds []map[string]interface{}
-			if err := json.Unmarshal(data, &inbounds); err != nil {
-				return 0, err
-			}
-			for _, inbound := range inbounds {
-				clients, _ := inbound["clients"].([]interface{})
-				for _, client := range clients {
-					item, _ := client.(map[string]interface{})
-					if strings.TrimSpace(fmt.Sprint(item["owner_username"])) == owner {
-						total++
-					}
+			return resellerQuotaUsage{}, err
+		}
+		var inbounds []map[string]interface{}
+		if err := json.Unmarshal(data, &inbounds); err != nil {
+			return resellerQuotaUsage{}, err
+		}
+		for _, inbound := range inbounds {
+			clients, _ := inbound["clients"].([]interface{})
+			for _, client := range clients {
+				item, _ := client.(map[string]interface{})
+				if strings.TrimSpace(fmt.Sprint(item["owner_username"])) == owner {
+					usage.Weighted += resellerProvisionCost(jsonInt(item["max_conns"]))
+					usage.XrayAccounts++
 				}
 			}
 		}
 	}
-	return total, nil
+	return usage, nil
+}
+
+func countOwnedQuotaAcrossManagedServers(ctx context.Context, store *Store, owner string) (int, error) {
+	usage, err := ownedQuotaUsageAcrossManagedServers(ctx, store, owner)
+	return usage.Weighted, err
 }

@@ -1843,20 +1843,18 @@ func handleDnsttGenKey(w http.ResponseWriter, r *http.Request) {
 	}
 	privkey, err := noise.GeneratePrivkey()
 	if err != nil {
-		http.Error(w, "keygen: "+err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, "generate DNSTT key", err)
 		return
 	}
-	f, err := os.OpenFile(dnsttKeyFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	if err != nil {
-		http.Error(w, "write key: "+err.Error(), http.StatusInternalServerError)
+	var encoded bytes.Buffer
+	if err := noise.WriteKey(&encoded, privkey); err != nil {
+		writeInternalError(w, "encode DNSTT key", err)
 		return
 	}
-	if err := noise.WriteKey(f, privkey); err != nil {
-		f.Close()
-		http.Error(w, "write key: "+err.Error(), http.StatusInternalServerError)
+	if err := writeFileAtomic(dnsttKeyFile, encoded.Bytes(), 0o600); err != nil {
+		writeInternalError(w, "write DNSTT key", err)
 		return
 	}
-	f.Close()
 	pubkey := noise.PubkeyFromPrivkey(privkey)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{
@@ -1879,13 +1877,13 @@ func handleDnsttGetPubKey(w http.ResponseWriter, r *http.Request) {
 	}
 	f, err := os.Open(keyPath)
 	if err != nil {
-		http.Error(w, "open key: "+err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, "open DNSTT key", err)
 		return
 	}
 	defer f.Close()
 	privkey, err := noise.ReadKey(f)
 	if err != nil {
-		http.Error(w, "read key: "+err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, "read DNSTT key", err)
 		return
 	}
 	pubkey := noise.PubkeyFromPrivkey(privkey)

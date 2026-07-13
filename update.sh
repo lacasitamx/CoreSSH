@@ -53,6 +53,38 @@ MOUNTPOINT_BIN="$(command -v mountpoint 2>/dev/null || echo /usr/bin/mountpoint)
 TOUCH_BIN="$(command -v touch 2>/dev/null || echo /usr/bin/touch)"
 CHMOD_BIN="$(command -v chmod 2>/dev/null || echo /usr/bin/chmod)"
 
+trusted_go_sha256() {
+  local manifest="${3:-}" manifest_value=""
+  if [[ -n "${GO_SHA256:-}" ]]; then
+    printf '%s\n' "$GO_SHA256"
+    return 0
+  fi
+  if [[ -f "$manifest" ]]; then
+    manifest_value="$(awk -v version="$1" -v arch="$2" '$1 == version && $2 == arch {print $3; exit}' "$manifest")"
+    if [[ -n "$manifest_value" ]]; then
+      printf '%s\n' "$manifest_value"
+      return 0
+    fi
+  fi
+  case "$1:$2" in
+    1.25.12:amd64) printf '%s\n' '234828b7a89e0e303d2556310ee549fbcf253d28de937bac3da13d6294262ac1' ;;
+    1.25.12:arm64) printf '%s\n' '8b5884aef89600aef5b0b051fb971f11f49bb996521e911f30f02a66884f7bd2' ;;
+    1.25.12:armv6l) printf '%s\n' '6cd7311c02c73ba0b482a1cf8c885268edf23519261bf4b5cef3353ad934d1f1' ;;
+    *) return 1 ;;
+  esac
+}
+
+verify_sha256_file() {
+  local expected="$1" file="$2" actual
+  command -v sha256sum >/dev/null 2>&1 || error "sha256sum is required to verify downloaded binaries"
+  [[ "$expected" =~ ^[0-9a-fA-F]{64}$ ]] || error "Invalid SHA-256 value for $file"
+  actual="$(sha256sum "$file" | awk '{print $1}')"
+  if [[ "${actual,,}" != "${expected,,}" ]]; then
+    rm -f "$file"
+    error "Checksum verification failed for $file"
+  fi
+}
+
 require_systemd() {
   SYSTEMCTL_BIN="$(command -v systemctl 2>/dev/null || true)"
   if [[ -z "$SYSTEMCTL_BIN" ]]; then
@@ -249,7 +281,7 @@ prepare_source_from_git() {
 }
 
 install_go_if_needed() {
-  local go_version machine goarch go_url current_go need_go
+  local go_version machine goarch go_url go_expected_sha256 current_go need_go
   go_version="$(awk '$1 == "go" {print $2; exit}' "$SOURCE_DIR/go.mod" 2>/dev/null || echo "1.22.5")"
   need_go=true
 
@@ -270,12 +302,16 @@ install_go_if_needed() {
       x86_64)  goarch="amd64" ;;
       aarch64) goarch="arm64" ;;
       armv7l)  goarch="armv6l" ;;
-      *)       goarch="amd64" ;;
+      *)       error "Unsupported CPU architecture: $machine" ;;
     esac
+    go_expected_sha256="$(trusted_go_sha256 "$go_version" "$goarch" "$SOURCE_DIR/go-checksums.txt" || true)"
+    [[ -n "$go_expected_sha256" ]] || error "No trusted Go checksum for ${go_version}/${goarch}; set GO_SHA256 explicitly"
     go_url="https://go.dev/dl/go${go_version}.linux-${goarch}.tar.gz"
     info "  Downloading Go ${go_version} (${goarch})..."
     need_cmd wget
     wget -q --show-progress -O /tmp/go.tar.gz "$go_url"
+    verify_sha256_file "$go_expected_sha256" /tmp/go.tar.gz
+    info "  Go archive checksum verified"
     rm -rf /usr/local/go
     tar -C /usr/local -xzf /tmp/go.tar.gz
     rm -f /tmp/go.tar.gz

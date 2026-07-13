@@ -1612,6 +1612,7 @@ func startAdminAPI(store *Store, addr string, adminDir string) {
 	// SSH user management (session required; role-filtered inside handlers)
 	mux.Handle("/api/users", sessionMiddleware(http.HandlerFunc(handleListUsers)))
 	mux.Handle("/api/users/create", sessionMiddleware(http.HandlerFunc(handleCreateUser(store))))
+	mux.Handle("/api/users/renew", sessionMiddleware(http.HandlerFunc(handleRenewSSHUser(store))))
 	mux.Handle("/api/users/delete", sessionMiddleware(http.HandlerFunc(handleDeleteUser(store))))
 
 	// Server stats: visible to authenticated sessions; reset remains superadmin-only.
@@ -1625,10 +1626,15 @@ func startAdminAPI(store *Store, addr string, adminDir string) {
 	mux.Handle("/api/dnstt", saSession(http.HandlerFunc(handleDnsttStats)))
 	mux.Handle("/api/dnstt/logs", saSession(http.HandlerFunc(handleDnsttLogs)))
 
-	// Superadmin-only: reseller management
-	mux.Handle("/api/resellers", saSession(http.HandlerFunc(handleListResellers(store))))
-	mux.Handle("/api/resellers/create", saSession(http.HandlerFunc(handleCreateReseller(store))))
-	mux.Handle("/api/resellers/delete", saSession(http.HandlerFunc(handleDeleteReseller(store))))
+	// Hierarchical reseller management. Scope checks inside each handler limit a
+	// reseller to its direct children; superadmins retain global management.
+	mux.Handle("/api/resellers", sessionMiddleware(http.HandlerFunc(handleListResellers(store))))
+	mux.Handle("/api/resellers/create", sessionMiddleware(http.HandlerFunc(handleCreateReseller(store))))
+	mux.Handle("/api/resellers/action", sessionMiddleware(http.HandlerFunc(handleResellerAction(store))))
+	mux.Handle("/api/resellers/delete", sessionMiddleware(http.HandlerFunc(handleDeleteReseller(store))))
+	mux.Handle("/api/resellers/audit", sessionMiddleware(http.HandlerFunc(handleResellerAudit(store))))
+	// Called master-to-node with the managed server's superadmin session.
+	mux.Handle("/api/resellers/runtime", saSession(http.HandlerFunc(handleResellerRuntime(store))))
 
 	// Master/slave server management. Superadmins can add slave nodes; all authenticated
 	// users can read the enabled server list to pick where accounts are created.
@@ -1648,6 +1654,7 @@ func startAdminAPI(store *Store, addr string, adminDir string) {
 	mux.Handle("/api/xray/inbounds", sessionMiddleware(http.HandlerFunc(handleXrayInbounds)))
 	mux.Handle("/api/xray/clients/add", sessionMiddleware(http.HandlerFunc(handleXrayClientAdd)))
 	mux.Handle("/api/xray/clients/update", sessionMiddleware(http.HandlerFunc(handleXrayClientUpdate)))
+	mux.Handle("/api/xray/clients/renew", sessionMiddleware(http.HandlerFunc(handleRenewXrayClient(store))))
 	mux.Handle("/api/xray/clients/remove", sessionMiddleware(http.HandlerFunc(handleXrayClientRemove)))
 
 	// Superadmin-only: TLS certificate generation
@@ -1783,6 +1790,7 @@ type UserPayload struct {
 	AllowStaticPassword bool    `json:"allow_static_password"`
 	OwnerUsername       string  `json:"owner_username,omitempty"`
 	ServerID            string  `json:"server_id,omitempty"`
+	PreserveExpires     bool    `json:"preserve_expires,omitempty"`
 }
 
 func handleCreateUser(store *Store) http.HandlerFunc {
@@ -1796,64 +1804,113 @@ func handleCreateUser(store *Store) http.HandlerFunc {
 			return
 		}
 
+		r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
 		var p UserPayload
-		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&p); err != nil {
 			http.Error(w, "invalid json", http.StatusBadRequest)
 			return
 		}
-		if p.Username == "" {
-			http.Error(w, "username required", http.StatusBadRequest)
+		if err := validateSSHUserPayload(&p); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 
 		ctx := r.Context()
 		if ms, remote, err := managedServerFromID(ctx, store, p.ServerID); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			writeManagedServerSelectionError(w, err)
 			return
 		} else if remote {
 			if !ms.EnableSSH {
 				http.Error(w, "SSH creation is disabled for this server", http.StatusForbidden)
 				return
 			}
+			chargedCredits, creditCost, creditOwner := false, 0, ""
 			if sess := sessionFromCtx(ctx); sess != nil && sess.Role == RoleReseller {
-				currentOwner, exists, ownerErr := remoteSSHUserOwner(ctx, ms, p.Username)
+				quotaUnlock := lockResellerQuota(sess.Username)
+				defer quotaUnlock()
+				row, exists, ownerErr := remoteSSHUserInfo(ctx, ms, p.Username)
 				if ownerErr != nil {
 					http.Error(w, "could not verify remote ownership", http.StatusBadGateway)
 					return
+				}
+				currentOwner := ""
+				if exists {
+					currentOwner = strings.TrimSpace(fmt.Sprint(row["owner_username"]))
 				}
 				if exists && currentOwner != sess.Username {
 					http.Error(w, "forbidden", http.StatusForbidden)
 					return
 				}
-				if !exists {
-					owner, ok := adminUsers.get(sess.Username)
-					used, quotaErr := countOwnedQuotaAcrossManagedServers(ctx, store, sess.Username)
-					if quotaErr != nil {
-						http.Error(w, "could not verify reseller quota", http.StatusBadGateway)
-						return
+				if exists {
+					if owner, ok := adminUsers.get(sess.Username); ok && normalizeQuotaMode(owner.QuotaMode) == QuotaModeCredit {
+						if strings.TrimSpace(p.ExpiresAt) != "" {
+							http.Error(w, "use the renew action to extend a credit account", http.StatusConflict)
+							return
+						}
+						p.PreserveExpires = true
+						p.MaxConnections = jsonInt(row["max_connections"])
 					}
-					if ok && owner.MaxUsers > 0 && used >= owner.MaxUsers {
-						http.Error(w, fmt.Sprintf("user limit reached (%d)", owner.MaxUsers), http.StatusForbidden)
+					if quotaErr := authorizeResellerQuotaChange(ctx, store, sess.Username, jsonInt(row["max_connections"]), p.MaxConnections); quotaErr != nil {
+						writeResellerProvisionError(w, quotaErr)
 						return
 					}
 				}
+				if !exists {
+					chargedCredits, creditCost, ownerErr = authorizeResellerProvision(ctx, store, sess.Username, "ssh:"+p.Username, p.MaxConnections)
+					if ownerErr != nil {
+						writeResellerProvisionError(w, ownerErr)
+						return
+					}
+					creditOwner = sess.Username
+					if expiry := resellerProvisionExpiry(sess.Username); expiry != "" {
+						p.ExpiresAt = expiry
+					}
+				}
 				p.OwnerUsername = sess.Username
+			}
+			if sess := sessionFromCtx(ctx); sess != nil && sess.Role == RoleReseller {
+				if syncErr := syncOwnerChainToManagedServer(ctx, ms, sess.Username); syncErr != nil {
+					if chargedCredits {
+						refundResellerProvisionCredits(ctx, store, creditOwner, creditCost, "ssh:"+p.Username)
+					}
+					log.Printf("sync reseller %s to managed server %s: %v", sess.Username, ms.Name, syncErr)
+					http.Error(w, "could not synchronize reseller state with the remote server", http.StatusBadGateway)
+					return
+				}
 			}
 			p.ServerID = ""
 			body, _ := json.Marshal(p)
 			status, data, ct, err := proxyManagedServer(ctx, ms, http.MethodPost, "/api/users/create", body, "application/json")
 			if err != nil {
-				http.Error(w, "remote server error: "+err.Error(), http.StatusBadGateway)
+				if chargedCredits {
+					refundResellerProvisionCredits(ctx, store, creditOwner, creditCost, "ssh:"+p.Username)
+				}
+				writeBadGatewayError(w, "create SSH account on managed server", err)
 				return
+			}
+			if status < 200 || status >= 300 {
+				if chargedCredits {
+					refundResellerProvisionCredits(ctx, store, creditOwner, creditCost, "ssh:"+p.Username)
+				}
 			}
 			writeProxyResponse(w, status, data, ct)
 			return
 		}
 
 		sess := sessionFromCtx(ctx)
+		var existingLocalExpiry string
+		var existingLocalUser bool
+		var existingLocalMax int
 		if sess != nil && sess.Role == RoleReseller {
+			quotaUnlock := lockResellerQuota(sess.Username)
+			defer quotaUnlock()
 			var existingOwner string
-			err := store.db.QueryRowContext(ctx, `SELECT owner_username FROM ssh_users WHERE username=$1`, p.Username).Scan(&existingOwner)
+			var expiresAt sql.NullTime
+			err := store.db.QueryRowContext(ctx,
+				`SELECT owner_username, expires_at, max_connections FROM ssh_users WHERE username=$1`,
+				p.Username).Scan(&existingOwner, &expiresAt, &existingLocalMax)
 			if err != nil && err != sql.ErrNoRows {
 				http.Error(w, "db error", http.StatusInternalServerError)
 				return
@@ -1861,6 +1918,31 @@ func handleCreateUser(store *Store) http.HandlerFunc {
 			if err == nil && existingOwner != sess.Username {
 				http.Error(w, "forbidden", http.StatusForbidden)
 				return
+			}
+			existingLocalUser = err == nil
+			if expiresAt.Valid {
+				existingLocalExpiry = expiresAt.Time.UTC().Format(time.RFC3339)
+			}
+			if existingLocalUser {
+				if owner, ok := adminUsers.get(sess.Username); ok && normalizeQuotaMode(owner.QuotaMode) == QuotaModeCredit {
+					if strings.TrimSpace(p.ExpiresAt) != "" && resellerExpiryExtended(existingLocalExpiry, p.ExpiresAt) {
+						http.Error(w, "use the renew action to extend a credit account", http.StatusConflict)
+						return
+					}
+					p.ExpiresAt = existingLocalExpiry
+					p.MaxConnections = existingLocalMax
+				}
+				if quotaErr := authorizeResellerQuotaChange(ctx, store, sess.Username, existingLocalMax, p.MaxConnections); quotaErr != nil {
+					writeResellerProvisionError(w, quotaErr)
+					return
+				}
+			}
+		}
+		if p.PreserveExpires && !existingLocalUser {
+			var expiresAt sql.NullTime
+			if err := store.db.QueryRowContext(ctx,
+				`SELECT expires_at FROM ssh_users WHERE username=$1`, p.Username).Scan(&expiresAt); err == nil && expiresAt.Valid {
+				p.ExpiresAt = expiresAt.Time.UTC().Format(time.RFC3339)
 			}
 		}
 
@@ -1892,29 +1974,32 @@ func handleCreateUser(store *Store) http.HandlerFunc {
 				http.Error(w, "db error", http.StatusInternalServerError)
 				return
 			} else {
-				password = existing
+				password, err = openSSHPassword(existing)
+				if err != nil {
+					log.Printf("failed to decrypt existing password for %s: %v", p.Username, err)
+					http.Error(w, "stored credential is unavailable", http.StatusInternalServerError)
+					return
+				}
 			}
 		}
 
-		// Determine owner and enforce reseller quota
+		// Determine owner and enforce reseller quota. Credit accounts spend one
+		// credit per allowed connection (minimum one) and receive 31 days.
 		ownerUsername := ""
+		chargedCredits, creditCost := false, 0
+		isNewUser := false
 		if sess != nil && sess.Role == RoleReseller {
 			ownerUsername = sess.Username
-			// Enforce user limit — only count on new user creation
-			var existsInDB bool
-			_ = store.db.QueryRowContext(ctx,
-				`SELECT TRUE FROM ssh_users WHERE username=$1`, p.Username,
-			).Scan(&existsInDB)
-			if !existsInDB {
-				owner, ok := adminUsers.get(sess.Username)
-				used, quotaErr := countOwnedQuotaAcrossManagedServers(ctx, store, sess.Username)
+			if !existingLocalUser {
+				isNewUser = true
+				var quotaErr error
+				chargedCredits, creditCost, quotaErr = authorizeResellerProvision(ctx, store, sess.Username, "ssh:"+p.Username, p.MaxConnections)
 				if quotaErr != nil {
-					http.Error(w, "could not verify reseller quota", http.StatusBadGateway)
+					writeResellerProvisionError(w, quotaErr)
 					return
 				}
-				if ok && owner.MaxUsers > 0 && used >= owner.MaxUsers {
-					http.Error(w, fmt.Sprintf("user limit reached (%d)", owner.MaxUsers), http.StatusForbidden)
-					return
+				if expiry := resellerProvisionExpiry(sess.Username); expiry != "" {
+					p.ExpiresAt = expiry
 				}
 			}
 		} else if sess != nil && sess.Role == RoleSuperAdmin && strings.TrimSpace(p.OwnerUsername) != "" {
@@ -1937,6 +2022,9 @@ func handleCreateUser(store *Store) http.HandlerFunc {
 		}
 
 		if err := store.UpsertUser(ctx, cfg); err != nil {
+			if isNewUser && chargedCredits {
+				refundResellerProvisionCredits(ctx, store, ownerUsername, creditCost, "ssh:"+p.Username)
+			}
 			log.Printf("failed to upsert user: %v", err)
 			http.Error(w, "db error", http.StatusInternalServerError)
 			return
@@ -1961,15 +2049,15 @@ func handleDeleteUser(store *Store) http.HandlerFunc {
 			return
 		}
 
-		username := r.URL.Query().Get("username")
-		if username == "" {
-			http.Error(w, "username required", http.StatusBadRequest)
+		username := strings.TrimSpace(r.URL.Query().Get("username"))
+		if err := validateAccountUsername(username); err != nil {
+			http.Error(w, "invalid username", http.StatusBadRequest)
 			return
 		}
 
 		ctx := r.Context()
 		if ms, remote, err := managedServerFromID(ctx, store, requestedServerID(r)); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			writeManagedServerSelectionError(w, err)
 			return
 		} else if remote {
 			if sess := sessionFromCtx(ctx); sess != nil && sess.Role == RoleReseller && !remoteSSHUserOwned(ctx, ms, username, sess.Username) {
@@ -1979,7 +2067,7 @@ func handleDeleteUser(store *Store) http.HandlerFunc {
 			remotePath := "/api/users/delete?username=" + url.QueryEscape(username)
 			status, data, ct, err := proxyManagedServer(ctx, ms, http.MethodDelete, remotePath, nil, "application/json")
 			if err != nil {
-				http.Error(w, "remote server error: "+err.Error(), http.StatusBadGateway)
+				writeBadGatewayError(w, "delete SSH account from managed server", err)
 				return
 			}
 			writeProxyResponse(w, status, data, ct)
@@ -3041,6 +3129,7 @@ func main() {
 		} else {
 			log.Printf("iface totals persistence disabled: %v", err)
 		}
+		startManagedResellerStateSync(store)
 	}
 
 	// start background collector for CPU + interface stats
@@ -3061,6 +3150,9 @@ func main() {
 
 	// Start the integrated Xray-core subprocess if configured.
 	initXrayManager(cfg.Xray)
+	if store != nil {
+		reconcileLocalResellerRuntimeStates(store)
+	}
 
 	// Global banner text (from config or file) — stored in a global so the
 	// admin API can update it on the fly without a restart.

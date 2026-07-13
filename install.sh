@@ -15,6 +15,7 @@ LOG_TMPFS_SIZE="${LOG_TMPFS_SIZE:-15m}"
 PANEL_LOG_MAX_BYTES="${PANEL_LOG_MAX_BYTES:-1048576}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GO_VERSION="${GO_VERSION:-$(awk '$1 == "go" {print $2; exit}' "$SCRIPT_DIR/go.mod" 2>/dev/null || echo "1.22.5")}"
+GO_SHA256="${GO_SHA256:-}"
 REPO_URL="${REPO_URL:-https://git.dr2.site/penguinehis/DragonCoreSSH-NewWEB.git}"
 MKDIR_BIN="$(command -v mkdir 2>/dev/null || true)"
 [[ -n "$MKDIR_BIN" ]] || MKDIR_BIN="/bin/mkdir"
@@ -32,6 +33,38 @@ MOUNT_BIN="$(command -v mount 2>/dev/null || echo /bin/mount)"
 MOUNTPOINT_BIN="$(command -v mountpoint 2>/dev/null || echo /usr/bin/mountpoint)"
 TOUCH_BIN="$(command -v touch 2>/dev/null || echo /usr/bin/touch)"
 CHMOD_BIN="$(command -v chmod 2>/dev/null || echo /usr/bin/chmod)"
+
+trusted_go_sha256() {
+  local manifest="${3:-}" manifest_value=""
+  if [[ -n "$GO_SHA256" ]]; then
+    printf '%s\n' "$GO_SHA256"
+    return 0
+  fi
+  if [[ -f "$manifest" ]]; then
+    manifest_value="$(awk -v version="$1" -v arch="$2" '$1 == version && $2 == arch {print $3; exit}' "$manifest")"
+    if [[ -n "$manifest_value" ]]; then
+      printf '%s\n' "$manifest_value"
+      return 0
+    fi
+  fi
+  case "$1:$2" in
+    1.25.12:amd64) printf '%s\n' '234828b7a89e0e303d2556310ee549fbcf253d28de937bac3da13d6294262ac1' ;;
+    1.25.12:arm64) printf '%s\n' '8b5884aef89600aef5b0b051fb971f11f49bb996521e911f30f02a66884f7bd2' ;;
+    1.25.12:armv6l) printf '%s\n' '6cd7311c02c73ba0b482a1cf8c885268edf23519261bf4b5cef3353ad934d1f1' ;;
+    *) return 1 ;;
+  esac
+}
+
+verify_sha256_file() {
+  local expected="$1" file="$2" actual
+  command -v sha256sum >/dev/null 2>&1 || error "sha256sum is required to verify downloaded binaries"
+  [[ "$expected" =~ ^[0-9a-fA-F]{64}$ ]] || error "Invalid SHA-256 value for $file"
+  actual="$(sha256sum "$file" | awk '{print $1}')"
+  if [[ "${actual,,}" != "${expected,,}" ]]; then
+    rm -f "$file"
+    error "Checksum verification failed for $file"
+  fi
+}
 
 require_systemd() {
   SYSTEMCTL_BIN="$(command -v systemctl 2>/dev/null || true)"
@@ -235,16 +268,21 @@ if command -v go &>/dev/null; then
 fi
 
 if $NEED_GO; then
+  GO_EXPECTED_SHA256=""
   MACHINE=$(uname -m)
   case "$MACHINE" in
     x86_64)  GOARCH="amd64" ;;
     aarch64) GOARCH="arm64" ;;
     armv7l)  GOARCH="armv6l" ;;
-    *)       GOARCH="amd64" ;;
+    *)       error "Unsupported CPU architecture: $MACHINE" ;;
   esac
+  GO_EXPECTED_SHA256="$(trusted_go_sha256 "$GO_VERSION" "$GOARCH" "$SCRIPT_DIR/go-checksums.txt" || true)"
+  [[ -n "$GO_EXPECTED_SHA256" ]] || error "No trusted Go checksum for ${GO_VERSION}/${GOARCH}; set GO_SHA256 explicitly"
   GO_URL="https://go.dev/dl/go${GO_VERSION}.linux-${GOARCH}.tar.gz"
   info "  Downloading $GO_URL"
   wget -q --show-progress -O /tmp/go.tar.gz "$GO_URL"
+  verify_sha256_file "$GO_EXPECTED_SHA256" /tmp/go.tar.gz
+  info "  Go archive checksum verified"
   rm -rf /usr/local/go
   tar -C /usr/local -xzf /tmp/go.tar.gz
   rm -f /tmp/go.tar.gz
@@ -299,25 +337,51 @@ fi
 
 # ── 6. Xray binary ──────────────────────────────────────────────────────────
 info "[6/10] Downloading Xray-core…"
-XRAY_VER=$(curl -sf "https://api.github.com/repos/XTLS/Xray-core/releases/latest" \
-  | grep '"tag_name"' | head -1 | cut -d'"' -f4 || echo "v24.11.30")
 MACHINE=$(uname -m)
 case "$MACHINE" in
   x86_64)  XRAY_ARCH="64" ;;
   aarch64) XRAY_ARCH="arm64-v8a" ;;
   armv7l)  XRAY_ARCH="arm32-v7a" ;;
-  *)       XRAY_ARCH="64" ;;
+  *)       error "Unsupported CPU architecture: $MACHINE" ;;
 esac
-XRAY_URL="https://github.com/XTLS/Xray-core/releases/download/${XRAY_VER}/Xray-linux-${XRAY_ARCH}.zip"
+PYTHON_BIN="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
+[[ -n "$PYTHON_BIN" ]] || error "Python is required to validate Xray release metadata"
+XRAY_RELEASE_JSON=/tmp/xray-release.json
+curl -fsSL --retry 3 --connect-timeout 15 --max-time 60 \
+  -o "$XRAY_RELEASE_JSON" https://api.github.com/repos/XTLS/Xray-core/releases/latest
+readarray -t XRAY_META < <("$PYTHON_BIN" -c '
+import json, re, sys
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    release = json.load(handle)
+tag = release.get("tag_name", "")
+name = sys.argv[2]
+asset = next((item for item in release.get("assets", []) if item.get("name") == name), None)
+if not tag or not asset:
+    raise SystemExit(2)
+url = asset.get("browser_download_url", "")
+digest = asset.get("digest", "")
+prefix = "https://github.com/XTLS/Xray-core/releases/download/" + tag + "/"
+if not url.startswith(prefix) or not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest):
+    raise SystemExit(3)
+print(tag)
+print(url)
+print(digest.split(":", 1)[1])
+' "$XRAY_RELEASE_JSON" "Xray-linux-${XRAY_ARCH}.zip")
+[[ ${#XRAY_META[@]} -eq 3 ]] || error "Xray release metadata is missing a trusted asset digest"
+XRAY_VER="${XRAY_META[0]}"
+XRAY_URL="${XRAY_META[1]}"
+XRAY_SHA256="${XRAY_META[2]}"
 info "  Xray ${XRAY_VER} (${XRAY_ARCH})"
 wget -q --show-progress -O /tmp/xray.zip "$XRAY_URL"
+verify_sha256_file "$XRAY_SHA256" /tmp/xray.zip
+info "  Xray archive checksum verified"
 unzip -o /tmp/xray.zip xray -d "$INSTALL_DIR" > /dev/null 2>&1 || {
   mkdir -p /tmp/xray_extract
   unzip -o /tmp/xray.zip -d /tmp/xray_extract > /dev/null 2>&1
   mv /tmp/xray_extract/xray "$INSTALL_DIR/xray"
 }
 chmod +x "$INSTALL_DIR/xray"
-rm -f /tmp/xray.zip
+rm -f /tmp/xray.zip "$XRAY_RELEASE_JSON"
 "$INSTALL_DIR/xray" version
 
 # ── 7. PostgreSQL ────────────────────────────────────────────────────────────

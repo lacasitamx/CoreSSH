@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log"
+	"strings"
 	"time"
 )
 
@@ -46,6 +48,10 @@ func (s *Store) EnsureXrayClientsSchema(ctx context.Context) error {
 		`ALTER TABLE xray_clients ADD COLUMN IF NOT EXISTS total_downlink_bytes BIGINT NOT NULL DEFAULT 0`,
 		`ALTER TABLE xray_clients ADD COLUMN IF NOT EXISTS last_active TIMESTAMPTZ`,
 		`ALTER TABLE xray_clients ADD COLUMN IF NOT EXISTS active_connections INT NOT NULL DEFAULT 0`,
+		// Keep legacy reseller-owned Xray accounts aligned with weighted quota
+		// accounting. A reseller account always consumes at least one slot.
+		`UPDATE xray_clients SET max_conns = 1
+			WHERE owner_username <> '' AND max_conns < 1`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
@@ -231,8 +237,41 @@ func countOwnedXrayClients(ctx context.Context, store *Store, ownerUsername stri
 	return n
 }
 
+func (s *Store) SumXrayClientQuotaByOwner(ctx context.Context, ownerUsername string) (int, error) {
+	if s == nil || ownerUsername == "" {
+		return 0, nil
+	}
+	var total int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(GREATEST(max_conns, 1)), 0)
+		FROM xray_clients WHERE owner_username=$1`, ownerUsername).Scan(&total)
+	return total, err
+}
+
+func countOwnedSSHQuota(ownerUsername string) int {
+	total := 0
+	for _, user := range userMgr.List() {
+		if user.Cfg.OwnerUsername == ownerUsername {
+			total += resellerProvisionCost(user.Cfg.MaxConnections)
+		}
+	}
+	return total
+}
+
+func countOwnedXrayQuota(ctx context.Context, store *Store, ownerUsername string) int {
+	if store == nil || ownerUsername == "" {
+		return 0
+	}
+	total, err := store.SumXrayClientQuotaByOwner(ctx, ownerUsername)
+	if err != nil {
+		log.Printf("sum Xray quota for %s: %v", ownerUsername, err)
+		return 0
+	}
+	return total
+}
+
 func countOwnedQuota(ctx context.Context, store *Store, ownerUsername string) int {
-	return countOwnedUsers(ownerUsername) + countOwnedXrayClients(ctx, store, ownerUsername)
+	return countOwnedSSHQuota(ownerUsername) + countOwnedXrayQuota(ctx, store, ownerUsername)
 }
 
 func removeOwnerXrayClients(ctx context.Context, store *Store, ownerUsername string) {
@@ -262,8 +301,111 @@ func removeOwnerXrayClients(ctx context.Context, store *Store, ownerUsername str
 	}
 }
 
-// startXrayClientExpiryChecker runs a background goroutine that removes expired
-// Xray clients from both the config file and the database every 5 minutes.
+// suspendOwnerXrayClients removes an owner's clients from the live Xray config
+// while keeping their metadata. That makes reseller suspension reversible.
+func suspendOwnerXrayClients(ctx context.Context, store *Store, ownerUsername string) error {
+	if store == nil || ownerUsername == "" {
+		return nil
+	}
+	clients, err := store.ListXrayClientsByOwner(ctx, ownerUsername)
+	if err != nil {
+		return err
+	}
+	inbounds, err := xrayMgr.ListInbounds()
+	if err != nil {
+		return err
+	}
+	present := make(map[string]map[string]bool)
+	for _, inbound := range inbounds {
+		present[inbound.Tag] = make(map[string]bool)
+		for _, client := range inbound.Clients {
+			present[inbound.Tag][client.UUID] = true
+		}
+	}
+	changed := false
+	var failures []string
+	for _, client := range clients {
+		if client.InboundTag == "" || !present[client.InboundTag][client.UUID] {
+			continue
+		}
+		if err := xrayMgr.RemoveXrayClient(client.InboundTag, client.UUID); err != nil {
+			failures = append(failures, client.UUID+": "+err.Error())
+			continue
+		}
+		changed = true
+	}
+	if changed {
+		xrayMgr.restartIfExternalRunning()
+	}
+	if len(failures) > 0 {
+		return fmt.Errorf("suspend Xray clients: %s", strings.Join(failures, "; "))
+	}
+	return nil
+}
+
+// restoreOwnerXrayClients restores metadata-backed clients after a reseller is
+// reactivated. Existing entries are left untouched, so retries are idempotent.
+func restoreOwnerXrayClients(ctx context.Context, store *Store, ownerUsername string) error {
+	if store == nil || ownerUsername == "" {
+		return nil
+	}
+	clients, err := store.ListXrayClientsByOwner(ctx, ownerUsername)
+	if err != nil {
+		return err
+	}
+	inbounds, err := xrayMgr.ListInbounds()
+	if err != nil {
+		return err
+	}
+	present := make(map[string]map[string]bool)
+	for _, inbound := range inbounds {
+		present[inbound.Tag] = make(map[string]bool)
+		for _, client := range inbound.Clients {
+			present[inbound.Tag][client.UUID] = true
+		}
+	}
+	changed := false
+	var failures []string
+	for _, client := range clients {
+		if client.ExpiresAt != nil && time.Now().After(*client.ExpiresAt) {
+			continue
+		}
+		if client.InboundTag == "" {
+			continue
+		}
+		clientsForInbound, ok := present[client.InboundTag]
+		if !ok {
+			failures = append(failures, client.UUID+": inbound "+client.InboundTag+" no longer exists")
+			continue
+		}
+		if clientsForInbound[client.UUID] {
+			continue
+		}
+		email := strings.TrimSpace(client.Email)
+		if email == "" {
+			email = strings.TrimSpace(client.Name)
+		}
+		if email == "" {
+			email = client.UUID
+		}
+		if err := xrayMgr.AddXrayClient(client.InboundTag, client.UUID, email); err != nil {
+			failures = append(failures, client.UUID+": "+err.Error())
+			continue
+		}
+		clientsForInbound[client.UUID] = true
+		changed = true
+	}
+	if changed {
+		xrayMgr.restartIfExternalRunning()
+	}
+	if len(failures) > 0 {
+		return fmt.Errorf("restore Xray clients: %s", strings.Join(failures, "; "))
+	}
+	return nil
+}
+
+// startXrayClientExpiryChecker removes expired clients from the live config.
+// Reseller-owned metadata is retained so a paid renewal can restore access.
 func startXrayClientExpiryChecker(store *Store) {
 	if store == nil {
 		return
@@ -282,19 +424,34 @@ func startXrayClientExpiryChecker(store *Store) {
 				continue
 			}
 			needRestart := false
+			present := make(map[string]map[string]bool)
+			if inbounds, listErr := xrayMgr.ListInbounds(); listErr == nil {
+				for _, inbound := range inbounds {
+					present[inbound.Tag] = make(map[string]bool)
+					for _, client := range inbound.Clients {
+						present[inbound.Tag][client.UUID] = true
+					}
+				}
+			}
 			for _, m := range expired {
 				tag := m.InboundTag
 				if tag == "" {
-					_ = store.DeleteXrayClientMeta(ctx, m.UUID)
+					if m.OwnerUsername == "" {
+						_ = store.DeleteXrayClientMeta(ctx, m.UUID)
+					}
 					continue
 				}
-				if err := xrayMgr.RemoveXrayClient(tag, m.UUID); err != nil {
-					log.Printf("xray expiry: remove %s from %s: %v", m.UUID, tag, err)
-				} else {
-					needRestart = true
+				if present[tag][m.UUID] {
+					if err := xrayMgr.RemoveXrayClient(tag, m.UUID); err != nil {
+						log.Printf("xray expiry: remove %s from %s: %v", m.UUID, tag, err)
+					} else {
+						needRestart = true
+					}
 				}
-				if err := store.DeleteXrayClientMeta(ctx, m.UUID); err != nil {
-					log.Printf("xray expiry: delete meta %s: %v", m.UUID, err)
+				if m.OwnerUsername == "" {
+					if err := store.DeleteXrayClientMeta(ctx, m.UUID); err != nil {
+						log.Printf("xray expiry: delete meta %s: %v", m.UUID, err)
+					}
 				}
 				log.Printf("xray expiry: removed expired client %q (%s) from inbound %s", m.Name, m.UUID, tag)
 			}

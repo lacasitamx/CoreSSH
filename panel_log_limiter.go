@@ -97,7 +97,7 @@ func handleSystemLogsReset(w http.ResponseWriter, r *http.Request) {
 	path := panelLogFilePath()
 	maxBytes := panelLogMaxBytes()
 	if err := truncatePanelLog(path, maxBytes, "manual clean from admin panel"); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeInternalError(w, "clear panel log", err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

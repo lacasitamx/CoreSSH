@@ -5,6 +5,8 @@ if (sessionToken) sessionStorage.setItem("SESSION_TOKEN", sessionToken);
 localStorage.removeItem("SESSION_TOKEN");
 let currentRole  = "";
 let currentUser  = "";
+let currentQuotaMode = "slots";
+let currentCreditBalance = 0;
 let statsTimer   = null, usersTimer = null, xrayTimer = null;
 let tlsForwardersState = [];
 let managedTlsForwardersState = [];
@@ -369,8 +371,13 @@ const resellerFormTitle = document.getElementById("resellerFormTitle");
 const resellerForm      = document.getElementById("resellerForm");
 const rUsername         = document.getElementById("rUsername");
 const rPassword         = document.getElementById("rPassword");
+const rParent           = document.getElementById("rParent");
+const rQuotaMode        = document.getElementById("rQuotaMode");
 const rMaxUsers         = document.getElementById("rMaxUsers");
+const rCredits          = document.getElementById("rCredits");
 const rExpires          = document.getElementById("rExpires");
+const rWhatsApp         = document.getElementById("rWhatsApp");
+const rMonthlyPrice     = document.getElementById("rMonthlyPrice");
 const rActive           = document.getElementById("rActive");
 
 // Managed servers
@@ -391,7 +398,6 @@ const serverFormStatus = document.getElementById("serverFormStatus");
 const serversListView = document.getElementById("serversListView");
 const serverConfigSubpage = document.getElementById("serverConfigSubpage");
 const cfgServerName = document.getElementById("cfgServerName");
-const managedConfigEditor = document.getElementById("managedConfigEditor");
 const managedConfigStatus = document.getElementById("managedConfigStatus");
 const serversStatusGrid = document.getElementById("serversStatusGrid");
 const serversStatusPageStatus = document.getElementById("serversStatusPageStatus");
@@ -534,7 +540,9 @@ async function api(path, opts = {}) {
     "X-Session-Token": sessionToken,
   });
   const res = await fetch(path, o);
-  if (res.status === 401 || res.status === 403) throw new Error("auth");
+  // A 403 is an in-session permission or quota error; only 401 means the
+  // session is no longer valid and should return to the login screen.
+  if (res.status === 401) throw new Error("auth");
   return res;
 }
 function withServerParam(path, serverID) {

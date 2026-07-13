@@ -1,4 +1,5 @@
 // ─── SSH Users ────────────────────────────────────────────────────────────────
+let editingSSHUser = "";
 document.getElementById("reloadUsersBtn").addEventListener("click", loadUsers);
 document.getElementById("sshHeroRefreshBtn")?.addEventListener("click", loadUsers);
 newUserBtn.addEventListener("click", () => navigateWorkspaceSection("ssh", "create"));
@@ -7,8 +8,13 @@ cancelUserBtn.addEventListener("click", () => {
   setWorkspaceSection("ssh", "users");
 });
 function prepareNewSSHUser() {
+  editingSSHUser = "";
   userForm.reset();
   fTotpPeriod.value = 60; fTotpWindow.value = 1; fTotpDigits.value = 6;
+  fMaxConn.disabled = false;
+  fMaxConn.min = currentRole === "reseller" ? "1" : "0";
+  fMaxConn.value = currentRole === "reseller" ? "1" : "0";
+  fMaxConn.title = "";
   const heading = document.getElementById("userFormHeading");
   const title = document.getElementById("userFormTitle");
   if (heading) heading.textContent = t("Create user");
@@ -87,6 +93,10 @@ function renderUsers(users) {
       tr.appendChild(td);
     });
     const tdA = document.createElement("td");
+    const renewBtn = Object.assign(document.createElement("button"), {
+      className:"btn btn-ghost btn-sm", textContent:"+30d",
+      onclick: () => renewSSHUser(u),
+    });
     const editBtn = Object.assign(document.createElement("button"), {
       className:"btn btn-ghost btn-sm", textContent:t("Edit"),
       onclick: () => fillUserForm(u),
@@ -96,7 +106,8 @@ function renderUsers(users) {
       style: "margin-left:4px;",
       onclick: () => deleteUser(u.username),
     });
-    tdA.append(editBtn, delBtn);
+    tdA.className = "bot-row-actions";
+    tdA.append(renewBtn, editBtn, delBtn);
     tr.appendChild(tdA);
     usersBody.appendChild(tr);
   });
@@ -113,6 +124,7 @@ function renderUsers(users) {
 }
 
 function fillUserForm(u) {
+  editingSSHUser = u.username || "";
   setWorkspaceSection("ssh", "create");
   fUsername.value       = u.username || "";
   fPassword.value       = "";
@@ -122,6 +134,10 @@ function fillUserForm(u) {
   fTotpDigits.value     = u.totp_digits || 6;
   fAllowStatic.checked  = !!u.allow_static_password;
   fMaxConn.value        = u.max_connections || "";
+	const creditLocked = currentRole === "reseller" && currentQuotaMode === "credits";
+	fMaxConn.disabled = creditLocked;
+	fMaxConn.min = currentRole === "reseller" ? "1" : "0";
+	fMaxConn.title = creditLocked ? "Em planos por crédito, altere o limite criando uma nova conta." : "";
   fUp.value             = u.limit_mbps_up || "";
   fDown.value           = u.limit_mbps_down || "";
   fExpires.value        = u.expires_at ? localFromISO(u.expires_at) : "";
@@ -145,7 +161,9 @@ userForm.addEventListener("submit", async e => {
     totp_digits: parseInt(fTotpDigits.value||"6",10),
     allow_static_password: !!fAllowStatic.checked,
     max_connections: parseInt(fMaxConn.value||"0",10),
-    expires_at: isoFromLocal(fExpires.value),
+    expires_at: currentRole === "reseller" && currentQuotaMode === "credits" && editingSSHUser
+      ? ""
+      : isoFromLocal(fExpires.value),
     limit_mbps_up:   parseInt(fUp.value||"0",10),
     limit_mbps_down: parseInt(fDown.value||"0",10),
     server_id: selectedSSHServer(),
@@ -185,5 +203,31 @@ async function deleteUser(username) {
   } catch (e) {
     if (e.message==="auth") doAuthError();
     else userStatus.textContent = t("Error deleting.");
+  }
+}
+
+async function renewSSHUser(user) {
+  const creditCost = Math.max(1, Number(user.max_connections || 0));
+  const creditDetail = currentRole === "reseller" && currentQuotaMode === "credits"
+    ? `Serão usados ${creditCost} crédito(s) e a conta receberá 31 dias.`
+    : "A validade será estendida em 30 dias a partir da data atual ou da validade existente.";
+  const accepted = await panelConfirm({
+    icon:"+30", title:"Renovar SSH", message:`Renovar “${user.username}”?`,
+    detail:creditDetail, confirmLabel:"Renovar conta",
+  });
+  if (!accepted) return;
+  userStatus.textContent = `Renovando ${user.username}…`;
+  try {
+    const res = await api("/api/users/renew", {
+      method:"POST",
+      body:JSON.stringify({ username:user.username, days:30, server_id:selectedSSHServer() }),
+    });
+    if (!res.ok) throw new Error((await res.text()).trim());
+    showPanelToast(`${user.username} renovado.`, "success", "SSH / SlowDNS");
+    await loadUsers();
+    if (currentRole === "reseller") loadMe();
+  } catch (e) {
+    if (e.message === "auth") doAuthError();
+    else showPanelToast(e.message, "error", "Renovar SSH");
   }
 }
