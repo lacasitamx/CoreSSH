@@ -98,7 +98,13 @@ resellerForm.addEventListener("submit", async e => {
 });
 
 async function deleteReseller(username) {
-  if (!confirm(`Delete reseller "${username}"? All their SSH sessions will be disconnected.`)) return;
+  const accepted = await panelConfirm({
+    tone:"danger", icon:"×", title:t("Delete reseller"),
+    message:t("Delete reseller \"{name}\"?", {name:username}),
+    detail:t("Their owned access will be removed and active SSH sessions will be disconnected."),
+    confirmLabel:t("Delete reseller"),
+  });
+  if (!accepted) return;
   resellerStatus.textContent = `Deleting ${username}…`;
   try {
     const res = await api(`/api/resellers/delete?username=${encodeURIComponent(username)}`, { method:"DELETE" });

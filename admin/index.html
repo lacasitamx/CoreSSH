@@ -16,7 +16,7 @@
   setTimeout(function(){document.documentElement.classList.remove("i18n-pending");},2500);
 })();
 </script>
-<link rel="stylesheet" href="assets/app.css?v=20260713legacyssh3"/>
+<link rel="stylesheet" href="assets/app.css?v=20260713infra4"/>
 </head>
 <body>
 <div class="app">
@@ -52,10 +52,7 @@
         <button class="tab-btn" data-tab="xray"><span class="nav-icon">◇</span><span>Xray Users</span></button>
         <div class="nav-group-label superadmin-only hidden">Administração</div>
         <button class="tab-btn superadmin-only hidden" data-tab="resellers"><span class="nav-icon">🏪</span><span>Revendedores</span></button>
-        <button class="tab-btn superadmin-only hidden" data-tab="servers"><span class="nav-icon">▣</span><span>Servidores</span></button>
-        <button class="tab-btn superadmin-only hidden" data-tab="servers-status"><span class="nav-icon">▥</span><span>Status Servidores</span></button>
-        <button class="tab-btn superadmin-only hidden" data-tab="stats"><span class="nav-icon">📊</span><span>Servidor</span></button>
-        <button class="tab-btn superadmin-only hidden" data-tab="vnstat"><span class="nav-icon">⇅</span><span>Tráfego</span></button>
+        <button class="tab-btn superadmin-only hidden" data-tab="servers"><span class="nav-icon">▣</span><span>Infraestrutura</span></button>
         <button class="tab-btn superadmin-only hidden" data-tab="logs"><span class="nav-icon">☰</span><span>Logs</span></button>
         <button class="tab-btn superadmin-only hidden" data-tab="bot"><span class="nav-icon">🤖</span><span>Bot / Vendas</span></button>
         <button class="tab-btn superadmin-only hidden" data-tab="server"><span class="nav-icon">⚙</span><span>Configurações</span></button>
@@ -213,9 +210,15 @@
 
 <!-- ═══════════ SSH Users Tab ═══════════ -->
   <div class="tab-pane" id="tab-ssh">
-    <section class="page-hero" data-tone="green">
+    <section class="page-hero status-hero" data-tone="green">
       <div class="page-hero-copy"><span class="page-kicker">Access workspace</span><h2>Contas SSH</h2><p>Crie, limite e acompanhe acessos SSH e SlowDNS com segurança.</p></div>
-      <div class="page-hero-pills"><span>SSH</span><span>TOTP</span><span>SlowDNS</span></div>
+      <div class="workspace-hero-actions"><span class="workspace-live-status" id="sshLiveStatus">Aguardando dados</span><button class="btn btn-ghost btn-sm" id="sshHeroRefreshBtn" type="button">Atualizar</button></div>
+      <div class="workspace-overview-grid">
+        <article class="workspace-overview-card"><span class="workspace-overview-icon green">●</span><div><small>Operação</small><strong id="sshMetricState">Carregando</strong></div></article>
+        <article class="workspace-overview-card"><span class="workspace-overview-icon purple">◆</span><div><small>Contas</small><strong id="sshMetricTotal">0</strong></div></article>
+        <article class="workspace-overview-card"><span class="workspace-overview-icon cyan">✓</span><div><small>Ativas</small><strong id="sshMetricActive">0</strong></div></article>
+        <article class="workspace-overview-card"><span class="workspace-overview-icon amber">↗</span><div><small>Online agora</small><strong id="sshMetricOnline">0</strong></div></article>
+      </div>
     </section>
 
     <!-- Reseller info card (visible to resellers only) -->
@@ -312,9 +315,27 @@
 
   <!-- ═══════════ Xray Tab (superadmin only) ═══════════ -->
   <div class="tab-pane" id="tab-xray">
-    <section class="page-hero" data-tone="purple">
+    <section class="page-hero status-hero" data-tone="purple">
       <div class="page-hero-copy"><span class="page-kicker">Proxy studio</span><h2>Xray visual</h2><p>Gerencie clientes, inbounds e um endpoint XHTTP compartilhado sem editar JSON.</p></div>
-      <div class="page-hero-pills"><span>VLESS</span><span>VMess</span><span>XHTTP</span><span>SSH</span></div>
+      <div class="workspace-hero-actions"><span class="workspace-live-status" id="xrayChip">Aguardando dados</span><button class="btn btn-ghost btn-sm" id="xRefreshBtn" type="button">Atualizar</button></div>
+      <div class="workspace-overview-grid five">
+        <article class="workspace-overview-card"><span class="workspace-overview-icon green">●</span><div><small>Status</small><strong id="xRunning">--</strong></div></article>
+        <article class="workspace-overview-card"><span class="workspace-overview-icon cyan">↗</span><div><small>Online</small><strong id="xOnlineUsers">--</strong></div></article>
+        <article class="workspace-overview-card"><span class="workspace-overview-icon purple">#</span><div><small>PID</small><strong id="xPID">--</strong></div></article>
+        <article class="workspace-overview-card"><span class="workspace-overview-icon amber">◷</span><div><small>Uptime</small><strong id="xUptime">--</strong></div></article>
+        <article class="workspace-overview-card"><span class="workspace-overview-icon blue">API</span><div><small>Contadores</small><strong id="xStatsConfig">--</strong></div></article>
+      </div>
+      <div class="workspace-hero-toolbar">
+        <span id="xStatus" class="workspace-toolbar-status">Pronto.</span>
+        <div class="workspace-toolbar-actions xray-admin-only">
+          <select id="xCoreMode" class="input-sm" title="Xray runtime mode"><option value="native">Internal native emulator</option><option value="external">External xray binary</option></select>
+          <button class="btn btn-ghost btn-sm" id="xSaveModeBtn">Salvar modo</button>
+          <button class="btn btn-ghost btn-sm" id="xStartBtn">Iniciar</button>
+          <button class="btn btn-danger btn-sm" id="xStopBtn">Parar</button>
+          <button class="btn btn-ghost btn-sm" id="xRestartBtn">Reiniciar</button>
+          <button class="btn btn-ghost btn-sm" id="xRepairStatsBtn">Reparar contadores</button>
+        </div>
+      </div>
     </section>
     <!-- Edit Client Panel (hidden by default) -->
     <div id="editXrayClientPanel" class="card hidden" style="margin-bottom:12px;border-color:rgba(245,158,11,.4);">
@@ -354,33 +375,6 @@
         <button class="btn btn-ghost btn-sm" type="button" id="reloadServersBtn2">Reload servers</button>
       </div>
       <div class="hint hidden" id="xrayServerHint"></div>
-    </div>
-
-    <!-- Status -->
-    <div class="card">
-      <div class="card-hdr">
-        <div class="card-title">Xray Core <span class="chip" id="xrayChip">--</span></div>
-        <div class="card-actions xray-admin-only">
-          <select id="xCoreMode" class="input-sm" title="Xray runtime mode">
-            <option value="native">Internal native emulator</option>
-            <option value="external">External xray binary</option>
-          </select>
-          <button class="btn btn-ghost btn-sm" id="xSaveModeBtn">Save mode</button>
-          <button class="btn btn-ghost btn-sm" id="xStartBtn">Start</button>
-          <button class="btn btn-danger btn-sm" id="xStopBtn">Stop</button>
-          <button class="btn btn-ghost btn-sm" id="xRestartBtn">Restart</button>
-          <button class="btn btn-ghost btn-sm" id="xRepairStatsBtn">Repair counters</button>
-          <button class="btn btn-ghost btn-sm" id="xRefreshBtn">Refresh</button>
-        </div>
-      </div>
-      <div class="metrics">
-        <div class="metric"><div class="m-label">Status</div><div class="m-val" id="xRunning">--</div></div>
-        <div class="metric"><div class="m-label">Online</div><div class="m-val" id="xOnlineUsers">--</div></div>
-        <div class="metric"><div class="m-label">PID</div><div class="m-val" id="xPID">--</div></div>
-        <div class="metric"><div class="m-label">Uptime</div><div class="m-val" id="xUptime">--</div></div>
-        <div class="metric"><div class="m-label">Counters API</div><div class="m-val" id="xStatsConfig">--</div></div>
-      </div>
-      <div class="statusbar"><span id="xStatus">Ready.</span></div>
     </div>
 
     <!-- Inbounds & clients -->
@@ -657,13 +651,22 @@
 
   <!-- ═══════════ Servers Tab (superadmin only) ═══════════ -->
   <div class="tab-pane" id="tab-servers">
-    <section class="page-hero" data-tone="blue"><div class="page-hero-copy"><span class="page-kicker">Fleet control</span><h2>Servidores</h2><p>Adicione nós, teste credenciais e configure a infraestrutura remota.</p></div><div class="page-hero-pills"><span>Master</span><span>Nodes</span><span>Encrypted</span></div></section>
+    <section class="page-hero status-hero" data-tone="blue">
+      <div class="page-hero-copy"><span class="page-kicker">Fleet control</span><h2>Infraestrutura</h2><p>Gerencie nós, acompanhe a saúde do sistema e consulte tráfego em um único espaço.</p></div>
+      <div class="workspace-hero-actions"><span class="workspace-live-status" id="fleetLiveStatus">Aguardando dados</span><button class="btn btn-ghost btn-sm" id="refreshServersBtn" type="button">Atualizar</button></div>
+      <div class="workspace-overview-grid">
+        <article class="workspace-overview-card"><span class="workspace-overview-icon blue">▣</span><div><small>Nós</small><strong id="fleetMetricNodes">--</strong></div></article>
+        <article class="workspace-overview-card"><span class="workspace-overview-icon green">●</span><div><small>Ativos</small><strong id="fleetMetricActive">--</strong></div></article>
+        <article class="workspace-overview-card"><span class="workspace-overview-icon cyan">SSH</span><div><small>SSH habilitado</small><strong id="fleetMetricSSH">--</strong></div></article>
+        <article class="workspace-overview-card"><span class="workspace-overview-icon purple">◇</span><div><small>Xray habilitado</small><strong id="fleetMetricXray">--</strong></div></article>
+      </div>
+    </section>
+    <div class="infra-nav-mount"></div>
     <div id="serversListView">
       <div class="grid2 servers-grid">
         <div class="card">
           <div class="card-hdr">
             <div class="card-title">Managed servers <span class="chip" id="serversCountChip">0</span></div>
-            <div class="card-actions"><button class="btn btn-ghost btn-sm" id="refreshServersBtn" type="button">Reload</button></div>
           </div>
           <div class="tbl-wrap">
             <table>
@@ -885,40 +888,33 @@
 
   <!-- ═══════════ Servers Status Tab (superadmin only) ═══════════ -->
   <div class="tab-pane" id="tab-servers-status">
-    <section class="page-hero" data-tone="green"><div class="page-hero-copy"><span class="page-kicker">Live fleet</span><h2>Status dos servidores</h2><p>Saúde, carga e sessões ativas de cada nó gerenciado.</p></div><div class="page-hero-pills"><span>CPU</span><span>RAM</span><span>Uptime</span></div></section>
-    <div class="card servers-status-toolbar">
-      <div class="card-hdr">
-        <div class="card-title">Servers Status <span class="chip" id="serversStatusCountChip">0</span></div>
-        <div class="card-actions">
-          <button class="btn btn-ghost btn-sm" id="refreshServersStatusBtn" type="button">Refresh</button>
-        </div>
+    <section class="page-hero status-hero" data-tone="green">
+      <div class="page-hero-copy"><span class="page-kicker">Live fleet</span><h2>Status dos servidores</h2><p>Saúde, carga e sessões ativas de cada nó gerenciado.</p></div>
+      <div class="workspace-hero-actions"><span class="workspace-live-status" id="serversStatusPageStatus">Aguardando dados</span><button class="btn btn-ghost btn-sm" id="refreshServersStatusBtn" type="button">Atualizar</button></div>
+      <div class="workspace-overview-grid">
+        <article class="workspace-overview-card"><span class="workspace-overview-icon blue">▣</span><div><small>Total</small><strong id="serversStatusCountChip">0</strong></div></article>
+        <article class="workspace-overview-card"><span class="workspace-overview-icon green">●</span><div><small>Online</small><strong id="fleetStatusOnline">--</strong></div></article>
+        <article class="workspace-overview-card"><span class="workspace-overview-icon red">●</span><div><small>Offline</small><strong id="fleetStatusOffline">--</strong></div></article>
+        <article class="workspace-overview-card"><span class="workspace-overview-icon amber">↗</span><div><small>Sessões</small><strong id="fleetStatusSessions">--</strong></div></article>
       </div>
-      <div class="statusbar">
-        <span id="serversStatusPageStatus">Ready.</span>
-      </div>
-    </div>
+    </section>
+    <div class="infra-nav-mount"></div>
     <div class="servers-status-grid" id="serversStatusGrid"></div>
   </div><!-- /tab-servers-status -->
 
   <!-- ═══════════ Stats Tab (superadmin only) ═══════════ -->
   <div class="tab-pane" id="tab-stats">
-    <section class="page-hero" data-tone="cyan"><div class="page-hero-copy"><span class="page-kicker">Observability</span><h2>Monitoramento</h2><p>Recursos, interfaces e capacidade do servidor em tempo real.</p></div><div class="page-hero-pills"><span>2s live</span><span>Network</span><span>Load</span></div></section>
-    <div class="grid2">
-      <div class="card">
-        <div class="card-hdr"><div class="card-title">Server Load</div><span class="hint" id="statsUpdated">--</span></div>
-        <div class="metrics">
-          <div class="metric">
-            <div class="m-label">CPU</div>
-            <div class="m-val"><span id="cpuVal">--%</span></div>
-            <div class="bar"><div class="bar-inner" id="cpuBar" style="width:0%"></div></div>
-          </div>
-          <div class="metric">
-            <div class="m-label">RAM</div>
-            <div class="m-val"><span id="memVal">--%</span> <span class="hint" id="memDetail"></span></div>
-            <div class="bar"><div class="bar-inner" id="memBar" style="width:0%"></div></div>
-          </div>
-        </div>
+    <section class="page-hero status-hero" data-tone="cyan">
+      <div class="page-hero-copy"><span class="page-kicker">Observability</span><h2>Monitoramento</h2><p>Recursos, interfaces e capacidade do servidor em tempo real.</p></div>
+      <div class="workspace-hero-actions"><span class="workspace-live-status is-ok" id="statsUpdated">Atualização ao vivo</span><button class="btn btn-ghost btn-sm" id="refreshStatsBtn" type="button">Atualizar</button></div>
+      <div class="workspace-overview-grid">
+        <article class="workspace-overview-card has-meter"><span class="workspace-overview-icon cyan">CPU</span><div><small>Processador</small><strong id="cpuVal">--%</strong><div class="workspace-mini-meter"><span id="cpuBar"></span></div></div></article>
+        <article class="workspace-overview-card has-meter"><span class="workspace-overview-icon purple">RAM</span><div><small>Memória</small><strong id="memVal">--%</strong><span class="workspace-card-note" id="memDetail">--</span><div class="workspace-mini-meter"><span id="memBar"></span></div></div></article>
+        <article class="workspace-overview-card"><span class="workspace-overview-icon green">⇅</span><div><small>Rede agora</small><strong id="statsNetVal">--</strong></div></article>
+        <article class="workspace-overview-card"><span class="workspace-overview-icon amber">#</span><div><small>Interfaces</small><strong id="statsIfaceVal">--</strong></div></article>
       </div>
+    </section>
+    <div class="infra-nav-mount"></div>
       <div class="card">
         <div class="card-hdr">
           <div class="card-title">Interfaces <span class="chip">rx/tx Mbps</span><span class="chip warn">30-day rolling</span></div>
@@ -932,27 +928,21 @@
         </div>
         <div class="statusbar"><span id="ifaceSummary"></span><span class="hint">Totals can be cleaned here and auto-clean every 30 days. VnStat history is separate.</span></div>
       </div>
-    </div>
   </div><!-- /tab-stats -->
 
   <!-- ═══════════ VnStat Tab (superadmin only) ═══════════ -->
   <div class="tab-pane" id="tab-vnstat">
-    <section class="page-hero" data-tone="purple"><div class="page-hero-copy"><span class="page-kicker">Traffic intelligence</span><h2>Tráfego de rede</h2><p>Histórico diário e mensal para entender o consumo da infraestrutura.</p></div><div class="page-hero-pills"><span>RX</span><span>TX</span><span>History</span></div></section>
-    <div class="card">
-      <div class="card-hdr">
-        <div class="card-title">VnStat Usage <span class="chip">daily / monthly</span></div>
-        <div class="form-actions" style="margin-top:0">
-          <button class="btn btn-ghost btn-sm" id="reloadVnstatBtn" type="button">Refresh</button>
-          <button class="btn btn-danger btn-sm" id="resetVnstatBtn" type="button">Clean VnStat history</button>
-        </div>
+    <section class="page-hero status-hero" data-tone="purple">
+      <div class="page-hero-copy"><span class="page-kicker">Traffic intelligence</span><h2>Tráfego de rede</h2><p>Histórico diário e mensal para entender o consumo da infraestrutura.</p></div>
+      <div class="workspace-hero-actions"><span class="workspace-live-status" id="vnstatStatus">Aguardando dados</span><button class="btn btn-ghost btn-sm" id="reloadVnstatBtn" type="button">Atualizar</button><button class="btn btn-danger btn-sm" id="resetVnstatBtn" type="button">Limpar histórico</button></div>
+      <div class="workspace-overview-grid">
+        <article class="workspace-overview-card"><span class="workspace-overview-icon cyan">D</span><div><small>Hoje</small><strong id="vnTodayTotal">--</strong></div></article>
+        <article class="workspace-overview-card"><span class="workspace-overview-icon purple">M</span><div><small>Este mês</small><strong id="vnMonthTotal">--</strong></div></article>
+        <article class="workspace-overview-card"><span class="workspace-overview-icon green">⇅</span><div><small>Interfaces</small><strong id="vnIfaceCount">--</strong></div></article>
+        <article class="workspace-overview-card"><span class="workspace-overview-icon amber">◷</span><div><small>Período recente</small><strong id="vnLatestPeriod">--</strong></div></article>
       </div>
-      <div class="metrics">
-        <div class="metric"><div class="m-label">Today total</div><div class="m-val" id="vnTodayTotal">--</div></div>
-        <div class="metric"><div class="m-label">This month total</div><div class="m-val" id="vnMonthTotal">--</div></div>
-        <div class="metric"><div class="m-label">Interfaces tracked</div><div class="m-val" id="vnIfaceCount">--</div></div>
-      </div>
-      <div class="statusbar"><span id="vnstatStatus">VnStat history does not auto-clean. Use the button when you want to reset it.</span></div>
-    </div>
+    </section>
+    <div class="infra-nav-mount"></div>
 
     <div class="grid2" style="margin-top:12px;">
       <div class="card">
@@ -1442,20 +1432,31 @@
 </div><!-- /shell -->
 </div><!-- /app -->
 
+<div class="panel-dialog hidden" id="panelConfirmDialog" aria-hidden="true">
+  <div class="panel-dialog-backdrop" data-panel-dialog-close></div>
+  <section class="panel-dialog-card" role="dialog" aria-modal="true" aria-labelledby="panelDialogTitle" aria-describedby="panelDialogMessage">
+    <div class="panel-dialog-head"><span class="panel-dialog-icon" id="panelDialogIcon" aria-hidden="true">?</span><div><span class="page-kicker" id="panelDialogEyebrow">Confirmação</span><h3 id="panelDialogTitle">Confirmar ação</h3></div></div>
+    <p id="panelDialogMessage"></p>
+    <div class="panel-dialog-detail hidden" id="panelDialogDetail"></div>
+    <div class="panel-dialog-actions"><button class="btn btn-ghost" id="panelDialogCancelBtn" type="button">Cancelar</button><button class="btn" id="panelDialogConfirmBtn" type="button">Confirmar</button></div>
+  </section>
+</div>
+<div class="panel-toast-stack" id="panelToastStack" aria-live="polite" aria-atomic="false"></div>
+
 <!-- app.js was split into ordered modules for maintainability. They are plain
      classic scripts sharing one global scope; `defer` preserves execution order,
      so behavior is identical to the old single file. Keep this load order. -->
-<script defer src="assets/js/01-core.js?v=20260713legacyssh3"></script>
-<script defer src="assets/js/02-shell.js?v=20260713legacyssh3"></script>
-<script defer src="assets/js/03-ssh-users.js?v=20260713legacyssh3"></script>
-<script defer src="assets/js/04-xray.js?v=20260713legacyssh3"></script>
-<script defer src="assets/js/05-resellers.js?v=20260713legacyssh3"></script>
-<script defer src="assets/js/06-servers.js?v=20260713legacyssh3"></script>
-<script defer src="assets/js/07-stats-logs.js?v=20260713legacyssh3"></script>
-<script defer src="assets/js/08-server-config.js?v=20260713legacyssh3"></script>
-<script defer src="assets/js/09-xray-wizard.js?v=20260713legacyssh3"></script>
-<script defer src="assets/js/11-update-status.js?v=20260713legacyssh3"></script>
-<script defer src="assets/js/12-bot.js?v=20260713legacyssh3"></script>
-<script defer src="assets/js/10-boot.js?v=20260713legacyssh3"></script>
+<script defer src="assets/js/01-core.js?v=20260713infra4"></script>
+<script defer src="assets/js/02-shell.js?v=20260713infra4"></script>
+<script defer src="assets/js/03-ssh-users.js?v=20260713infra4"></script>
+<script defer src="assets/js/04-xray.js?v=20260713infra4"></script>
+<script defer src="assets/js/05-resellers.js?v=20260713infra4"></script>
+<script defer src="assets/js/06-servers.js?v=20260713infra4"></script>
+<script defer src="assets/js/07-stats-logs.js?v=20260713infra4"></script>
+<script defer src="assets/js/08-server-config.js?v=20260713infra4"></script>
+<script defer src="assets/js/09-xray-wizard.js?v=20260713infra4"></script>
+<script defer src="assets/js/11-update-status.js?v=20260713infra4"></script>
+<script defer src="assets/js/12-bot.js?v=20260713infra4"></script>
+<script defer src="assets/js/10-boot.js?v=20260713infra4"></script>
 </body>
 </html>

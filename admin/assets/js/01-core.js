@@ -133,6 +133,28 @@ Object.assign(I18N_TEXT["pt-BR"], {
   "Configured inbounds":"Inbounds configurados","Visual inbound help":"Edite qualquer cartão visualmente ou use JSON para campos avançados.","New inbound":"Novo inbound","Visual editor":"Editor visual","Add inbound":"Adicionar inbound","Save changes":"Salvar alterações","Duplicate":"Duplicar","Remove":"Remover","Save config and restart":"Salvar configuração e reiniciar",
   "Old XHTTP configuration?":"Configuração XHTTP antiga?","Legacy XHTTP migration copy":"Use “Ativar SSH /ssh” no cartão do inbound existente. O painel mantém o inbound, os clientes e todas as opções atuais; adiciona somente a rota SSH e reinicia o Xray.","Enable SSH /ssh":"Ativar SSH /ssh","SSH /ssh enabled":"SSH /ssh ativado","Legacy XHTTP migration":"Migração de configuração XHTTP antiga"
 });
+Object.assign(I18N_TEXT["en-US"], {
+  "Infrastructure":"Infrastructure","Infrastructure areas":"Infrastructure areas","Infrastructure area":"Infrastructure area","Waiting for data":"Waiting for data","Operation":"Operation","Accounts":"Accounts","Active accounts":"Active","Online now":"Online now","Counters":"Counters","Save mode":"Save mode",
+  "Nodes":"Nodes","Active nodes":"Active","SSH enabled":"SSH enabled","Xray enabled":"Xray enabled","Sessions":"Sessions","Processor":"Processor","Memory":"Memory","Network now":"Network now","Interfaces":"Interfaces","Today":"Today","This month":"This month","Recent period":"Recent period","Update":"Refresh","Clear history":"Clear history",
+  "Infrastructure workspace copy":"Manage nodes, monitor system health, and inspect traffic from one workspace.","Confirmation":"Confirmation","Confirm action":"Confirm action","Confirm":"Confirm","Completed":"Completed","Action failed":"Action failed","Attention":"Attention","Information":"Information","Close":"Close",
+  "Loading SSH status…":"Loading SSH status…","Loading":"Loading","Could not load SSH status":"Could not load SSH status","Error":"Error","Online":"Online","SSH data updated at {time}":"SSH data updated at {time}","Delete SSH account":"Delete SSH account","The active SSH sessions for this account will be disconnected.":"The active SSH sessions for this account will be disconnected.","Delete account":"Delete account",
+  "Loading Xray status…":"Loading Xray status…","Could not load Xray status":"Could not load Xray status","Remove Xray client":"Remove Xray client","The client will lose access immediately after the configuration reload.":"The client will lose access immediately after the configuration reload.","Remove client":"Remove client","Client removed successfully.":"Client removed successfully.","Xray client":"Xray client",
+  "Loading infrastructure…":"Loading infrastructure…","Infrastructure loaded with fallback data":"Infrastructure loaded with fallback data","{count} active nodes · updated {time}":"{count} active nodes · updated {time}","Delete managed server":"Delete managed server","Delete server \"{name}\"?":"Delete server \"{name}\"?","The remote node is not erased, but it will be removed from this panel and can no longer receive managed actions.":"The remote node is not erased, but it will be removed from this panel and can no longer receive managed actions.","Delete server":"Delete server",
+  "Updating live status…":"Updating live status…","Live · updated {time}":"Live · updated {time}","Error loading server status":"Error loading server status","Clean live interface totals":"Clean live interface totals","Clean the live Interface totals now?":"Clean the live Interface totals now?","VnStat daily and monthly history will be preserved.":"VnStat daily and monthly history will be preserved.","Clean totals":"Clean totals","Live interface totals were cleaned.":"Live interface totals were cleaned.","Traffic counters":"Traffic counters","Clean VnStat history":"Clean VnStat history","Clean all daily and monthly traffic history?":"Clean all daily and monthly traffic history?","Live interface totals are separate and will not be reset.":"Live interface totals are separate and will not be reset.","Clean history":"Clean history","VnStat history was cleaned.":"VnStat history was cleaned.","Traffic history":"Traffic history","Clean panel log":"Clean panel log","Clean the current panel log now?":"Clean the current panel log now?","This only clears the panel log file. Automatic size-based cleanup remains enabled.":"This only clears the panel log file. Automatic size-based cleanup remains enabled.","Clean log":"Clean log",
+  "Delete reseller":"Delete reseller","Delete reseller \"{name}\"?":"Delete reseller \"{name}\"?","Their owned access will be removed and active SSH sessions will be disconnected.":"Their owned access will be removed and active SSH sessions will be disconnected.","Remove inbound":"Remove inbound","Remove inbound {name}?":"Remove inbound {name}?","Clients attached only to this inbound will stop connecting after the configuration is saved.":"Clients attached only to this inbound will stop connecting after the configuration is saved.",
+  "This endpoint already has an SSH /ssh route.":"This endpoint already has an SSH /ssh route.","Add SSH /ssh without rebuilding this inbound.":"Add SSH /ssh without rebuilding this inbound.","SSH migration attention":"SSH migration attention","Could not enable SSH /ssh":"Could not enable SSH /ssh","Select a VLESS/VMess inbound using XHTTP.":"Select a VLESS/VMess inbound using XHTTP.","Load the selected server configuration before enabling SSH.":"Load the selected server configuration before enabling SSH.","Shared SSH requires native Xray mode. Select Internal native emulator and save the mode first.":"Shared SSH requires native Xray mode. Select Internal native emulator and save the mode first.","Inbound {name} uses {security}, which native SSH XHTTP does not support. Use TLS or no TLS.":"Inbound {name} uses {security}, which native SSH XHTTP does not support. Use TLS or no TLS.","SSH is already enabled on /ssh by inbound {name}.":"SSH is already enabled on /ssh by inbound {name}.","Path /ssh is already used by inbound {name}. Edit that path first.":"Path /ssh is already used by inbound {name}. Edit that path first.","This inbound uses TLS but has no reusable certificate and key file paths.":"This inbound uses TLS but has no reusable certificate and key file paths.","Safe XHTTP migration":"Safe XHTTP migration","Enable SSH on /ssh":"Enable SSH on /ssh","Add SSH to the same endpoint without rebuilding {name}?":"Add SSH to the same endpoint without rebuilding {name}?","Listener":"Listener","Existing path preserved":"Existing path preserved","New SSH path":"New SSH path","Clients preserved":"Clients preserved","Enabling SSH…":"Enabling SSH…","Could not enable SSH: {error}":"Could not enable SSH: {error}","Migration was cancelled because it would alter the old inbound.":"Migration was cancelled because it would alter the old inbound.","SSH /ssh added to the draft without changing {name}.":"SSH /ssh added to the draft without changing {name}.","Enabling SSH /ssh without changing {name}…":"Enabling SSH /ssh without changing {name}…","The SSH route could not be saved. The old inbound was not changed.":"The SSH route could not be saved. The old inbound was not changed.","SSH /ssh was saved, but Xray could not restart. Use the Restart button after checking the Xray log.":"SSH /ssh was saved, but Xray could not restart. Use the Restart button after checking the Xray log.","SSH /ssh is active. The old inbound and all clients were preserved.":"SSH /ssh is active. The old inbound and all clients were preserved.","Configuration for this server was not loaded.":"Configuration for this server was not loaded.","Invalid visual config: {error}":"Invalid visual config: {error}","Xray could not restart.":"Xray could not restart.","Could not save configuration: {error}":"Could not save configuration: {error}","selected":"selected","this inbound":"this inbound","the old inbound":"the old inbound","untagged":"untagged"
+});
+Object.assign(I18N_TEXT["pt-BR"], {
+  "Infrastructure":"Infraestrutura","Infrastructure areas":"Áreas da infraestrutura","Infrastructure area":"Área da infraestrutura","Waiting for data":"Aguardando dados","Operation":"Operação","Accounts":"Contas","Active accounts":"Ativas","Online now":"Online agora","Counters":"Contadores","Save mode":"Salvar modo",
+  "Nodes":"Nós","Active nodes":"Ativos","SSH enabled":"SSH habilitado","Xray enabled":"Xray habilitado","Sessions":"Sessões","Processor":"Processador","Memory":"Memória","Network now":"Rede agora","Interfaces":"Interfaces","Today":"Hoje","This month":"Este mês","Recent period":"Período recente","Update":"Atualizar","Clear history":"Limpar histórico",
+  "Infrastructure workspace copy":"Gerencie nós, acompanhe a saúde do sistema e consulte tráfego em um único espaço.","Confirmation":"Confirmação","Confirm action":"Confirmar ação","Confirm":"Confirmar","Completed":"Concluído","Action failed":"Ação não concluída","Attention":"Atenção","Information":"Informação","Close":"Fechar",
+  "Loading SSH status…":"Carregando status SSH…","Loading":"Carregando","Could not load SSH status":"Não foi possível carregar o status SSH","Error":"Erro","Online":"Online","SSH data updated at {time}":"Dados SSH atualizados às {time}","Delete SSH account":"Excluir conta SSH","The active SSH sessions for this account will be disconnected.":"As sessões SSH ativas desta conta serão desconectadas.","Delete account":"Excluir conta",
+  "Loading Xray status…":"Carregando status do Xray…","Could not load Xray status":"Não foi possível carregar o status do Xray","Remove Xray client":"Remover cliente Xray","The client will lose access immediately after the configuration reload.":"O cliente perderá o acesso imediatamente após recarregar a configuração.","Remove client":"Remover cliente","Client removed successfully.":"Cliente removido com sucesso.","Xray client":"Cliente Xray",
+  "Loading infrastructure…":"Carregando infraestrutura…","Infrastructure loaded with fallback data":"Infraestrutura carregada com dados locais de segurança","{count} active nodes · updated {time}":"{count} nós ativos · atualizado às {time}","Delete managed server":"Excluir servidor gerenciado","Delete server \"{name}\"?":"Excluir o servidor \"{name}\"?","The remote node is not erased, but it will be removed from this panel and can no longer receive managed actions.":"O nó remoto não será apagado, mas será removido deste painel e deixará de receber ações gerenciadas.","Delete server":"Excluir servidor",
+  "Updating live status…":"Atualizando status ao vivo…","Live · updated {time}":"Ao vivo · atualizado às {time}","Error loading server status":"Erro ao carregar status do servidor","Clean live interface totals":"Limpar totais ao vivo das interfaces","Clean the live Interface totals now?":"Limpar agora os totais ao vivo das interfaces?","VnStat daily and monthly history will be preserved.":"O histórico diário e mensal do VnStat será preservado.","Clean totals":"Limpar totais","Live interface totals were cleaned.":"Os totais ao vivo das interfaces foram limpos.","Traffic counters":"Contadores de tráfego","Clean VnStat history":"Limpar histórico VnStat","Clean all daily and monthly traffic history?":"Limpar todo o histórico diário e mensal de tráfego?","Live interface totals are separate and will not be reset.":"Os totais ao vivo das interfaces são separados e não serão zerados.","Clean history":"Limpar histórico","VnStat history was cleaned.":"O histórico VnStat foi limpo.","Traffic history":"Histórico de tráfego","Clean panel log":"Limpar log do painel","Clean the current panel log now?":"Limpar agora o log atual do painel?","This only clears the panel log file. Automatic size-based cleanup remains enabled.":"Isso limpa somente o arquivo de log do painel. A limpeza automática por tamanho continuará ativa.","Clean log":"Limpar log",
+  "Delete reseller":"Excluir revendedor","Delete reseller \"{name}\"?":"Excluir o revendedor \"{name}\"?","Their owned access will be removed and active SSH sessions will be disconnected.":"Os acessos pertencentes a ele serão removidos e as sessões SSH ativas serão desconectadas.","Remove inbound":"Remover inbound","Remove inbound {name}?":"Remover o inbound {name}?","Clients attached only to this inbound will stop connecting after the configuration is saved.":"Clientes vinculados somente a este inbound deixarão de conectar após salvar a configuração.",
+  "This endpoint already has an SSH /ssh route.":"Este endpoint já possui uma rota SSH /ssh.","Add SSH /ssh without rebuilding this inbound.":"Adicione SSH /ssh sem recriar este inbound.","SSH migration attention":"Atenção na migração SSH","Could not enable SSH /ssh":"Não foi possível ativar SSH /ssh","Select a VLESS/VMess inbound using XHTTP.":"Selecione um inbound VLESS/VMess usando XHTTP.","Load the selected server configuration before enabling SSH.":"Carregue a configuração do servidor selecionado antes de ativar SSH.","Shared SSH requires native Xray mode. Select Internal native emulator and save the mode first.":"O SSH compartilhado exige o modo Xray nativo. Selecione Internal native emulator e salve o modo primeiro.","Inbound {name} uses {security}, which native SSH XHTTP does not support. Use TLS or no TLS.":"O inbound {name} usa {security}, que o SSH XHTTP nativo não suporta. Use TLS ou sem TLS.","SSH is already enabled on /ssh by inbound {name}.":"SSH já está ativado em /ssh pelo inbound {name}.","Path /ssh is already used by inbound {name}. Edit that path first.":"O caminho /ssh já é usado pelo inbound {name}. Edite esse caminho primeiro.","This inbound uses TLS but has no reusable certificate and key file paths.":"Este inbound usa TLS, mas não possui caminhos reutilizáveis para certificado e chave.","Safe XHTTP migration":"Migração XHTTP segura","Enable SSH on /ssh":"Ativar SSH em /ssh","Add SSH to the same endpoint without rebuilding {name}?":"Adicionar SSH ao mesmo endpoint sem recriar {name}?","Listener":"Listener","Existing path preserved":"Path existente preservado","New SSH path":"Novo path SSH","Clients preserved":"Clientes preservados","Enabling SSH…":"Ativando SSH…","Could not enable SSH: {error}":"Não foi possível ativar SSH: {error}","Migration was cancelled because it would alter the old inbound.":"A migração foi cancelada porque alteraria o inbound antigo.","SSH /ssh added to the draft without changing {name}.":"SSH /ssh foi adicionado ao rascunho sem alterar {name}.","Enabling SSH /ssh without changing {name}…":"Ativando SSH /ssh sem alterar {name}…","The SSH route could not be saved. The old inbound was not changed.":"A rota SSH não pôde ser salva. O inbound antigo não foi alterado.","SSH /ssh was saved, but Xray could not restart. Use the Restart button after checking the Xray log.":"SSH /ssh foi salvo, mas o Xray não conseguiu reiniciar. Verifique o log e use o botão Reiniciar.","SSH /ssh is active. The old inbound and all clients were preserved.":"SSH /ssh está ativo. O inbound antigo e todos os clientes foram preservados.","Configuration for this server was not loaded.":"A configuração deste servidor não foi carregada.","Invalid visual config: {error}":"Configuração visual inválida: {error}","Xray could not restart.":"O Xray não conseguiu reiniciar.","Could not save configuration: {error}":"Não foi possível salvar a configuração: {error}","selected":"selecionado","this inbound":"este inbound","the old inbound":"o inbound antigo","untagged":"sem tag"
+});
 const I18N_REVERSE = Object.fromEntries(SUPPORTED_LANGS.map(lang => [lang, Object.fromEntries(Object.entries(I18N_TEXT[lang] || {}).map(([k, v]) => [v, k]))]));
 let currentLang = detectInitialLanguage();
 let i18nTranslating = false;
@@ -298,6 +320,11 @@ const fMaxConn       = document.getElementById("fMaxConn");
 const fExpires       = document.getElementById("fExpires");
 const fUp            = document.getElementById("fUp");
 const fDown          = document.getElementById("fDown");
+const sshLiveStatus  = document.getElementById("sshLiveStatus");
+const sshMetricState = document.getElementById("sshMetricState");
+const sshMetricTotal = document.getElementById("sshMetricTotal");
+const sshMetricActive = document.getElementById("sshMetricActive");
+const sshMetricOnline = document.getElementById("sshMetricOnline");
 
 // Xray
 const xrayChip       = document.getElementById("xrayChip");
@@ -354,6 +381,14 @@ const managedConfigStatus = document.getElementById("managedConfigStatus");
 const serversStatusGrid = document.getElementById("serversStatusGrid");
 const serversStatusPageStatus = document.getElementById("serversStatusPageStatus");
 const serversStatusCountChip = document.getElementById("serversStatusCountChip");
+const fleetLiveStatus = document.getElementById("fleetLiveStatus");
+const fleetMetricNodes = document.getElementById("fleetMetricNodes");
+const fleetMetricActive = document.getElementById("fleetMetricActive");
+const fleetMetricSSH = document.getElementById("fleetMetricSSH");
+const fleetMetricXray = document.getElementById("fleetMetricXray");
+const fleetStatusOnline = document.getElementById("fleetStatusOnline");
+const fleetStatusOffline = document.getElementById("fleetStatusOffline");
+const fleetStatusSessions = document.getElementById("fleetStatusSessions");
 
 // Stats
 const cpuVal     = document.getElementById("cpuVal");
@@ -364,6 +399,8 @@ const memDetail  = document.getElementById("memDetail");
 const ifaceBody  = document.getElementById("ifaceBody");
 const ifaceSummary = document.getElementById("ifaceSummary");
 const statsUpdated = document.getElementById("statsUpdated");
+const statsNetVal = document.getElementById("statsNetVal");
+const statsIfaceVal = document.getElementById("statsIfaceVal");
 const resetIfaceStatsBtn = document.getElementById("resetIfaceStatsBtn");
 const dnsttDashboardCard = document.getElementById("dnsttDashboardCard");
 const dnsttHealthUpdated = document.getElementById("dnsttHealthUpdated");
@@ -381,8 +418,98 @@ const vnstatStatus = document.getElementById("vnstatStatus");
 const vnTodayTotal = document.getElementById("vnTodayTotal");
 const vnMonthTotal = document.getElementById("vnMonthTotal");
 const vnIfaceCount = document.getElementById("vnIfaceCount");
+const vnLatestPeriod = document.getElementById("vnLatestPeriod");
 const reloadVnstatBtn = document.getElementById("reloadVnstatBtn");
 const resetVnstatBtn = document.getElementById("resetVnstatBtn");
+
+// Shared panel-native dialog and toast surfaces. Destructive and migration
+// actions use these instead of browser confirm/alert prompts.
+const panelConfirmDialog = document.getElementById("panelConfirmDialog");
+const panelDialogCard = panelConfirmDialog?.querySelector(".panel-dialog-card");
+const panelDialogIcon = document.getElementById("panelDialogIcon");
+const panelDialogEyebrow = document.getElementById("panelDialogEyebrow");
+const panelDialogTitle = document.getElementById("panelDialogTitle");
+const panelDialogMessage = document.getElementById("panelDialogMessage");
+const panelDialogDetail = document.getElementById("panelDialogDetail");
+const panelDialogCancelBtn = document.getElementById("panelDialogCancelBtn");
+const panelDialogConfirmBtn = document.getElementById("panelDialogConfirmBtn");
+const panelToastStack = document.getElementById("panelToastStack");
+let panelDialogResolver = null;
+let panelDialogLastFocus = null;
+
+function closePanelConfirm(accepted = false) {
+  if (!panelConfirmDialog || panelConfirmDialog.classList.contains("hidden")) return;
+  panelConfirmDialog.classList.add("hidden");
+  panelConfirmDialog.setAttribute("aria-hidden", "true");
+  document.body.classList.remove("panel-dialog-open");
+  const resolver = panelDialogResolver;
+  panelDialogResolver = null;
+  resolver?.(!!accepted);
+  panelDialogLastFocus?.focus?.();
+  panelDialogLastFocus = null;
+}
+
+function panelConfirm(options = {}) {
+  const opts = typeof options === "string" ? { message: options } : options;
+  if (!panelConfirmDialog || !panelDialogConfirmBtn) return Promise.resolve(false);
+  if (panelDialogResolver) closePanelConfirm(false);
+  panelDialogLastFocus = document.activeElement;
+  const tone = opts.tone || (opts.danger ? "danger" : "default");
+  panelDialogCard?.classList.toggle("is-danger", tone === "danger");
+  panelDialogCard?.classList.toggle("is-success", tone === "success");
+  if (panelDialogIcon) panelDialogIcon.textContent = opts.icon || (tone === "danger" ? "!" : tone === "success" ? "✓" : "?");
+  if (panelDialogEyebrow) panelDialogEyebrow.textContent = opts.eyebrow || t("Confirmation");
+  if (panelDialogTitle) panelDialogTitle.textContent = opts.title || t("Confirm action");
+  if (panelDialogMessage) panelDialogMessage.textContent = opts.message || "";
+  if (panelDialogDetail) {
+    panelDialogDetail.textContent = opts.detail || "";
+    panelDialogDetail.classList.toggle("hidden", !opts.detail);
+  }
+  if (panelDialogCancelBtn) panelDialogCancelBtn.textContent = opts.cancelLabel || t("Cancel");
+  panelDialogConfirmBtn.textContent = opts.confirmLabel || t("Confirm");
+  panelDialogConfirmBtn.className = tone === "danger" ? "btn btn-danger" : "btn";
+  panelConfirmDialog.classList.remove("hidden");
+  panelConfirmDialog.setAttribute("aria-hidden", "false");
+  document.body.classList.add("panel-dialog-open");
+  setTimeout(() => panelDialogConfirmBtn.focus(), 0);
+  return new Promise(resolve => { panelDialogResolver = resolve; });
+}
+
+function showPanelToast(message, tone = "info", title = "", duration = 4800) {
+  if (!panelToastStack || !message) return null;
+  const toast = document.createElement("article");
+  toast.className = `panel-toast ${tone}`;
+  const icon = document.createElement("span");
+  icon.className = "panel-toast-icon";
+  icon.textContent = tone === "success" ? "✓" : tone === "error" ? "!" : tone === "warning" ? "i" : "•";
+  const copy = document.createElement("div");
+  copy.className = "panel-toast-copy";
+  const heading = document.createElement("strong");
+  heading.textContent = title || (tone === "success" ? t("Completed") : tone === "error" ? t("Action failed") : tone === "warning" ? t("Attention") : t("Information"));
+  const body = document.createElement("p");
+  body.textContent = message;
+  copy.append(heading, body);
+  const close = document.createElement("button");
+  close.className = "panel-toast-close";
+  close.type = "button";
+  close.setAttribute("aria-label", t("Close"));
+  close.textContent = "×";
+  const remove = () => toast.remove();
+  close.addEventListener("click", remove);
+  toast.append(icon, copy, close);
+  panelToastStack.appendChild(toast);
+  if (duration > 0) setTimeout(remove, duration);
+  return toast;
+}
+
+panelDialogCancelBtn?.addEventListener("click", () => closePanelConfirm(false));
+panelDialogConfirmBtn?.addEventListener("click", () => closePanelConfirm(true));
+panelConfirmDialog?.querySelector("[data-panel-dialog-close]")?.addEventListener("click", () => closePanelConfirm(false));
+document.addEventListener("keydown", event => {
+  if (!panelConfirmDialog || panelConfirmDialog.classList.contains("hidden")) return;
+  if (event.key === "Escape") closePanelConfirm(false);
+  if (event.key === "Enter" && document.activeElement !== panelDialogCancelBtn) closePanelConfirm(true);
+});
 
 // ─── API helper ───────────────────────────────────────────────────────────────
 async function api(path, opts = {}) {

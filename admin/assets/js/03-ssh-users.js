@@ -1,5 +1,6 @@
 // ─── SSH Users ────────────────────────────────────────────────────────────────
 document.getElementById("reloadUsersBtn").addEventListener("click", loadUsers);
+document.getElementById("sshHeroRefreshBtn")?.addEventListener("click", loadUsers);
 newUserBtn.addEventListener("click", () => {
   setFormCollapsed(false);
   userForm.reset();
@@ -26,6 +27,11 @@ function setFormCollapsed(v) {
 
 async function loadUsers() {
   userStatus.textContent = t("Loading…");
+  if (sshLiveStatus) {
+    sshLiveStatus.textContent = t("Loading SSH status…");
+    sshLiveStatus.className = "workspace-live-status is-loading";
+  }
+  if (sshMetricState) sshMetricState.textContent = t("Loading");
   try {
     const res  = await api(withServerParam("/api/users", selectedSSHServer()));
     const data = await res.json();
@@ -33,6 +39,11 @@ async function loadUsers() {
     userStatus.textContent = t("Loaded.");
     lastReload.textContent = t("Last reload: {time}", {time: new Date().toLocaleTimeString()});
   } catch (e) {
+    if (sshLiveStatus) {
+      sshLiveStatus.textContent = t("Could not load SSH status");
+      sshLiveStatus.className = "workspace-live-status is-error";
+    }
+    if (sshMetricState) sshMetricState.textContent = t("Error");
     if (e.message==="auth") { doAuthError(); } else { userStatus.textContent = t("Error loading users."); }
   }
 }
@@ -91,6 +102,14 @@ function renderUsers(users) {
   });
   const activeCount = Math.max(0, users.length - expiredCount);
   userCountChip.textContent = t("{count} total · {active} active · {online} online", {count: users.length, active: activeCount, online});
+  if (sshMetricTotal) sshMetricTotal.textContent = String(users.length);
+  if (sshMetricActive) sshMetricActive.textContent = String(activeCount);
+  if (sshMetricOnline) sshMetricOnline.textContent = String(online);
+  if (sshMetricState) sshMetricState.textContent = t("Online");
+  if (sshLiveStatus) {
+    sshLiveStatus.textContent = t("SSH data updated at {time}", {time:new Date().toLocaleTimeString()});
+    sshLiveStatus.className = "workspace-live-status is-ok";
+  }
 }
 
 function fillUserForm(u) {
@@ -143,7 +162,13 @@ userForm.addEventListener("submit", async e => {
 });
 
 async function deleteUser(username) {
-  if (!confirm(t("Delete user \"{name}\"?", {name: username}))) return;
+  const accepted = await panelConfirm({
+    tone:"danger", icon:"×", title:t("Delete SSH account"),
+    message:t("Delete user \"{name}\"?", {name: username}),
+    detail:t("The active SSH sessions for this account will be disconnected."),
+    confirmLabel:t("Delete account"),
+  });
+  if (!accepted) return;
   userStatus.textContent = t("Deleting {name}…", {name: username});
   try {
     const res = await api(withServerParam(`/api/users/delete?username=${encodeURIComponent(username)}`, selectedSSHServer()), { method:"DELETE" });
@@ -156,4 +181,3 @@ async function deleteUser(username) {
     else userStatus.textContent = t("Error deleting.");
   }
 }
-

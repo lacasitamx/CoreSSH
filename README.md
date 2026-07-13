@@ -13,6 +13,8 @@ DragonCoreSSH V40 é um painel/servidor em Go para SSH com HTTP Injection, paine
 - Configurador visual para VLESS e VMess
 - Editor visual completo de inbounds (criar, editar, duplicar e remover)
 - Endpoint XHTTP compartilhado no modo nativo: VLESS **ou** VMess em `/` e SSH em `/ssh`, usando o mesmo domínio/porta/TLS
+- Área compacta de infraestrutura com Servidores, Status, Monitoramento e Tráfego no mesmo seletor visual
+- Cartões de status ao vivo nos espaços SSH, Xray e Infraestrutura, com confirmações integradas ao painel
 - Contas de revendedor (reseller) com cota de usuários e escopo próprio
 - Gerenciamento multi-servidor (master/slave) direto pelo painel
 - API HTTP completa para bots/automações (ver **HTTP API Reference**)
@@ -60,6 +62,8 @@ Na aba **Xray → Configuração Xray → Visual**, o cartão **Shared XHTTP end
 O listener HTTP interno escolhe o caminho mais específico, portanto `/ssh` é encaminhado ao servidor SSH antes do inbound raiz. Todos os inbounds na mesma porta devem usar a mesma opção TLS e o mesmo certificado. Esse recurso exige o modo **Internal native emulator**; o binário Xray externo não reconhece o protocolo `ssh` específico do DragonCore.
 
 Para configurações XHTTP antigas, carregue a configuração visual e clique em **Ativar SSH /ssh** no cartão VLESS/VMess existente. O painel preserva o inbound original, seus clientes, path, host, modo, opções avançadas e TLS; cria apenas o inbound SSH correspondente na mesma porta e salva/reinicia o Xray. Não é necessário recriar clientes ou o endpoint.
+
+A confirmação dessa migração é exibida dentro do próprio painel. Se a gravação falhar, o inbound SSH temporário é removido do rascunho e o inbound antigo permanece intacto, permitindo tentar novamente após corrigir o erro exibido.
 
 ### Requisitos
 
@@ -537,6 +541,8 @@ DragonCoreSSH V40 is a Go-based SSH HTTP Injection server with a web panel, Post
 - Visual configurator for VLESS and VMess
 - Full visual inbound editor (create, edit, duplicate, and remove)
 - Native shared XHTTP endpoint: VLESS **or** VMess on `/` and SSH on `/ssh`, using the same domain/port/TLS
+- Compact infrastructure workspace with Servers, Status, Monitoring, and Traffic in one visual switcher
+- Live status cards across SSH, Xray, and Infrastructure, with panel-native confirmations
 - Reseller accounts with a user quota and self-scoped access
 - Multi-server (master/slave) management directly from the panel
 - Full HTTP API for bots/automations (see **HTTP API Reference**)
@@ -584,6 +590,8 @@ In **Xray → Xray Config → Visual**, the **Shared XHTTP endpoint** card creat
 The internal HTTP listener selects the most specific path, so `/ssh` reaches the SSH server before the root inbound. Every inbound sharing a port must use the same TLS setting and certificate. This feature requires **Internal native emulator** mode; the external Xray binary does not recognize DragonCore's custom `ssh` protocol.
 
 For older XHTTP configurations, load the visual configuration and click **Enable SSH /ssh** on the existing VLESS/VMess card. The panel preserves the original inbound, clients, path, host, mode, advanced options, and TLS; it only creates the matching SSH inbound on the same port and then saves/restarts Xray. There is no need to recreate clients or the endpoint.
+
+The migration confirmation is rendered inside the panel. If saving fails, the temporary SSH inbound is removed from the draft and the old inbound remains intact, so the operation can be retried after fixing the displayed error.
 
 ### Requirements
 

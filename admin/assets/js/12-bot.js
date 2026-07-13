@@ -320,7 +320,8 @@ async function botSavePlan(event) {
 }
 
 async function botDeletePlan(id) {
-  if (!confirm("Excluir este plano? Esta ação não pode ser desfeita.")) return;
+  const accepted = await panelConfirm({ tone:"danger", icon:"×", title:"Excluir plano", message:"Excluir este plano?", detail:"Esta ação não pode ser desfeita.", confirmLabel:"Excluir plano" });
+  if (!accepted) return;
   try {
     await botRequest(`/api/bot/plans?id=${encodeURIComponent(id)}`, { method: "DELETE" });
     await loadBotPlans();
@@ -396,7 +397,8 @@ async function botSavePkg(event) {
 }
 
 async function botDeletePkg(id) {
-  if (!confirm("Excluir este pacote de créditos?")) return;
+  const accepted = await panelConfirm({ tone:"danger", icon:"×", title:"Excluir pacote", message:"Excluir este pacote de créditos?", confirmLabel:"Excluir pacote" });
+  if (!accepted) return;
   try {
     await botRequest(`/api/bot/credit-packages?id=${encodeURIComponent(id)}`, { method: "DELETE" });
     await loadBotPkgs();
@@ -491,7 +493,13 @@ async function botSaveUserAction(event) {
 
 async function botToggleBlock(user) {
   const isBlocked = user.Role === "blocked";
-  if (!confirm(isBlocked ? "Desbloquear este cliente?" : "Bloquear este cliente no bot?")) return;
+  const accepted = await panelConfirm({
+    tone:isBlocked ? "default" : "danger", icon:isBlocked ? "✓" : "!",
+    title:isBlocked ? "Desbloquear cliente" : "Bloquear cliente",
+    message:isBlocked ? "Desbloquear este cliente?" : "Bloquear este cliente no bot?",
+    confirmLabel:isBlocked ? "Desbloquear" : "Bloquear",
+  });
+  if (!accepted) return;
   try {
     await botRequest("/api/bot/users", { method: "POST", body: JSON.stringify({ telegram_id: user.TelegramID, action: isBlocked ? "unblock" : "block" }) });
     await loadBotUsers();
@@ -551,7 +559,13 @@ async function botReprocess(id) {
 }
 
 async function botRefund(id) {
-  if (!confirm(`Isso apenas marca o pagamento #${id} como estornado no painel. Não envia um estorno financeiro ao Mercado Pago. Continuar?`)) return;
+  const accepted = await panelConfirm({
+    tone:"danger", icon:"!", title:"Marcar como estornado",
+    message:`Marcar o pagamento #${id} como estornado no painel?`,
+    detail:"Esta ação não envia um estorno financeiro ao Mercado Pago; ela altera somente o status interno.",
+    confirmLabel:"Marcar estornado",
+  });
+  if (!accepted) return;
   try {
     await botRequest("/api/bot/transactions", { method: "POST", body: JSON.stringify({ id, action: "refund" }) });
     await loadBotTxns();

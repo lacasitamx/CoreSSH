@@ -1,5 +1,5 @@
 // ─── Stats ────────────────────────────────────────────────────────────────────
-document.querySelector("[data-tab='stats']")?.addEventListener("click", loadStats);
+document.getElementById("refreshStatsBtn")?.addEventListener("click", loadStats);
 
 async function loadDashboardStats() {
   try {
@@ -115,6 +115,10 @@ async function loadDnsttHealth() {
 
 
 async function loadStats() {
+  if (statsUpdated) {
+    statsUpdated.textContent = t("Updating live status…");
+    statsUpdated.className = "workspace-live-status is-loading";
+  }
   try {
     const res = await api("/api/stats");
     if (!res.ok) throw new Error(await res.text());
@@ -139,24 +143,40 @@ async function loadStats() {
       ifaceBody.appendChild(tr);
     });
     if (ifaceSummary) ifaceSummary.textContent = `Total: ${fmtBytes(totRx)} rx / ${fmtBytes(totTx)} tx`;
-    if (statsUpdated) statsUpdated.textContent = "Updated: " + new Date().toLocaleTimeString();
+    const currentNetwork = ifaces.reduce((sum, item) => sum + Number(item.rx_mbps || 0) + Number(item.tx_mbps || 0), 0);
+    if (statsNetVal) statsNetVal.textContent = `${fmtMbps(currentNetwork)} Mb/s`;
+    if (statsIfaceVal) statsIfaceVal.textContent = String(ifaces.length);
+    if (statsUpdated) {
+      statsUpdated.textContent = t("Live · updated {time}", {time:new Date().toLocaleTimeString()});
+      statsUpdated.className = "workspace-live-status is-ok";
+    }
     await loadDnsttHealth();
   } catch (e) {
     if (e.message==="auth") doAuthError();
-    else if (statsUpdated) statsUpdated.textContent = "Erro ao carregar stats.";
+    else if (statsUpdated) {
+      statsUpdated.textContent = t("Error loading server status");
+      statsUpdated.className = "workspace-live-status is-error";
+    }
   }
 }
 
 resetIfaceStatsBtn?.addEventListener("click", resetInterfaceStats);
 
 async function resetInterfaceStats() {
-  if (!confirm("Clean the live Interface totals now? This does not delete VnStat daily/monthly history.")) return;
+  const accepted = await panelConfirm({
+    tone:"danger", icon:"⇅", title:t("Clean live interface totals"),
+    message:t("Clean the live Interface totals now?"),
+    detail:t("VnStat daily and monthly history will be preserved."),
+    confirmLabel:t("Clean totals"),
+  });
+  if (!accepted) return;
   resetIfaceStatsBtn.disabled = true;
   ifaceSummary.textContent = "Cleaning interface totals…";
   try {
     const res = await api("/api/stats/interfaces/reset", { method:"POST" });
     if (!res.ok) throw new Error(await res.text());
     ifaceSummary.textContent = "Interface totals cleaned. Auto-clean remains every 30 days.";
+    showPanelToast(t("Live interface totals were cleaned."), "success", t("Traffic counters"));
     loadStats();
   } catch (e) {
     if (e.message === "auth") doAuthError();
@@ -167,7 +187,6 @@ async function resetInterfaceStats() {
 }
 
 // ─── VnStat ───────────────────────────────────────────────────────────────────
-document.querySelector("[data-tab='vnstat']")?.addEventListener("click", loadVnstat);
 reloadVnstatBtn?.addEventListener("click", loadVnstat);
 resetVnstatBtn?.addEventListener("click", resetVnstatHistory);
 
@@ -188,6 +207,7 @@ function renderVnstatRows(body, rows, emptyLabel) {
 
 async function loadVnstat() {
   vnstatStatus.textContent = "Loading VnStat usage…";
+  vnstatStatus.className = "workspace-live-status is-loading";
   try {
     const res = await api("/api/vnstat?days=31&months=12");
     if (!res.ok) throw new Error(await res.text());
@@ -208,21 +228,33 @@ async function loadVnstat() {
     vnTodayTotal.textContent = fmtBytes(todayTotal);
     vnMonthTotal.textContent = fmtBytes(monthTotal);
     vnIfaceCount.textContent = String(data.interface_count ?? ifaces.size ?? 0);
+    if (vnLatestPeriod) vnLatestPeriod.textContent = daily[0]?.period || monthly[0]?.period || "--";
     vnstatStatus.textContent = "Updated: " + new Date().toLocaleTimeString() + " · history is kept until manually cleaned.";
+    vnstatStatus.className = "workspace-live-status is-ok";
   } catch (e) {
     if (e.message === "auth") doAuthError();
-    else vnstatStatus.textContent = "Error loading VnStat usage: " + e.message;
+    else {
+      vnstatStatus.textContent = "Error loading VnStat usage: " + e.message;
+      vnstatStatus.className = "workspace-live-status is-error";
+    }
   }
 }
 
 async function resetVnstatHistory() {
-  if (!confirm("Clean all VnStat daily/monthly usage history? This does not reset the live Interface totals.")) return;
+  const accepted = await panelConfirm({
+    tone:"danger", icon:"×", title:t("Clean VnStat history"),
+    message:t("Clean all daily and monthly traffic history?"),
+    detail:t("Live interface totals are separate and will not be reset."),
+    confirmLabel:t("Clean history"),
+  });
+  if (!accepted) return;
   resetVnstatBtn.disabled = true;
   vnstatStatus.textContent = "Cleaning VnStat history…";
   try {
     const res = await api("/api/vnstat/reset", { method:"POST" });
     if (!res.ok) throw new Error(await res.text());
     vnstatStatus.textContent = "VnStat history cleaned.";
+    showPanelToast(t("VnStat history was cleaned."), "success", t("Traffic history"));
     loadVnstat();
   } catch (e) {
     if (e.message === "auth") doAuthError();
@@ -260,7 +292,13 @@ async function loadSystemLogs() {
 
 async function clearPanelLog() {
   const st = document.getElementById("systemLogStatus");
-  if (!confirm("Clean the panel log now? Logs are already auto-cleaned after 1 MiB.")) return;
+  const accepted = await panelConfirm({
+    tone:"danger", icon:"×", title:t("Clean panel log"),
+    message:t("Clean the current panel log now?"),
+    detail:t("This only clears the panel log file. Automatic size-based cleanup remains enabled."),
+    confirmLabel:t("Clean log"),
+  });
+  if (!accepted) return;
   st.textContent = "Cleaning panel log…";
   try {
     const res = await api("/api/system/logs/reset", { method:"POST" });

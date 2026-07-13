@@ -161,7 +161,8 @@ function renderWzInbounds() {
       sshBtn.type = "button";
       sshBtn.textContent = t(sshRoute ? "SSH /ssh enabled" : "Enable SSH /ssh");
       sshBtn.disabled = !!sshRoute;
-      sshBtn.onclick = () => enableSSHForWzInbound(i);
+      sshBtn.title = sshRoute ? t("This endpoint already has an SSH /ssh route.") : t("Add SSH /ssh without rebuilding this inbound.");
+      sshBtn.onclick = () => enableSSHForWzInbound(i, true, sshBtn);
       actions.appendChild(sshBtn);
     }
     const duplicateBtn = document.createElement("button");
@@ -178,8 +179,14 @@ function renderWzInbounds() {
     delBtn.className = "btn btn-danger btn-sm";
     delBtn.type = "button";
     delBtn.textContent = "Remover";
-    delBtn.onclick = () => {
-      if (!confirm(`Remover o inbound ${ib.tag || "untagged"}?`)) return;
+    delBtn.onclick = async () => {
+      const accepted = await panelConfirm({
+        tone:"danger", icon:"×", title:t("Remove inbound"),
+        message:t("Remove inbound {name}?", {name:ib.tag || "untagged"}),
+        detail:t("Clients attached only to this inbound will stop connecting after the configuration is saved."),
+        confirmLabel:t("Remove inbound"),
+      });
+      if (!accepted) return;
       wzInbounds.splice(i,1);
       if (wzEditingIndex === i) wzCancelInbound();
       else if (wzEditingIndex > i) wzEditingIndex--;
@@ -346,30 +353,38 @@ function uniqueLegacySSHTag(source) {
 // modifying the original inbound. The companion inherits its listen address,
 // port, host, XHTTP mode, advanced transport options, TLS certificate, and key;
 // only its protocol, empty SSH settings, tag, and /ssh path differ.
-async function enableSSHForWzInbound(index, applyNow = true) {
+function reportSSHMigration(message, tone = "error") {
+  const st = document.getElementById("wzStatus");
+  if (st) st.textContent = message;
+  if (typeof showPanelToast === "function") {
+    showPanelToast(message, tone, tone === "success" ? t("SSH /ssh enabled") : tone === "warning" ? t("SSH migration attention") : t("Could not enable SSH /ssh"));
+  }
+}
+
+async function enableSSHForWzInbound(index, applyNow = true, trigger = null) {
   const st = document.getElementById("wzStatus");
   const source = wzInbounds[index];
   const selectedID = selectedXrayServer() || "local";
   if (!source || !visualXHTTPSettings(source) || !["vless", "vmess"].includes(String(source.protocol || "").toLowerCase())) {
-    if (st) st.textContent = "Selecione um inbound VLESS/VMess com transporte XHTTP.";
+    reportSSHMigration(t("Select a VLESS/VMess inbound using XHTTP."));
     return false;
   }
   if (!wzLoadedConfigText || String(wzLoadedServerID || "") !== String(selectedID)) {
-    if (st) st.textContent = "Carregue a configuração do servidor selecionado antes de ativar SSH.";
+    reportSSHMigration(t("Load the selected server configuration before enabling SSH."));
     return false;
   }
   if ((document.getElementById("xCoreMode")?.value || "native") !== "native") {
-    if (st) st.textContent = "SSH compartilhado requer o modo Xray nativo.";
+    reportSSHMigration(t("Shared SSH requires native Xray mode. Select Internal native emulator and save the mode first."));
     return false;
   }
   const security = String(source.streamSettings?.security || "").toLowerCase();
   if (security && security !== "none" && security !== "tls") {
-    if (st) st.textContent = `O inbound ${source.tag || "selecionado"} usa ${security}, que não é suportado pelo SSH XHTTP nativo. Use TLS ou sem TLS.`;
+    reportSSHMigration(t("Inbound {name} uses {security}, which native SSH XHTTP does not support. Use TLS or no TLS.", {name:source.tag || t("selected"), security}));
     return false;
   }
   const existingSSH = findSSHRouteForInbound(source);
   if (existingSSH) {
-    if (st) st.textContent = `SSH já está ativado em /ssh pelo inbound ${existingSSH.tag}.`;
+    reportSSHMigration(t("SSH is already enabled on /ssh by inbound {name}.", {name:existingSSH.tag}), "success");
     return true;
   }
   const pathConflict = wzInbounds.find(candidate => {
@@ -377,17 +392,37 @@ async function enableSSHForWzInbound(index, applyNow = true) {
     return sameVisualEndpoint(source, candidate) && !!xh && normalizeVisualPath(xh.path) === "/ssh";
   });
   if (pathConflict) {
-    if (st) st.textContent = `O caminho /ssh já é usado pelo inbound ${pathConflict.tag || "sem tag"}. Edite esse caminho primeiro.`;
+    reportSSHMigration(t("Path /ssh is already used by inbound {name}. Edit that path first.", {name:pathConflict.tag || t("untagged")}));
     return false;
   }
   if (security === "tls") {
     const certificate = source.streamSettings?.tlsSettings?.certificates?.[0] || {};
     if (!certificate.certificateFile || !certificate.keyFile) {
-      if (st) st.textContent = "O inbound usa TLS, mas não possui arquivos de certificado e chave reutilizáveis.";
+      reportSSHMigration(t("This inbound uses TLS but has no reusable certificate and key file paths."));
       return false;
     }
   }
-  if (applyNow && !confirm(`Ativar SSH em /ssh no mesmo endpoint de ${source.tag || "este inbound"}?\n\nA configuração antiga e todos os clientes serão mantidos. O Xray será reiniciado para aplicar.`)) return false;
+  if (applyNow) {
+    const xhttp = visualXHTTPSettings(source) || {};
+    const clients = Array.isArray(source.settings?.clients) ? source.settings.clients.length : 0;
+    const accepted = await panelConfirm({
+      tone:"success", icon:"SSH", eyebrow:t("Safe XHTTP migration"), title:t("Enable SSH on /ssh"),
+      message:t("Add SSH to the same endpoint without rebuilding {name}?", {name:source.tag || t("this inbound")}),
+      detail:[
+        `${t("Listener")}: ${source.listen || "0.0.0.0"}:${source.port}`,
+        `${t("Existing path preserved")}: ${normalizeVisualPath(xhttp.path)}`,
+        `${t("New SSH path")}: /ssh`,
+        `${t("Clients preserved")}: ${clients}`,
+        `${t("Security")}: ${security === "tls" ? "TLS" : t("No TLS")}`,
+      ].join("\n"),
+      confirmLabel:t("Enable SSH /ssh"),
+    });
+    if (!accepted) return false;
+  }
+  if (trigger) {
+    trigger.disabled = true;
+    trigger.textContent = t("Enabling SSH…");
+  }
 
   const streamSettings = cloneJsonSafe(source.streamSettings || {});
   const settingsKey = streamSettings.xhttpSettings ? "xhttpSettings" : (streamSettings.splithttpSettings ? "splithttpSettings" : "xhttpSettings");
@@ -400,28 +435,45 @@ async function enableSSHForWzInbound(index, applyNow = true) {
     settings: {},
     streamSettings,
   };
+  const previousDirty = wzDirty;
   const before = cloneJsonSafe(source);
   wzInbounds.push(sshInbound);
   try {
     validateVisualInbounds(wzInbounds);
   } catch (error) {
     wzInbounds.pop();
-    if (st) st.textContent = `Não foi possível ativar SSH: ${error.message}`;
+    if (trigger) { trigger.disabled = false; trigger.textContent = t("Enable SSH /ssh"); }
+    reportSSHMigration(t("Could not enable SSH: {error}", {error:error.message}));
     return false;
   }
   if (JSON.stringify(source) !== JSON.stringify(before)) {
     wzInbounds.pop();
-    if (st) st.textContent = "A migração foi cancelada porque alteraria o inbound antigo.";
+    if (trigger) { trigger.disabled = false; trigger.textContent = t("Enable SSH /ssh"); }
+    reportSSHMigration(t("Migration was cancelled because it would alter the old inbound."));
     return false;
   }
   wzDirty = true;
   renderWzInbounds();
   if (!applyNow) {
-    if (st) st.textContent = `SSH /ssh adicionado ao rascunho sem alterar ${source.tag || "o inbound antigo"}.`;
+    if (st) st.textContent = t("SSH /ssh added to the draft without changing {name}.", {name:source.tag || t("the old inbound")});
     return true;
   }
-  if (st) st.textContent = `Ativando SSH /ssh sem alterar ${source.tag || "o inbound antigo"}…`;
-  return await applyWizardConfig();
+  if (st) st.textContent = t("Enabling SSH /ssh without changing {name}…", {name:source.tag || t("the old inbound")});
+  const result = await applyWizardConfig();
+  if (!result?.saved) {
+    const addedIndex = wzInbounds.indexOf(sshInbound);
+    if (addedIndex >= 0) wzInbounds.splice(addedIndex, 1);
+    wzDirty = previousDirty;
+    renderWzInbounds();
+    reportSSHMigration(result?.error || t("The SSH route could not be saved. The old inbound was not changed."));
+    return false;
+  }
+  if (!result.restarted) {
+    reportSSHMigration(t("SSH /ssh was saved, but Xray could not restart. Use the Restart button after checking the Xray log."), "warning");
+    return true;
+  }
+  reportSSHMigration(t("SSH /ssh is active. The old inbound and all clients were preserved."), "success");
+  return true;
 }
 
 function validateVisualInbounds(inbounds) {
@@ -866,7 +918,7 @@ async function applyWizardConfig() {
   if (String(wzLoadedServerID || "") !== String(selectedID) || !wzLoadedConfigText) {
     if (st) st.textContent = `Reloading config from ${target} before saving...`;
     loadWizardFromConfig();
-    return false;
+    return { saved:false, restarted:false, error:t("Configuration for this server was not loaded.") };
   }
 
   let cfg;
@@ -874,7 +926,7 @@ async function applyWizardConfig() {
     cfg = buildConfigFromVisualEditor();
   } catch(e) {
     if (st) st.textContent = `Invalid visual config: ${e.message}`;
-    return false;
+    return { saved:false, restarted:false, error:t("Invalid visual config: {error}", {error:e.message}) };
   }
 
   if (st) st.textContent = `Saving config to ${target}...`;
@@ -892,10 +944,10 @@ async function applyWizardConfig() {
       ? `Config saved on ${target} and Xray restarted.`
       : `Config saved on ${target}, but Xray could not restart. Check Xray logs before editing again.`;
     setTimeout(() => { loadXrayStatus(); loadInbounds({ force: true }); }, 700);
-    return !!restarted;
+    return { saved:true, restarted:!!restarted, error:restarted ? "" : t("Xray could not restart.") };
   } catch (e) {
     if (e.message==="auth") doAuthError();
     else if (st) st.textContent = "Error: " + e.message;
-    return false;
+    return { saved:false, restarted:false, error:t("Could not save configuration: {error}", {error:e.message}) };
   }
 }

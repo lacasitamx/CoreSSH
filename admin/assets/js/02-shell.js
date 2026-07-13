@@ -4,14 +4,59 @@ const tabTitles = {
   ssh: ["Accounts", "SSH / SlowDNS"],
   xray: ["Accounts", "Xray Users"],
   resellers: ["Administration", "Resellers"],
-  servers: ["Administration", "Servers"],
-  "servers-status": ["Administration", "Servers Status"],
-  stats: ["Server", "Monitoring"],
-  vnstat: ["Traffic", "VnStat"],
+  servers: ["Infrastructure", "Servers"],
+  "servers-status": ["Infrastructure", "Servers Status"],
+  stats: ["Infrastructure", "Monitoring"],
+  vnstat: ["Infrastructure", "Traffic"],
   logs: ["System", "Logs"],
   bot: ["Vendas", "Bot / Telegram"],
   server: ["System", "Settings"],
 };
+const infrastructureTabs = ["servers", "servers-status", "stats", "vnstat"];
+const infrastructureNavItems = [
+  { tab:"servers", icon:"▣", label:"Servers" },
+  { tab:"servers-status", icon:"●", label:"Status" },
+  { tab:"stats", icon:"◴", label:"Server" },
+  { tab:"vnstat", icon:"⇅", label:"Traffic" },
+];
+
+function syncInfrastructureNavigation(tab = currentTab) {
+  if (!infrastructureTabs.includes(tab)) return;
+  document.querySelectorAll("[data-infra-tab]").forEach(button => button.classList.toggle("active", button.dataset.infraTab === tab));
+  document.querySelectorAll(".infra-section-select").forEach(select => { select.value = tab; });
+}
+
+function mountInfrastructureNavigation() {
+  document.querySelectorAll(".infra-nav-mount").forEach(mount => {
+    const shell = document.createElement("div");
+    shell.className = "infra-nav-shell";
+    const nav = document.createElement("nav");
+    nav.className = "infra-section-nav";
+    nav.setAttribute("aria-label", t("Infrastructure areas"));
+    const select = document.createElement("select");
+    select.className = "infra-section-select";
+    select.setAttribute("aria-label", t("Infrastructure area"));
+    infrastructureNavItems.forEach(item => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.infraTab = item.tab;
+      const icon = document.createElement("span");
+      icon.textContent = item.icon;
+      button.append(icon, document.createTextNode(" " + t(item.label)));
+      button.addEventListener("click", () => selectTab(item.tab));
+      nav.appendChild(button);
+      const option = document.createElement("option");
+      option.value = item.tab;
+      option.textContent = t(item.label);
+      select.appendChild(option);
+    });
+    select.addEventListener("change", () => selectTab(select.value));
+    shell.append(nav, select);
+    mount.replaceChildren(shell);
+  });
+  syncInfrastructureNavigation();
+}
+
 function updatePageHeading() {
   const [eyebrow, title] = tabTitles[currentTab] || ["Dashboard", currentTab];
   if (pageEyebrow) pageEyebrow.textContent = t(eyebrow);
@@ -21,12 +66,14 @@ function updatePageHeading() {
 function selectTab(tab) {
   currentTab = tab;
   const pane = document.getElementById("tab-" + tab);
-  const btn = document.querySelector(`.tab-btn[data-tab="${tab}"]`);
-  if (!pane || !btn) return;
+  const navTab = infrastructureTabs.includes(tab) ? "servers" : tab;
+  const btn = document.querySelector(`.tab-btn[data-tab="${navTab}"]`);
+  if (!pane) return;
   document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
   document.querySelectorAll(".tab-pane").forEach(p => p.classList.remove("active"));
-  btn.classList.add("active");
+  btn?.classList.add("active");
   pane.classList.add("active");
+  syncInfrastructureNavigation(tab);
   updatePageHeading();
   document.body.classList.remove("sidebar-open");
 
@@ -37,12 +84,14 @@ function selectTab(tab) {
     if (currentRole === "superadmin") loadWizardFromConfig();
   }
   if (tab === "stats" && currentRole === "superadmin") loadStats();
+  if (tab === "vnstat" && currentRole === "superadmin") loadVnstat();
   if (tab === "servers-status" && currentRole === "superadmin") loadServersStatus();
   if (tab === "resellers" && currentRole === "superadmin") loadResellers();
   if (tab === "servers" && currentRole === "superadmin") loadServers();
   if (tab === "bot" && currentRole === "superadmin" && typeof loadBotTab === "function") loadBotTab();
 }
 
+mountInfrastructureNavigation();
 document.querySelectorAll(".tab-btn").forEach(btn => btn.addEventListener("click", () => selectTab(btn.dataset.tab)));
 menuToggle?.addEventListener("click", () => document.body.classList.add("sidebar-open"));
 drawerBackdrop?.addEventListener("click", () => document.body.classList.remove("sidebar-open"));

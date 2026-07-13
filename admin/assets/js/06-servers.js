@@ -19,8 +19,6 @@ document.getElementById("reloadServersBtn")?.addEventListener("click", loadServe
 document.getElementById("reloadServersBtn2")?.addEventListener("click", loadServers);
 document.getElementById("refreshServersBtn")?.addEventListener("click", loadServers);
 document.getElementById("refreshServersStatusBtn")?.addEventListener("click", () => loadServersStatus());
-document.querySelector("[data-tab='servers']")?.addEventListener("click", loadServers);
-document.querySelector("[data-tab='servers-status']")?.addEventListener("click", () => loadServersStatus());
 document.getElementById("clearServerFormBtn")?.addEventListener("click", clearServerForm);
 document.getElementById("testServerBtn")?.addEventListener("click", testServerForm);
 document.getElementById("backToServersBtn")?.addEventListener("click", () => showServerListView());
@@ -34,17 +32,39 @@ serverForm?.addEventListener("submit", async e => {
 });
 
 async function loadServers() {
+  let loadError = null;
+  if (fleetLiveStatus) {
+    fleetLiveStatus.textContent = t("Loading infrastructure…");
+    fleetLiveStatus.className = "workspace-live-status is-loading";
+  }
   try {
     const res = await api("/api/servers");
     if (!res.ok) throw new Error(await res.text());
     serversCache = await res.json() || [];
   } catch (e) {
+    loadError = e;
     serversCache = [{ id:"local", name:"Master node", base_url:"local", enable_ssh:true, enable_xray:true, is_active:true, is_local:true }];
     if (serversStatus) serversStatus.textContent = "Error loading servers: " + e.message;
     if (e.message === "auth") doAuthError();
   }
   renderServerSelectors();
   renderServersTable();
+  updateFleetOverview(loadError);
+}
+
+function updateFleetOverview(error = null) {
+  const rows = Array.isArray(serversCache) ? serversCache.filter(Boolean) : [];
+  const active = rows.filter(server => server.is_active !== false);
+  if (fleetMetricNodes) fleetMetricNodes.textContent = String(rows.length);
+  if (fleetMetricActive) fleetMetricActive.textContent = String(active.length);
+  if (fleetMetricSSH) fleetMetricSSH.textContent = String(active.filter(server => server.enable_ssh || server.is_local).length);
+  if (fleetMetricXray) fleetMetricXray.textContent = String(active.filter(server => server.enable_xray || server.is_local).length);
+  if (fleetLiveStatus) {
+    fleetLiveStatus.textContent = error
+      ? t("Infrastructure loaded with fallback data")
+      : t("{count} active nodes · updated {time}", {count:active.length, time:new Date().toLocaleTimeString()});
+    fleetLiveStatus.className = `workspace-live-status ${error ? "is-warn" : "is-ok"}`;
+  }
 }
 
 
@@ -57,6 +77,7 @@ async function loadServersStatus(options = {}) {
     if (serversStatusCountChip) serversStatusCountChip.textContent = String(nodes.length);
     if (!silent) {
       serversStatusPageStatus && (serversStatusPageStatus.textContent = "Loading servers...");
+      if (serversStatusPageStatus) serversStatusPageStatus.className = "workspace-live-status is-loading";
       serversStatusGrid.innerHTML = `<div class="hint">Loading servers...</div>`;
     }
     const rows = await Promise.all(nodes.map(loadSingleServerStatus));
@@ -64,11 +85,23 @@ async function loadServersStatus(options = {}) {
     if (serversStatusPageStatus) {
       const online = rows.filter(r => r.ok).length;
       serversStatusPageStatus.textContent = `${online}/${rows.length} servers online - Updated ${new Date().toLocaleTimeString()}`;
+      serversStatusPageStatus.className = `workspace-live-status ${online === rows.length ? "is-ok" : online > 0 ? "is-warn" : "is-error"}`;
     }
+    const online = rows.filter(row => row.ok).length;
+    const sessions = rows.reduce((total, row) => {
+      const ssh = (Array.isArray(row.users) ? row.users : []).reduce((sum, user) => sum + Number(user.active_conns || 0), 0);
+      let xray = 0;
+      (Array.isArray(row.inbounds) ? row.inbounds : []).forEach(inbound => { xray += (inbound.clients || []).filter(client => !!client.online).length; });
+      return total + ssh + xray;
+    }, 0);
+    if (fleetStatusOnline) fleetStatusOnline.textContent = String(online);
+    if (fleetStatusOffline) fleetStatusOffline.textContent = String(Math.max(0, rows.length - online));
+    if (fleetStatusSessions) fleetStatusSessions.textContent = String(sessions);
   } catch (e) {
     if (e.message === "auth") doAuthError();
     else {
       serversStatusPageStatus && (serversStatusPageStatus.textContent = "Error loading server status: " + e.message);
+      if (serversStatusPageStatus) serversStatusPageStatus.className = "workspace-live-status is-error";
       if (!silent) serversStatusGrid.innerHTML = `<div class="hint">Error loading server status.</div>`;
     }
   }
@@ -321,7 +354,13 @@ async function testServerForm() {
 }
 
 async function deleteServer(s) {
-  if (!confirm(`Delete server "${s.name || s.base_url}"?`)) return;
+  const accepted = await panelConfirm({
+    tone:"danger", icon:"×", title:t("Delete managed server"),
+    message:t("Delete server \"{name}\"?", {name:s.name || s.base_url}),
+    detail:t("The remote node is not erased, but it will be removed from this panel and can no longer receive managed actions."),
+    confirmLabel:t("Delete server"),
+  });
+  if (!accepted) return;
   try {
     const res = await api(`/api/servers?id=${encodeURIComponent(s.id)}`, { method:"DELETE" });
     if (!res.ok && res.status !== 204) throw new Error(await res.text());
@@ -665,5 +704,3 @@ async function loadManagedDnsttPubkey() {
     else if (st) st.textContent = "Error: " + e.message;
   }
 }
-
-

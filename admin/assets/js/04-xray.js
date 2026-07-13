@@ -12,12 +12,17 @@ document.getElementById("xLoadLogsBtn").addEventListener("click", loadXrayLogs);
 
 
 async function loadXrayStatus() {
+  if (xrayChip) {
+    xrayChip.textContent = t("Loading Xray status…");
+    xrayChip.className = "workspace-live-status is-loading";
+  }
   try {
     const res = await api(withServerParam("/api/xray/status", selectedXrayServer()));
+    if (!res.ok) throw new Error((await res.text()).trim() || `HTTP ${res.status}`);
     const s   = await res.json();
     const run = !!s.running;
     xrayChip.textContent  = run ? t("running") : (s.enabled ? t("stopped") : t("disabled"));
-    xrayChip.className    = "chip " + (run ? "green" : "red");
+    xrayChip.className    = "workspace-live-status " + (run ? "is-ok" : (s.enabled ? "is-warn" : "is-error"));
     xRunning.textContent  = run ? t("Running") : t("Stopped");
     xRunning.style.color  = run ? "var(--success)" : "var(--danger)";
     xPID.textContent      = s.pid    || (s.native ? "internal" : "--");
@@ -43,7 +48,15 @@ async function loadXrayStatus() {
     if (dashServerStatus) dashServerStatus.textContent = (serversCache || []).length > 1 ? `${(serversCache || []).filter(n => n.is_active !== false).length} nodes configured` : (run ? t("{count} online", {count: 1}) : (s.enabled ? t("stopped") : t("disabled")));
     renderDashboardCounters();
     if (s.error) xStatus.textContent = t("Error: {error}", {error: s.error});
-  } catch (e) { if (e.message==="auth") doAuthError(); }
+  } catch (e) {
+    if (xrayChip) {
+      xrayChip.textContent = t("Could not load Xray status");
+      xrayChip.className = "workspace-live-status is-error";
+    }
+    if (xRunning) { xRunning.textContent = t("Error"); xRunning.style.color = "var(--danger)"; }
+    if (xStatus && e.message !== "auth") xStatus.textContent = t("Error: {error}", {error:e.message});
+    if (e.message==="auth") doAuthError();
+  }
 }
 
 async function saveXrayCoreMode() {
@@ -307,11 +320,18 @@ async function addClient(tag, formKey = tag) {
 }
 
 async function removeClient(tag, uuid) {
-  if (!confirm(t("Remove client {id}… from {tag}?", {id: uuid.slice(0,8), tag}))) return;
+  const accepted = await panelConfirm({
+    tone:"danger", icon:"×", title:t("Remove Xray client"),
+    message:t("Remove client {id}… from {tag}?", {id: uuid.slice(0,8), tag}),
+    detail:t("The client will lose access immediately after the configuration reload."),
+    confirmLabel:t("Remove client"),
+  });
+  if (!accepted) return;
   try {
     const res = await api(withServerParam(`/api/xray/clients/remove?inbound_tag=${encodeURIComponent(tag)}&uuid=${encodeURIComponent(uuid)}`, selectedXrayServer()), { method:"DELETE" });
     if (!res.ok && res.status !== 204) throw new Error(await res.text());
     xStatus.textContent = t("Client removed. Native mode hot-reloads without restart.");
+    showPanelToast(t("Client removed successfully."), "success", t("Xray client"));
     setTimeout(() => { loadInbounds({ force: true }); if (currentRole === "reseller") loadMe(); }, 1500);
   } catch (e) {
     if (e.message==="auth") doAuthError();
