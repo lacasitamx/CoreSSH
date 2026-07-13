@@ -1322,6 +1322,9 @@ func NewStore(dsn string) (*Store, error) {
 	if err := store.EnsureManagedServersSchema(ctx); err != nil {
 		return nil, err
 	}
+	if err := store.EnsureBotSchema(ctx); err != nil {
+		return nil, err
+	}
 	return store, nil
 }
 
@@ -1607,6 +1610,19 @@ func startAdminAPI(store *Store, addr string, adminDir string) {
 
 	// Superadmin-only: server config (read/write config.json + live banner apply)
 	mux.Handle("/api/server/config", saSession(http.HandlerFunc(handleServerConfig)))
+
+	// Superadmin-only: Telegram sales bot management
+	mux.Handle("/api/bot/config", saSession(http.HandlerFunc(handleBotConfig(store))))
+	mux.Handle("/api/bot/plans", saSession(http.HandlerFunc(handleBotPlans(store))))
+	mux.Handle("/api/bot/credit-packages", saSession(http.HandlerFunc(handleBotCreditPackages(store))))
+	mux.Handle("/api/bot/users", saSession(http.HandlerFunc(handleBotUsers(store))))
+	mux.Handle("/api/bot/transactions", saSession(http.HandlerFunc(handleBotTransactions(store))))
+	mux.Handle("/api/bot/settings", saSession(http.HandlerFunc(handleBotSettings(store))))
+	mux.Handle("/api/bot/test", saSession(http.HandlerFunc(handleBotTest(store))))
+
+	// Public: payment + Telegram webhooks (secured by signature/secret inside).
+	mux.Handle("/api/mp/webhook", http.HandlerFunc(handleMPWebhook))
+	mux.Handle("/api/telegram/webhook", http.HandlerFunc(handleTelegramWebhook))
 
 	// Public: user/UUID check — no auth, CORS *.
 	mux.Handle("/check", http.HandlerFunc(handleCheck))
@@ -2871,6 +2887,8 @@ func main() {
 			log.Printf("failed to load admin users: %v", err)
 		}
 		startResellerExpiryChecker(store)
+		// Start the Telegram sales bot if enabled in the DB config.
+		startBotService(store)
 	}
 
 	// Optional: initialize interface totals persistence (best-effort).

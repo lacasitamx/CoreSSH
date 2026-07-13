@@ -9,6 +9,7 @@ const tabTitles = {
   stats: ["Server", "Monitoring"],
   vnstat: ["Traffic", "VnStat"],
   logs: ["System", "Logs"],
+  bot: ["Vendas", "Bot / Telegram"],
   server: ["System", "Settings"],
 };
 function updatePageHeading() {
@@ -39,6 +40,7 @@ function selectTab(tab) {
   if (tab === "servers-status" && currentRole === "superadmin") loadServersStatus();
   if (tab === "resellers" && currentRole === "superadmin") loadResellers();
   if (tab === "servers" && currentRole === "superadmin") loadServers();
+  if (tab === "bot" && currentRole === "superadmin" && typeof loadBotTab === "function") loadBotTab();
 }
 
 document.querySelectorAll(".tab-btn").forEach(btn => btn.addEventListener("click", () => selectTab(btn.dataset.tab)));

@@ -57,6 +57,7 @@
         <button class="tab-btn superadmin-only hidden" data-tab="stats"><span class="nav-icon">📊</span><span>Servidor</span></button>
         <button class="tab-btn superadmin-only hidden" data-tab="vnstat"><span class="nav-icon">⇅</span><span>Tráfego</span></button>
         <button class="tab-btn superadmin-only hidden" data-tab="logs"><span class="nav-icon">☰</span><span>Logs</span></button>
+        <button class="tab-btn superadmin-only hidden" data-tab="bot"><span class="nav-icon">🤖</span><span>Bot / Vendas</span></button>
         <button class="tab-btn superadmin-only hidden" data-tab="server"><span class="nav-icon">⚙</span><span>Configurações</span></button>
       </nav>
     </aside>
@@ -948,6 +949,177 @@
     </div>
   </div><!-- /tab-logs -->
 
+  <!-- ═══════════ Bot / Vendas Tab (superadmin only) ═══════════ -->
+  <div class="tab-pane" id="tab-bot">
+
+    <!-- Config -->
+    <div class="card">
+      <div class="card-hdr">
+        <div class="card-title">🤖 Configuração do Bot</div>
+        <div style="display:flex;gap:5px;">
+          <button class="btn btn-ghost btn-sm" id="botTestBtn">Testar conexão</button>
+          <button class="btn btn-ghost btn-sm" id="botConfigReloadBtn">Recarregar</button>
+        </div>
+      </div>
+      <div class="form-grid">
+        <div class="field"><label>Bot ativo</label><input id="botEnabled" type="checkbox" style="width:16px;height:16px;margin-top:10px;"/></div>
+        <div class="field"><label>Token do Telegram <span class="hint" id="botHasTgToken"></span></label><input id="botTelegramToken" type="password" autocomplete="new-password" placeholder="(em branco = manter)"/></div>
+        <div class="field"><label>Modo do Telegram</label><select id="botTelegramMode"><option value="polling">polling (recomendado)</option><option value="webhook">webhook</option></select></div>
+        <div class="field"><label>Telegram Webhook URL</label><input id="botTelegramWebhookURL" placeholder="https://seu.dominio/api/telegram/webhook"/></div>
+        <div class="field"><label>Telegram Webhook Secret <span class="hint" id="botHasTgSecret"></span></label><input id="botTelegramWebhookSecret" type="password" autocomplete="new-password" placeholder="(em branco = manter)"/></div>
+        <div class="field"><label>Mercado Pago Access Token <span class="hint" id="botHasMpToken"></span></label><input id="botMPToken" type="password" autocomplete="new-password" placeholder="(em branco = manter)"/></div>
+        <div class="field"><label>Confirmação do pagamento</label><select id="botMPConfirmMode"><option value="polling">polling (recomendado)</option><option value="webhook">webhook</option></select></div>
+        <div class="field"><label>MP Webhook Secret <span class="hint" id="botHasMpSecret"></span></label><input id="botMPWebhookSecret" type="password" autocomplete="new-password" placeholder="(em branco = manter)"/></div>
+        <div class="field"><label>Intervalo de verificação (polling)</label><input id="botMPPollInterval" placeholder="20s"/></div>
+        <div class="field"><label>Expiração do PIX (min)</label><input id="botPixExp" type="number" min="1" placeholder="30"/></div>
+        <div class="field"><label>Teste grátis ativo</label><input id="botTrialEnabled" type="checkbox" style="width:16px;height:16px;margin-top:10px;"/></div>
+        <div class="field"><label>Teste: horas</label><input id="botTrialHours" type="number" min="1" placeholder="1"/></div>
+        <div class="field"><label>Teste: conexões</label><input id="botTrialMaxConns" type="number" min="1" placeholder="1"/></div>
+        <div class="field"><label>Teste: tipo</label><select id="botTrialKind"><option value="ssh">SSH</option><option value="xray">Xray</option></select></div>
+        <div class="field"><label>Teste: inbound Xray</label><input id="botTrialInbound" placeholder="tag do inbound (se Xray)"/></div>
+        <div class="field"><label>IDs admin no Telegram <span class="hint">(vírgula)</span></label><input id="botAdminIDs" placeholder="111111111,222222222"/></div>
+        <div class="field"><label>Host público SSH</label><input id="botPublicHost" placeholder="seu.dominio ou IP"/></div>
+        <div class="field"><label>Host público Xray</label><input id="botXrayPublicHost" placeholder="seu.dominio (para links vless/vmess)"/></div>
+      </div>
+      <div class="form-actions">
+        <button class="btn" id="botConfigSaveBtn">Salvar configuração</button>
+      </div>
+      <div class="statusbar"><span id="botConfigStatus">Ready.</span></div>
+    </div>
+
+    <div class="grid2">
+      <!-- Plans -->
+      <div class="card">
+        <div class="card-hdr">
+          <div class="card-title">💎 Planos <span class="chip" id="botPlanCount">0</span></div>
+          <div style="display:flex;gap:5px;">
+            <button class="btn btn-ghost btn-sm" id="botNewPlanBtn">+ Novo</button>
+            <button class="btn btn-ghost btn-sm" id="botReloadPlansBtn">Recarregar</button>
+          </div>
+        </div>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Nome</th><th>Tipo</th><th>Dias</th><th>Preço</th><th>Créd.</th><th>Ativo</th><th>Ações</th></tr></thead>
+            <tbody id="botPlansBody"></tbody>
+          </table>
+        </div>
+        <div class="statusbar"><span id="botPlansStatus">Ready.</span></div>
+      </div>
+
+      <!-- Plan form -->
+      <div class="card">
+        <div class="card-hdr">
+          <div class="card-title" id="botPlanFormTitle">Novo Plano</div>
+          <button class="btn btn-ghost btn-sm" id="botCancelPlanBtn">Limpar</button>
+        </div>
+        <form id="botPlanForm">
+          <input type="hidden" id="planId"/>
+          <div class="form-grid">
+            <div class="field"><label>Nome</label><input id="planName" required/></div>
+            <div class="field"><label>Tipo</label><select id="planKind"><option value="ssh">SSH</option><option value="xray">Xray</option></select></div>
+            <div class="field"><label>Dias de validade</label><input id="planDays" type="number" min="1" value="30"/></div>
+            <div class="field"><label>Máx. conexões</label><input id="planMaxConns" type="number" min="0" value="1"/></div>
+            <div class="field"><label>Limite Mbps ↑ (SSH)</label><input id="planUpMbps" type="number" min="0" value="0"/></div>
+            <div class="field"><label>Limite Mbps ↓ (SSH)</label><input id="planDownMbps" type="number" min="0" value="0"/></div>
+            <div class="field"><label>Inbound Xray</label><input id="planInbound" list="botInboundList" placeholder="tag (se Xray)"/><datalist id="botInboundList"></datalist></div>
+            <div class="field"><label>Protocolo Xray</label><select id="planProtocol"><option value="">-</option><option value="vless">vless</option><option value="vmess">vmess</option><option value="trojan">trojan</option></select></div>
+            <div class="field"><label>Preço (R$)</label><input id="planPrice" type="number" step="0.01" min="0" value="0"/></div>
+            <div class="field"><label>Custo em créditos</label><input id="planCreditCost" type="number" min="0" value="1"/></div>
+            <div class="field"><label>Server ID <span class="hint">(vazio=local)</span></label><input id="planServerId"/></div>
+            <div class="field"><label>Ordem</label><input id="planSort" type="number" value="0"/></div>
+            <div class="field"><label>Ativo</label><input id="planActive" type="checkbox" checked style="width:16px;height:16px;margin-top:10px;"/></div>
+          </div>
+          <div class="form-actions"><button class="btn" type="submit">Salvar plano</button></div>
+        </form>
+      </div>
+    </div>
+
+    <div class="grid2">
+      <!-- Credit packages -->
+      <div class="card">
+        <div class="card-hdr">
+          <div class="card-title">💳 Pacotes de Crédito <span class="chip" id="botPkgCount">0</span></div>
+          <div style="display:flex;gap:5px;">
+            <button class="btn btn-ghost btn-sm" id="botNewPkgBtn">+ Novo</button>
+            <button class="btn btn-ghost btn-sm" id="botReloadPkgsBtn">Recarregar</button>
+          </div>
+        </div>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Nome</th><th>Créditos</th><th>Preço</th><th>Ativo</th><th>Ações</th></tr></thead>
+            <tbody id="botPkgsBody"></tbody>
+          </table>
+        </div>
+        <form id="botPkgForm" style="margin-top:10px;">
+          <input type="hidden" id="pkgId"/>
+          <div class="form-grid">
+            <div class="field"><label>Nome</label><input id="pkgName" required/></div>
+            <div class="field"><label>Créditos</label><input id="pkgCredits" type="number" min="1" value="10"/></div>
+            <div class="field"><label>Preço (R$)</label><input id="pkgPrice" type="number" step="0.01" min="0" value="0"/></div>
+            <div class="field"><label>Ordem</label><input id="pkgSort" type="number" value="0"/></div>
+            <div class="field"><label>Ativo</label><input id="pkgActive" type="checkbox" checked style="width:16px;height:16px;margin-top:10px;"/></div>
+          </div>
+          <div class="form-actions"><button class="btn" type="submit">Salvar pacote</button></div>
+        </form>
+        <div class="statusbar"><span id="botPkgStatus">Ready.</span></div>
+      </div>
+
+      <!-- Messages -->
+      <div class="card">
+        <div class="card-hdr">
+          <div class="card-title">✉️ Mensagens do Bot</div>
+          <button class="btn btn-ghost btn-sm" id="botReloadSettingsBtn">Recarregar</button>
+        </div>
+        <div class="field"><label>Boas-vindas <span class="hint">({name} = nome)</span></label><textarea id="setWelcome" rows="4"></textarea></div>
+        <div class="field"><label>Texto de Contato</label><textarea id="setContact" rows="3"></textarea></div>
+        <div class="field"><label>Texto Baixar APP</label><textarea id="setAppText" rows="2"></textarea></div>
+        <div class="field"><label>URL do APP <span class="hint">(botão vira link)</span></label><input id="setAppUrl" placeholder="https://..."/></div>
+        <div class="form-actions"><button class="btn" id="botSaveSettingsBtn">Salvar mensagens</button></div>
+        <div class="statusbar"><span id="botSettingsStatus">Ready.</span></div>
+      </div>
+    </div>
+
+    <!-- Bot users -->
+    <div class="card">
+      <div class="card-hdr">
+        <div class="card-title">👥 Clientes do Bot <span class="chip" id="botUserCount">0</span></div>
+        <button class="btn btn-ghost btn-sm" id="botReloadUsersBtn">Recarregar</button>
+      </div>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Telegram ID</th><th>Nome</th><th>@user</th><th>Papel</th><th>Revenda</th><th>Créditos</th><th>Ações</th></tr></thead>
+          <tbody id="botUsersBody"></tbody>
+        </table>
+      </div>
+      <div class="statusbar"><span id="botUsersStatus">Ready.</span></div>
+    </div>
+
+    <!-- Transactions -->
+    <div class="card">
+      <div class="card-hdr">
+        <div class="card-title">💰 Pagamentos <span class="chip" id="botTxnCount">0</span></div>
+        <div style="display:flex;gap:5px;align-items:center;">
+          <select id="botTxnFilter" class="btn-sm">
+            <option value="">Todos</option>
+            <option value="pending">Pendentes</option>
+            <option value="approved">Aprovados</option>
+            <option value="expired">Expirados</option>
+            <option value="refunded">Estornados</option>
+          </select>
+          <button class="btn btn-ghost btn-sm" id="botReloadTxnsBtn">Recarregar</button>
+        </div>
+      </div>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>#</th><th>Telegram</th><th>Tipo</th><th>Valor</th><th>Status</th><th>Conta</th><th>Data</th><th>Ações</th></tr></thead>
+          <tbody id="botTxnsBody"></tbody>
+        </table>
+      </div>
+      <div class="statusbar"><span id="botTxnStatus">Ready.</span></div>
+    </div>
+
+  </div><!-- /tab-bot -->
+
   <!-- ═══════════ Server Config Tab (superadmin only) ═══════════ -->
   <div class="tab-pane" id="tab-server">
 
@@ -1271,6 +1443,7 @@
 <script defer src="assets/js/08-server-config.js?v=20260711updatecheck1"></script>
 <script defer src="assets/js/09-xray-wizard.js?v=20260711updatecheck1"></script>
 <script defer src="assets/js/11-update-status.js?v=20260711updatecheck1"></script>
+<script defer src="assets/js/12-bot.js?v=20260711updatecheck1"></script>
 <script defer src="assets/js/10-boot.js?v=20260711updatecheck1"></script>
 </body>
 </html>

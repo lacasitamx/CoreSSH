@@ -400,11 +400,75 @@ CREATE TABLE IF NOT EXISTS xray_clients (
   created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Telegram sales bot (created idempotently by the app too; mirrored here for a clean install)
+CREATE TABLE IF NOT EXISTS bot_users (
+  telegram_id           BIGINT PRIMARY KEY,
+  username              TEXT NOT NULL DEFAULT '',
+  first_name            TEXT NOT NULL DEFAULT '',
+  role                  TEXT NOT NULL DEFAULT 'customer',
+  linked_admin_username TEXT NOT NULL DEFAULT '',
+  credit_balance        INT NOT NULL DEFAULT 0,
+  trial_used            BOOLEAN NOT NULL DEFAULT false,
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_seen_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS bot_plans (
+  id SERIAL PRIMARY KEY, name TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT 'ssh',
+  days INT NOT NULL DEFAULT 30, max_connections INT NOT NULL DEFAULT 1,
+  limit_mbps_up INT NOT NULL DEFAULT 0, limit_mbps_down INT NOT NULL DEFAULT 0,
+  xray_inbound_tag TEXT NOT NULL DEFAULT '', xray_protocol TEXT NOT NULL DEFAULT '',
+  price_cents INT NOT NULL DEFAULT 0, credit_cost INT NOT NULL DEFAULT 1,
+  server_id TEXT NOT NULL DEFAULT '', is_active BOOLEAN NOT NULL DEFAULT true, sort_order INT NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS bot_credit_packages (
+  id SERIAL PRIMARY KEY, name TEXT NOT NULL DEFAULT '', credits INT NOT NULL DEFAULT 0,
+  price_cents INT NOT NULL DEFAULT 0, is_active BOOLEAN NOT NULL DEFAULT true, sort_order INT NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS bot_transactions (
+  id SERIAL PRIMARY KEY, telegram_id BIGINT NOT NULL, type TEXT NOT NULL,
+  plan_id INT, package_id INT, credits INT NOT NULL DEFAULT 0, amount_cents INT NOT NULL DEFAULT 0,
+  mp_payment_id TEXT NOT NULL DEFAULT '', mp_qr_code TEXT NOT NULL DEFAULT '', mp_qr_base64 TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending', target_username TEXT NOT NULL DEFAULT '', renew_target TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), paid_at TIMESTAMPTZ, expires_at TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX IF NOT EXISTS bot_transactions_mp_payment_id_uidx ON bot_transactions (mp_payment_id) WHERE mp_payment_id <> '';
+
+CREATE TABLE IF NOT EXISTS bot_credits_ledger (
+  id SERIAL PRIMARY KEY, telegram_id BIGINT NOT NULL, delta INT NOT NULL, reason TEXT NOT NULL DEFAULT '',
+  ref_transaction_id INT, balance_after INT NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS bot_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '');
+
+CREATE TABLE IF NOT EXISTS bot_config (
+  id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1), enabled BOOLEAN NOT NULL DEFAULT false,
+  telegram_mode TEXT NOT NULL DEFAULT 'polling', telegram_webhook_url TEXT NOT NULL DEFAULT '',
+  mp_confirm_mode TEXT NOT NULL DEFAULT 'polling', mp_poll_interval TEXT NOT NULL DEFAULT '20s',
+  pix_expiration_minutes INT NOT NULL DEFAULT 30, trial_enabled BOOLEAN NOT NULL DEFAULT true,
+  trial_hours INT NOT NULL DEFAULT 1, trial_max_connections INT NOT NULL DEFAULT 1,
+  trial_kind TEXT NOT NULL DEFAULT 'ssh', trial_inbound_tag TEXT NOT NULL DEFAULT '',
+  admin_telegram_ids BIGINT[] NOT NULL DEFAULT '{}', currency TEXT NOT NULL DEFAULT 'BRL',
+  public_host TEXT NOT NULL DEFAULT '', xray_public_host TEXT NOT NULL DEFAULT '',
+  telegram_token_enc BYTEA, telegram_webhook_secret_enc BYTEA, mp_access_token_enc BYTEA, mp_webhook_secret_enc BYTEA,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+INSERT INTO bot_config (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
 ALTER SCHEMA public OWNER TO ${DB_USER};
 ALTER TABLE IF EXISTS ssh_users OWNER TO ${DB_USER};
 ALTER TABLE IF EXISTS ssh_iface_totals OWNER TO ${DB_USER};
 ALTER TABLE IF EXISTS admin_users OWNER TO ${DB_USER};
 ALTER TABLE IF EXISTS xray_clients OWNER TO ${DB_USER};
+ALTER TABLE IF EXISTS bot_users OWNER TO ${DB_USER};
+ALTER TABLE IF EXISTS bot_plans OWNER TO ${DB_USER};
+ALTER TABLE IF EXISTS bot_credit_packages OWNER TO ${DB_USER};
+ALTER TABLE IF EXISTS bot_transactions OWNER TO ${DB_USER};
+ALTER TABLE IF EXISTS bot_credits_ledger OWNER TO ${DB_USER};
+ALTER TABLE IF EXISTS bot_settings OWNER TO ${DB_USER};
+ALTER TABLE IF EXISTS bot_config OWNER TO ${DB_USER};
 ALTER SEQUENCE IF EXISTS admin_users_id_seq OWNER TO ${DB_USER};
 GRANT ALL PRIVILEGES ON DATABASE ${DB_NAME} TO ${DB_USER};
 GRANT ALL PRIVILEGES ON SCHEMA public TO ${DB_USER};

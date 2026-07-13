@@ -1250,3 +1250,36 @@ Reads/writes the panel's `config.json` and hot-applies changes.
 
 #### `GET /check` — none
 Public status lookup for SSH users and Xray/V2Ray UUIDs (CORS `*`). See the **Public CheckUser API** section above for query params, response fields, and examples.
+
+---
+
+## Bot de Vendas (Telegram + Mercado Pago)
+
+**PT-BR:** O painel inclui um bot de Telegram integrado ao próprio binário para vender contas **SSH e Xray** por **PIX** (Mercado Pago), com **teste grátis**, **renovação**, e um **sistema de revendedores por créditos**. Toda a gestão fica na aba **Bot / Vendas** do painel (somente superadmin).
+
+### Como configurar
+1. Abra o painel → aba **Bot / Vendas**.
+2. Em **Configuração**: marque *Bot ativo*, cole o **Token do Telegram** (via @BotFather) e o **Access Token do Mercado Pago**. Clique **Testar conexão** e depois **Salvar**.
+3. **Webhook × Polling** (o painel deixa você escolher): 
+   - **Telegram**: `polling` (padrão, não precisa de domínio/HTTPS) ou `webhook` (informe a URL pública `https://SEU_DOMINIO/api/telegram/webhook`).
+   - **Mercado Pago**: `polling` (o bot consulta o status a cada intervalo) ou `webhook` (configure no painel do Mercado Pago a URL `https://SEU_DOMINIO/api/mp/webhook`).
+4. Em **Planos**: crie planos SSH e/ou Xray (dias, conexões, preço em R$, e — para Xray — o *inbound* e protocolo). Para revendedores, defina o *custo em créditos*.
+5. Em **Pacotes de Crédito**: defina os valores de recarga dos revendedores.
+6. Em **Clientes do Bot**: promova um usuário a **revendedor** (vinculando-o a uma conta de revendedor em *Revendedores*), ajuste créditos ou bloqueie.
+7. Em **Mensagens**: edite os textos de boas-vindas, contato e link do app.
+
+### Segurança dos segredos
+Os tokens (Telegram, Mercado Pago e segredos de webhook) são gravados **criptografados (AES-256-GCM)** na tabela `bot_config` do PostgreSQL. A **chave-mestra** fica **fora do banco**: variável de ambiente `BOT_MASTER_KEY` (64 caracteres hex) ou, se ausente, um arquivo `0600` em `/opt/sshpanel/bot_master.key` gerado automaticamente no primeiro uso. **Faça backup desse arquivo** junto com o banco — sem ele os segredos não podem ser decifrados. A API do painel nunca retorna os tokens em texto puro.
+
+### Endpoints (superadmin, exceto webhooks)
+- `GET/POST /api/bot/config` — lê/grava a configuração (segredos só entram no POST; campo vazio mantém o atual; o GET retorna apenas `has_*`).
+- `GET/POST/DELETE /api/bot/plans` — CRUD de planos (`?id=` no DELETE).
+- `GET/POST/DELETE /api/bot/credit-packages` — CRUD de pacotes de crédito.
+- `GET/POST /api/bot/users` — lista clientes; POST com `action` = `set_role` \| `block` \| `unblock` \| `adjust_credits`.
+- `GET/POST /api/bot/transactions` — lista pagamentos; POST com `action` = `refund` \| `reprocess`.
+- `GET/POST /api/bot/settings` — textos do bot (chave/valor).
+- `POST /api/bot/test` — testa token do Telegram e do Mercado Pago.
+- `POST /api/mp/webhook` — **público**, chamado pelo Mercado Pago (valida `x-signature` se houver segredo; sempre reconfirma o pagamento na API antes de liberar).
+- `POST /api/telegram/webhook` — **público**, chamado pelo Telegram (valida o header `X-Telegram-Bot-Api-Secret-Token`).
+
+**EN-US:** The panel ships an in-process Telegram bot that sells **SSH and Xray** accounts via **PIX (Mercado Pago)**, with free trial, renewal, and a **credit-based reseller system** — all managed from the superadmin **Bot / Vendas** tab. Bot secrets are stored **AES-256-GCM encrypted** in PostgreSQL; the master key lives outside the DB (`BOT_MASTER_KEY` env or a `0600` `/opt/sshpanel/bot_master.key` auto-generated on first use — back it up). Both Telegram delivery and Mercado Pago confirmation can be toggled between **polling** (default, no public HTTPS needed) and **webhook** in the panel.
