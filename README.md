@@ -59,6 +59,8 @@ Na aba **Xray → Configuração Xray → Visual**, o cartão **Shared XHTTP end
 
 O listener HTTP interno escolhe o caminho mais específico, portanto `/ssh` é encaminhado ao servidor SSH antes do inbound raiz. Todos os inbounds na mesma porta devem usar a mesma opção TLS e o mesmo certificado. Esse recurso exige o modo **Internal native emulator**; o binário Xray externo não reconhece o protocolo `ssh` específico do DragonCore.
 
+Para configurações XHTTP antigas, carregue a configuração visual e clique em **Ativar SSH /ssh** no cartão VLESS/VMess existente. O painel preserva o inbound original, seus clientes, path, host, modo, opções avançadas e TLS; cria apenas o inbound SSH correspondente na mesma porta e salva/reinicia o Xray. Não é necessário recriar clientes ou o endpoint.
+
 ### Requisitos
 
 - Servidor Linux com `systemd`
@@ -580,6 +582,8 @@ In **Xray → Xray Config → Visual**, the **Shared XHTTP endpoint** card creat
 - SSH over XHTTP on `/ssh`, authenticated by the panel's regular SSH accounts.
 
 The internal HTTP listener selects the most specific path, so `/ssh` reaches the SSH server before the root inbound. Every inbound sharing a port must use the same TLS setting and certificate. This feature requires **Internal native emulator** mode; the external Xray binary does not recognize DragonCore's custom `ssh` protocol.
+
+For older XHTTP configurations, load the visual configuration and click **Enable SSH /ssh** on the existing VLESS/VMess card. The panel preserves the original inbound, clients, path, host, mode, advanced options, and TLS; it only creates the matching SSH inbound on the same port and then saves/restarts Xray. There is no need to recreate clients or the endpoint.
 
 ### Requirements
 

@@ -50,7 +50,7 @@ func TestSharedXHTTPListenerRejectsDuplicatePath(t *testing.T) {
 
 func TestValidateNativeSharedXHTTPConfig(t *testing.T) {
 	valid := []byte(`{"inbounds":[
-		{"tag":"proxy","listen":"0.0.0.0","port":443,"protocol":"vless","streamSettings":{"network":"xhttp","xhttpSettings":{"path":"/"}}},
+		{"tag":"legacy-proxy","listen":"0.0.0.0","port":443,"protocol":"vless","streamSettings":{"network":"xhttp","xhttpSettings":{"path":"/legacy"}}},
 		{"tag":"ssh","listen":"0.0.0.0","port":443,"protocol":"ssh","streamSettings":{"network":"xhttp","xhttpSettings":{"path":"/ssh"}}}
 	]}`)
 	if err := validateNativeInboundBindings(valid); err != nil {

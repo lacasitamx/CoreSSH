@@ -152,6 +152,18 @@ function renderWzInbounds() {
 
     const actions = document.createElement("div");
     actions.className = "visual-inbound-actions";
+    const xhttp = visualXHTTPSettings(ib);
+    const proxyProtocol = String(ib.protocol || "").toLowerCase();
+    if (xhttp && ["vless", "vmess"].includes(proxyProtocol)) {
+      const sshRoute = findSSHRouteForInbound(ib);
+      const sshBtn = document.createElement("button");
+      sshBtn.className = sshRoute ? "btn btn-soft btn-sm legacy-ssh-btn is-enabled" : "btn btn-sm legacy-ssh-btn";
+      sshBtn.type = "button";
+      sshBtn.textContent = t(sshRoute ? "SSH /ssh enabled" : "Enable SSH /ssh");
+      sshBtn.disabled = !!sshRoute;
+      sshBtn.onclick = () => enableSSHForWzInbound(i);
+      actions.appendChild(sshBtn);
+    }
     const duplicateBtn = document.createElement("button");
     duplicateBtn.className = "btn btn-ghost btn-sm";
     duplicateBtn.type = "button";
@@ -308,6 +320,108 @@ function visualXHTTPSettings(ib) {
   const ss = ib?.streamSettings || {};
   if (!["xhttp", "splithttp"].includes(String(ss.network || "").toLowerCase())) return null;
   return ss.xhttpSettings || ss.splithttpSettings || {};
+}
+
+function sameVisualEndpoint(a, b) {
+  return String(a?.listen || "0.0.0.0") === String(b?.listen || "0.0.0.0") && String(a?.port) === String(b?.port);
+}
+
+function findSSHRouteForInbound(source) {
+  return wzInbounds.find(candidate => {
+    const xh = visualXHTTPSettings(candidate);
+    return sameVisualEndpoint(source, candidate) && !!xh && String(candidate?.protocol || "").toLowerCase() === "ssh" && normalizeVisualPath(xh.path) === "/ssh";
+  }) || null;
+}
+
+function uniqueLegacySSHTag(source) {
+  const tags = new Set(wzInbounds.map(ib => String(ib?.tag || "")));
+  const sourceTag = String(source?.tag || source?.port || "xhttp").toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "xhttp";
+  let tag = `ssh-${sourceTag}`;
+  let suffix = 2;
+  while (tags.has(tag)) tag = `ssh-${sourceTag}-${suffix++}`;
+  return tag;
+}
+
+// Adds SSH to a legacy VLESS/VMess XHTTP listener without rebuilding or
+// modifying the original inbound. The companion inherits its listen address,
+// port, host, XHTTP mode, advanced transport options, TLS certificate, and key;
+// only its protocol, empty SSH settings, tag, and /ssh path differ.
+async function enableSSHForWzInbound(index, applyNow = true) {
+  const st = document.getElementById("wzStatus");
+  const source = wzInbounds[index];
+  const selectedID = selectedXrayServer() || "local";
+  if (!source || !visualXHTTPSettings(source) || !["vless", "vmess"].includes(String(source.protocol || "").toLowerCase())) {
+    if (st) st.textContent = "Selecione um inbound VLESS/VMess com transporte XHTTP.";
+    return false;
+  }
+  if (!wzLoadedConfigText || String(wzLoadedServerID || "") !== String(selectedID)) {
+    if (st) st.textContent = "Carregue a configuração do servidor selecionado antes de ativar SSH.";
+    return false;
+  }
+  if ((document.getElementById("xCoreMode")?.value || "native") !== "native") {
+    if (st) st.textContent = "SSH compartilhado requer o modo Xray nativo.";
+    return false;
+  }
+  const security = String(source.streamSettings?.security || "").toLowerCase();
+  if (security && security !== "none" && security !== "tls") {
+    if (st) st.textContent = `O inbound ${source.tag || "selecionado"} usa ${security}, que não é suportado pelo SSH XHTTP nativo. Use TLS ou sem TLS.`;
+    return false;
+  }
+  const existingSSH = findSSHRouteForInbound(source);
+  if (existingSSH) {
+    if (st) st.textContent = `SSH já está ativado em /ssh pelo inbound ${existingSSH.tag}.`;
+    return true;
+  }
+  const pathConflict = wzInbounds.find(candidate => {
+    const xh = visualXHTTPSettings(candidate);
+    return sameVisualEndpoint(source, candidate) && !!xh && normalizeVisualPath(xh.path) === "/ssh";
+  });
+  if (pathConflict) {
+    if (st) st.textContent = `O caminho /ssh já é usado pelo inbound ${pathConflict.tag || "sem tag"}. Edite esse caminho primeiro.`;
+    return false;
+  }
+  if (security === "tls") {
+    const certificate = source.streamSettings?.tlsSettings?.certificates?.[0] || {};
+    if (!certificate.certificateFile || !certificate.keyFile) {
+      if (st) st.textContent = "O inbound usa TLS, mas não possui arquivos de certificado e chave reutilizáveis.";
+      return false;
+    }
+  }
+  if (applyNow && !confirm(`Ativar SSH em /ssh no mesmo endpoint de ${source.tag || "este inbound"}?\n\nA configuração antiga e todos os clientes serão mantidos. O Xray será reiniciado para aplicar.`)) return false;
+
+  const streamSettings = cloneJsonSafe(source.streamSettings || {});
+  const settingsKey = streamSettings.xhttpSettings ? "xhttpSettings" : (streamSettings.splithttpSettings ? "splithttpSettings" : "xhttpSettings");
+  streamSettings[settingsKey] = Object.assign({}, streamSettings[settingsKey] || {}, { path:"/ssh" });
+  const sshInbound = {
+    tag: uniqueLegacySSHTag(source),
+    listen: source.listen || "0.0.0.0",
+    port: cloneJsonSafe(source.port),
+    protocol: "ssh",
+    settings: {},
+    streamSettings,
+  };
+  const before = cloneJsonSafe(source);
+  wzInbounds.push(sshInbound);
+  try {
+    validateVisualInbounds(wzInbounds);
+  } catch (error) {
+    wzInbounds.pop();
+    if (st) st.textContent = `Não foi possível ativar SSH: ${error.message}`;
+    return false;
+  }
+  if (JSON.stringify(source) !== JSON.stringify(before)) {
+    wzInbounds.pop();
+    if (st) st.textContent = "A migração foi cancelada porque alteraria o inbound antigo.";
+    return false;
+  }
+  wzDirty = true;
+  renderWzInbounds();
+  if (!applyNow) {
+    if (st) st.textContent = `SSH /ssh adicionado ao rascunho sem alterar ${source.tag || "o inbound antigo"}.`;
+    return true;
+  }
+  if (st) st.textContent = `Ativando SSH /ssh sem alterar ${source.tag || "o inbound antigo"}…`;
+  return await applyWizardConfig();
 }
 
 function validateVisualInbounds(inbounds) {
@@ -752,7 +866,7 @@ async function applyWizardConfig() {
   if (String(wzLoadedServerID || "") !== String(selectedID) || !wzLoadedConfigText) {
     if (st) st.textContent = `Reloading config from ${target} before saving...`;
     loadWizardFromConfig();
-    return;
+    return false;
   }
 
   let cfg;
@@ -760,7 +874,7 @@ async function applyWizardConfig() {
     cfg = buildConfigFromVisualEditor();
   } catch(e) {
     if (st) st.textContent = `Invalid visual config: ${e.message}`;
-    return;
+    return false;
   }
 
   if (st) st.textContent = `Saving config to ${target}...`;
@@ -778,8 +892,10 @@ async function applyWizardConfig() {
       ? `Config saved on ${target} and Xray restarted.`
       : `Config saved on ${target}, but Xray could not restart. Check Xray logs before editing again.`;
     setTimeout(() => { loadXrayStatus(); loadInbounds({ force: true }); }, 700);
+    return !!restarted;
   } catch (e) {
     if (e.message==="auth") doAuthError();
     else if (st) st.textContent = "Error: " + e.message;
+    return false;
   }
 }

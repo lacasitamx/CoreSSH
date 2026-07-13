@@ -16,7 +16,7 @@
   setTimeout(function(){document.documentElement.classList.remove("i18n-pending");},2500);
 })();
 </script>
-<link rel="stylesheet" href="assets/app.css?v=20260713xhttp2"/>
+<link rel="stylesheet" href="assets/app.css?v=20260713legacyssh3"/>
 </head>
 <body>
 <div class="app">
@@ -427,6 +427,14 @@
           </div>
           <div class="shared-endpoint-actions"><span id="sharedXHTTPStatus" class="hint">Carregue a configuração para detectar um endpoint existente.</span><button class="btn" id="sharedXHTTPApplyBtn" type="button">Criar / atualizar endpoint</button></div>
         </section>
+
+        <aside class="legacy-xhttp-migration" aria-label="Migração de configuração XHTTP antiga">
+          <span class="legacy-xhttp-icon" aria-hidden="true">SSH+</span>
+          <div>
+            <strong>Configuração XHTTP antiga?</strong>
+            <p>Use “Ativar SSH /ssh” no cartão do inbound existente. O painel mantém o inbound, os clientes e todas as opções atuais; adiciona somente a rota SSH e reinicia o Xray.</p>
+          </div>
+        </aside>
 
         <div class="visual-config-toolbar">
           <div class="field">
@@ -1437,17 +1445,17 @@
 <!-- app.js was split into ordered modules for maintainability. They are plain
      classic scripts sharing one global scope; `defer` preserves execution order,
      so behavior is identical to the old single file. Keep this load order. -->
-<script defer src="assets/js/01-core.js?v=20260713xhttp2"></script>
-<script defer src="assets/js/02-shell.js?v=20260713xhttp2"></script>
-<script defer src="assets/js/03-ssh-users.js?v=20260713xhttp2"></script>
-<script defer src="assets/js/04-xray.js?v=20260713xhttp2"></script>
-<script defer src="assets/js/05-resellers.js?v=20260713xhttp2"></script>
-<script defer src="assets/js/06-servers.js?v=20260713xhttp2"></script>
-<script defer src="assets/js/07-stats-logs.js?v=20260713xhttp2"></script>
-<script defer src="assets/js/08-server-config.js?v=20260713xhttp2"></script>
-<script defer src="assets/js/09-xray-wizard.js?v=20260713xhttp2"></script>
-<script defer src="assets/js/11-update-status.js?v=20260713xhttp2"></script>
-<script defer src="assets/js/12-bot.js?v=20260713xhttp2"></script>
-<script defer src="assets/js/10-boot.js?v=20260713xhttp2"></script>
+<script defer src="assets/js/01-core.js?v=20260713legacyssh3"></script>
+<script defer src="assets/js/02-shell.js?v=20260713legacyssh3"></script>
+<script defer src="assets/js/03-ssh-users.js?v=20260713legacyssh3"></script>
+<script defer src="assets/js/04-xray.js?v=20260713legacyssh3"></script>
+<script defer src="assets/js/05-resellers.js?v=20260713legacyssh3"></script>
+<script defer src="assets/js/06-servers.js?v=20260713legacyssh3"></script>
+<script defer src="assets/js/07-stats-logs.js?v=20260713legacyssh3"></script>
+<script defer src="assets/js/08-server-config.js?v=20260713legacyssh3"></script>
+<script defer src="assets/js/09-xray-wizard.js?v=20260713legacyssh3"></script>
+<script defer src="assets/js/11-update-status.js?v=20260713legacyssh3"></script>
+<script defer src="assets/js/12-bot.js?v=20260713legacyssh3"></script>
+<script defer src="assets/js/10-boot.js?v=20260713legacyssh3"></script>
 </body>
 </html>
