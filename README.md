@@ -11,6 +11,8 @@ DragonCoreSSH V40 é um painel/servidor em Go para SSH com HTTP Injection, paine
 - Banco de dados PostgreSQL
 - Integração com Xray-core/V2Ray
 - Configurador visual para VLESS e VMess
+- Editor visual completo de inbounds (criar, editar, duplicar e remover)
+- Endpoint XHTTP compartilhado no modo nativo: VLESS **ou** VMess em `/` e SSH em `/ssh`, usando o mesmo domínio/porta/TLS
 - Contas de revendedor (reseller) com cota de usuários e escopo próprio
 - Gerenciamento multi-servidor (master/slave) direto pelo painel
 - API HTTP completa para bots/automações (ver **HTTP API Reference**)
@@ -47,6 +49,15 @@ gRPC
 ```
 
 Observação: Reality deve ser usado apenas em protocolos compatíveis. No configurador visual, VMess não usa Reality.
+
+### Endpoint XHTTP compartilhado
+
+Na aba **Xray → Configuração Xray → Visual**, o cartão **Shared XHTTP endpoint** cria dois inbounds na mesma porta:
+
+- VLESS **ou** VMess em `/` (selecione um protocolo raiz);
+- SSH sobre XHTTP em `/ssh`, autenticado pelas contas SSH normais do painel.
+
+O listener HTTP interno escolhe o caminho mais específico, portanto `/ssh` é encaminhado ao servidor SSH antes do inbound raiz. Todos os inbounds na mesma porta devem usar a mesma opção TLS e o mesmo certificado. Esse recurso exige o modo **Internal native emulator**; o binário Xray externo não reconhece o protocolo `ssh` específico do DragonCore.
 
 ### Requisitos
 
@@ -522,6 +533,8 @@ DragonCoreSSH V40 is a Go-based SSH HTTP Injection server with a web panel, Post
 - PostgreSQL database
 - Xray-core/V2Ray integration
 - Visual configurator for VLESS and VMess
+- Full visual inbound editor (create, edit, duplicate, and remove)
+- Native shared XHTTP endpoint: VLESS **or** VMess on `/` and SSH on `/ssh`, using the same domain/port/TLS
 - Reseller accounts with a user quota and self-scoped access
 - Multi-server (master/slave) management directly from the panel
 - Full HTTP API for bots/automations (see **HTTP API Reference**)
@@ -558,6 +571,15 @@ gRPC
 ```
 
 Note: Reality should only be used with compatible protocols. In the visual configurator, VMess does not use Reality.
+
+### Shared XHTTP endpoint
+
+In **Xray → Xray Config → Visual**, the **Shared XHTTP endpoint** card creates two inbounds on the same port:
+
+- VLESS **or** VMess on `/` (select one root protocol);
+- SSH over XHTTP on `/ssh`, authenticated by the panel's regular SSH accounts.
+
+The internal HTTP listener selects the most specific path, so `/ssh` reaches the SSH server before the root inbound. Every inbound sharing a port must use the same TLS setting and certificate. This feature requires **Internal native emulator** mode; the external Xray binary does not recognize DragonCore's custom `ssh` protocol.
 
 ### Requirements
 

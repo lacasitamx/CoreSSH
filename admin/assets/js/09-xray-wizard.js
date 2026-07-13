@@ -82,7 +82,9 @@ function loadWizardFromConfig() {
     wzLoadedFullConfig = cloneJsonSafe(cfg);
     document.getElementById("wzLogLevel").value = cfg.log?.loglevel || "warning";
     wzInbounds = cloneJsonSafe((cfg.inbounds || []).filter(ib => ib && ib.tag !== "api")) || [];
+    wzEditingIndex = -1;
     renderWzInbounds();
+    loadSharedEndpointForm();
     wzDirty = false;
     if (st) st.textContent = `Config loaded from ${target}.`;
   }).catch(e => {
@@ -90,7 +92,9 @@ function loadWizardFromConfig() {
     wzLoadedConfigText = "";
     wzLoadedFullConfig = null;
     wzInbounds = [];
+    wzEditingIndex = -1;
     renderWzInbounds();
+    loadSharedEndpointForm();
     if (e.message === "auth") doAuthError();
     else if (st) st.textContent = "Error: " + e.message;
   });
@@ -99,48 +103,395 @@ function loadWizardFromConfig() {
 function renderWzInbounds() {
   const list = document.getElementById("wzInboundsList");
   if (!list) return;
+  list.replaceChildren();
   if (!wzInbounds.length) {
-    list.innerHTML = '<div class="hint" style="padding:4px 0;">No inbounds. Click + Add to create one.</div>';
+    const empty = document.createElement("div");
+    empty.className = "hint visual-empty-state";
+    empty.textContent = "Nenhum inbound configurado. Crie um endpoint compartilhado ou adicione um inbound.";
+    list.appendChild(empty);
     return;
   }
-  list.innerHTML = "";
   wzInbounds.forEach((ib, i) => {
-    const row = document.createElement("div");
-    row.style = "display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--border);font-size:.73rem;";
+    const row = document.createElement("article");
+    row.className = "visual-inbound-card";
     const portStr = ib.port !== undefined ? `:${ib.port}` : "";
     const ss  = ib.streamSettings || {};
     const net = ss.network || "";
     const sec = ss.security || "";
-    const secLabel = sec === "tls" ? " TLS" : sec === "reality" ? " Reality" : "";
-    const modeLabel = net === "xhttp" && ss.xhttpSettings?.mode ? " ("+ss.xhttpSettings.mode+")" : "";
-    row.innerHTML = `<span class="chip">${escapeHTML(ib.protocol || "")}</span>
-      <span style="font-family:monospace;">${escapeHTML((ib.tag||"untagged")+portStr)}</span>
-      <span class="hint" style="flex:1;">${escapeHTML((ib.listen||"0.0.0.0")+(net?" · "+net:"")+modeLabel+secLabel)}</span>`;
+    const transportSettings = ss.xhttpSettings || ss.splithttpSettings || ss.wsSettings || ss.httpupgradeSettings || ss.httpSettings || ss.grpcSettings || {};
+    const head = document.createElement("div");
+    head.className = "visual-inbound-card-head";
+    const name = document.createElement("div");
+    name.className = "visual-inbound-name";
+    const title = document.createElement("strong");
+    title.textContent = ib.tag || "untagged";
+    const address = document.createElement("small");
+    address.textContent = `${ib.listen || "0.0.0.0"}${portStr}`;
+    name.append(title, address);
+    const protocol = document.createElement("span");
+    protocol.className = "chip";
+    protocol.textContent = String(ib.protocol || "unknown").toUpperCase();
+    head.append(name, protocol);
+    row.appendChild(head);
+
+    const meta = document.createElement("div");
+    meta.className = "visual-inbound-meta";
+    [net || "default", transportSettings.path || transportSettings.serviceName || "no path", sec || "no TLS"].forEach(value => {
+      const item = document.createElement("span");
+      item.textContent = value;
+      meta.appendChild(item);
+    });
+    row.appendChild(meta);
     const clients = ib.settings?.clients;
     if (Array.isArray(clients) && clients.length) {
       const badge = document.createElement("span");
       badge.className = "chip green";
       badge.textContent = clients.length + " client" + (clients.length!==1?"s":"");
-      row.appendChild(badge);
+      meta.appendChild(badge);
     }
+
+    const actions = document.createElement("div");
+    actions.className = "visual-inbound-actions";
+    const duplicateBtn = document.createElement("button");
+    duplicateBtn.className = "btn btn-ghost btn-sm";
+    duplicateBtn.type = "button";
+    duplicateBtn.textContent = "Duplicar";
+    duplicateBtn.onclick = () => duplicateWzInbound(i);
+    const editBtn = document.createElement("button");
+    editBtn.className = "btn btn-ghost btn-sm";
+    editBtn.type = "button";
+    editBtn.textContent = "Editar";
+    editBtn.onclick = () => editWzInbound(i);
     const delBtn = document.createElement("button");
     delBtn.className = "btn btn-danger btn-sm";
-    delBtn.textContent = "Remove";
-    delBtn.onclick = () => { wzInbounds.splice(i,1); wzDirty = true; renderWzInbounds(); };
-    row.appendChild(delBtn);
+    delBtn.type = "button";
+    delBtn.textContent = "Remover";
+    delBtn.onclick = () => {
+      if (!confirm(`Remover o inbound ${ib.tag || "untagged"}?`)) return;
+      wzInbounds.splice(i,1);
+      if (wzEditingIndex === i) wzCancelInbound();
+      else if (wzEditingIndex > i) wzEditingIndex--;
+      wzDirty = true;
+      renderWzInbounds();
+      loadSharedEndpointForm();
+    };
+    actions.append(duplicateBtn, editBtn, delBtn);
+    row.appendChild(actions);
     list.appendChild(row);
   });
 }
 
 function wzToggleAddInbound() {
   const form = document.getElementById("wzAddInboundForm");
-  form.classList.toggle("hidden");
-  if (!form.classList.contains("hidden")) {
-    onWzProtoChange(document.getElementById("wzProtocol").value);
-    onWzNetworkChange(document.getElementById("wzNetwork").value);
-    onWzTLSChange(document.getElementById("wzTLS").value);
+  if (!form.classList.contains("hidden") && wzEditingIndex < 0) return wzCancelInbound();
+  resetWzInboundForm();
+  form.classList.remove("hidden");
+  form.scrollIntoView({ behavior:"smooth", block:"nearest" });
+}
+
+function setWzValue(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.value = value ?? "";
+}
+
+function resetWzInboundForm() {
+  wzEditingIndex = -1;
+  setWzValue("wzProtocol", "vless");
+  setWzValue("wzPort", "10086");
+  setWzValue("wzListenIP", "0.0.0.0");
+  setWzValue("wzTag", "vless-in");
+  setWzValue("wzNetwork", "tcp");
+  setWzValue("wzWSPath", "/ws");
+  setWzValue("wzXHTTPPath", "/xhttp");
+  setWzValue("wzXHTTPHost", "");
+  setWzValue("wzXHTTPMode", "auto");
+  setWzValue("wzHUPath", "/upgrade");
+  setWzValue("wzHUHost", "");
+  setWzValue("wzH2Path", "/h2");
+  setWzValue("wzH2Host", "");
+  setWzValue("wzGRPCService", "grpc-service");
+  document.getElementById("wzGRPCMulti").checked = false;
+  setWzValue("wzTLS", "none");
+  ["wzTLSCert", "wzTLSKey", "wzTLSCertPath", "wzTLSKeyPath", "wzRealityDest", "wzRealitySNI", "wzRealityPriv", "wzRealityShortID", "wzTrojanPass", "wzSSPass"].forEach(id => setWzValue(id, ""));
+  setWzValue("wzSSMethod", "chacha20-ietf-poly1305");
+  document.getElementById("wzInboundFormTitle").textContent = "Novo inbound";
+  document.getElementById("wzSaveInboundBtn").textContent = "Adicionar inbound";
+  document.getElementById("wzEditingBadge").classList.add("hidden");
+  onWzProtoChange("vless");
+  onWzNetworkChange("tcp");
+  onWzTLSChange("none");
+}
+
+function wzCancelInbound() {
+  wzEditingIndex = -1;
+  document.getElementById("wzAddInboundForm")?.classList.add("hidden");
+  document.getElementById("wzEditingBadge")?.classList.add("hidden");
+}
+
+function editWzInbound(index) {
+  const ib = wzInbounds[index];
+  if (!ib) return;
+  resetWzInboundForm();
+  wzEditingIndex = index;
+  const proto = String(ib.protocol || "vless").toLowerCase();
+  setWzValue("wzProtocol", proto);
+  onWzProtoChange(proto);
+  setWzValue("wzPort", ib.port ?? "");
+  setWzValue("wzListenIP", ib.listen || (proto === "socks" ? "127.0.0.1" : "0.0.0.0"));
+  setWzValue("wzTag", ib.tag || `${proto}-in`);
+
+  const ss = ib.streamSettings || {};
+  const network = proto === "ssh" ? "xhttp" : (ss.network || "tcp");
+  setWzValue("wzNetwork", network);
+  onWzNetworkChange(network);
+  const xh = ss.xhttpSettings || ss.splithttpSettings || {};
+  setWzValue("wzWSPath", ss.wsSettings?.path || "/ws");
+  setWzValue("wzXHTTPPath", xh.path || "/xhttp");
+  setWzValue("wzXHTTPHost", xh.host || "");
+  setWzValue("wzXHTTPMode", xh.mode || "auto");
+  setWzValue("wzHUPath", ss.httpupgradeSettings?.path || "/upgrade");
+  setWzValue("wzHUHost", ss.httpupgradeSettings?.host || "");
+  setWzValue("wzH2Path", ss.httpSettings?.path || "/h2");
+  setWzValue("wzH2Host", Array.isArray(ss.httpSettings?.host) ? (ss.httpSettings.host[0] || "") : (ss.httpSettings?.host || ""));
+  setWzValue("wzGRPCService", ss.grpcSettings?.serviceName || "grpc-service");
+  document.getElementById("wzGRPCMulti").checked = !!ss.grpcSettings?.multiMode;
+
+  const security = ss.security === "tls" ? "tls" : (ss.security === "reality" ? "reality" : "none");
+  setWzValue("wzTLS", security);
+  onWzTLSChange(security);
+  const cert = ss.tlsSettings?.certificates?.[0] || {};
+  setWzValue("wzTLSCert", cert.certificateFile || "");
+  setWzValue("wzTLSKey", cert.keyFile || "");
+  setWzValue("wzTLSCertPath", cert.certificateFile || "");
+  setWzValue("wzTLSKeyPath", cert.keyFile || "");
+  setWzValue("wzRealityDest", ss.realitySettings?.dest || "");
+  setWzValue("wzRealitySNI", ss.realitySettings?.serverNames?.[0] || "");
+  setWzValue("wzRealityPriv", ss.realitySettings?.privateKey || "");
+  setWzValue("wzRealityShortID", ss.realitySettings?.shortIds?.[0] || "");
+  setWzValue("wzTrojanPass", ib.settings?.clients?.[0]?.password || "");
+  setWzValue("wzSSPass", ib.settings?.password || "");
+  setWzValue("wzSSMethod", ib.settings?.method || "chacha20-ietf-poly1305");
+
+  document.getElementById("wzInboundFormTitle").textContent = `Editar ${ib.tag || "inbound"}`;
+  document.getElementById("wzSaveInboundBtn").textContent = "Salvar alterações";
+  document.getElementById("wzEditingBadge").classList.remove("hidden");
+  const form = document.getElementById("wzAddInboundForm");
+  form.classList.remove("hidden");
+  form.scrollIntoView({ behavior:"smooth", block:"start" });
+}
+
+function duplicateWzInbound(index) {
+  const source = wzInbounds[index];
+  if (!source) return;
+  const copy = cloneJsonSafe(source);
+  const tags = new Set(wzInbounds.map(ib => ib?.tag));
+  let n = 2;
+  let tag = `${source.tag || source.protocol || "inbound"}-copy`;
+  while (tags.has(tag)) tag = `${source.tag || source.protocol || "inbound"}-copy-${n++}`;
+  copy.tag = tag;
+  const port = Number(copy.port || 0);
+  if (port > 0 && port < 65535) copy.port = port + 1;
+  wzInbounds.push(copy);
+  wzDirty = true;
+  renderWzInbounds();
+  editWzInbound(wzInbounds.length - 1);
+}
+
+function normalizeVisualPath(value) {
+  let path = String(value || "/").trim().split("?", 1)[0];
+  if (!path.startsWith("/")) path = `/${path}`;
+  path = path.replace(/\/+$/, "") || "/";
+  return path;
+}
+
+function visualXHTTPSettings(ib) {
+  const ss = ib?.streamSettings || {};
+  if (!["xhttp", "splithttp"].includes(String(ss.network || "").toLowerCase())) return null;
+  return ss.xhttpSettings || ss.splithttpSettings || {};
+}
+
+function validateVisualInbounds(inbounds) {
+  const tags = new Set();
+  const binds = new Map();
+  const nativeMode = (document.getElementById("xCoreMode")?.value || "native") === "native";
+  for (const ib of inbounds || []) {
+    const tag = String(ib?.tag || "").trim();
+    if (!tag) throw new Error("every inbound needs a tag");
+    if (tags.has(tag)) throw new Error(`duplicate inbound tag: ${tag}`);
+    tags.add(tag);
+    const port = Number(ib?.port || 0);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`invalid port on ${tag}`);
+    const bind = `${String(ib?.listen || "0.0.0.0").trim()}:${port}`;
+    const xh = visualXHTTPSettings(ib);
+    if (!binds.has(bind)) binds.set(bind, []);
+    binds.get(bind).push({ ib, xh });
+    if (String(ib?.protocol || "").toLowerCase() === "ssh") {
+      if (!xh) throw new Error(`SSH inbound ${tag} requires XHTTP`);
+      if (!nativeMode) throw new Error(`SSH inbound ${tag} requires native Xray mode`);
+    }
+  }
+  for (const [bind, rows] of binds) {
+    if (rows.length < 2) continue;
+    if (!nativeMode || rows.some(row => !row.xh)) throw new Error(`multiple inbounds cannot share ${bind} unless all use native XHTTP`);
+    const paths = new Set();
+    const firstSecurity = String(rows[0].ib.streamSettings?.security || "none");
+    const firstCert = rows[0].ib.streamSettings?.tlsSettings?.certificates?.[0] || {};
+    for (const row of rows) {
+      const path = normalizeVisualPath(row.xh.path);
+      if (paths.has(path)) throw new Error(`duplicate XHTTP path ${path} on ${bind}`);
+      paths.add(path);
+      const security = String(row.ib.streamSettings?.security || "none");
+      const cert = row.ib.streamSettings?.tlsSettings?.certificates?.[0] || {};
+      if (security !== firstSecurity) throw new Error(`shared XHTTP inbounds on ${bind} must use the same TLS setting`);
+      if (security === "tls" && (cert.certificateFile !== firstCert.certificateFile || cert.keyFile !== firstCert.keyFile)) {
+        throw new Error(`shared XHTTP inbounds on ${bind} must use the same certificate`);
+      }
+    }
   }
 }
+
+function findSharedEndpointPair() {
+  const roots = wzInbounds.filter(ib => {
+    const xh = visualXHTTPSettings(ib);
+    return !!xh && ["vless", "vmess"].includes(String(ib?.protocol || "").toLowerCase()) && normalizeVisualPath(xh.path) === "/";
+  });
+  for (const proxy of roots) {
+    const ssh = wzInbounds.find(ib => String(ib?.protocol || "").toLowerCase() === "ssh" &&
+      String(ib.listen || "0.0.0.0") === String(proxy.listen || "0.0.0.0") && String(ib.port) === String(proxy.port) &&
+      normalizeVisualPath(visualXHTTPSettings(ib)?.path) === "/ssh");
+    if (ssh) return { proxy, ssh };
+  }
+  const proxy = wzInbounds.find(ib => ib?.tag === "shared-proxy-xhttp") || null;
+  const ssh = wzInbounds.find(ib => ib?.tag === "shared-ssh-xhttp") || null;
+  return proxy && ssh ? { proxy, ssh } : null;
+}
+
+function loadSharedEndpointForm() {
+  const status = document.getElementById("sharedXHTTPStatus");
+  if (!status) return;
+  const pair = findSharedEndpointPair();
+  if (!pair) {
+    status.textContent = wzLoadedConfigText ? "Nenhum endpoint compartilhado detectado. Preencha os campos para criar um." : "Carregue a configuração para detectar um endpoint existente.";
+    return;
+  }
+  const xh = visualXHTTPSettings(pair.proxy) || {};
+  const ss = pair.proxy.streamSettings || {};
+  const cert = ss.tlsSettings?.certificates?.[0] || {};
+  setWzValue("sharedXHTTPProtocol", pair.proxy.protocol || "vless");
+  setWzValue("sharedXHTTPPort", pair.proxy.port || 443);
+  setWzValue("sharedXHTTPListen", pair.proxy.listen || "0.0.0.0");
+  setWzValue("sharedXHTTPHost", xh.host || "");
+  setWzValue("sharedXHTTPMode", xh.mode || "auto");
+  setWzValue("sharedXHTTPSecurity", ss.security === "tls" ? "tls" : "none");
+  setWzValue("sharedXHTTPCert", cert.certificateFile || "");
+  setWzValue("sharedXHTTPKey", cert.keyFile || "");
+  updateSharedEndpointControls();
+  status.textContent = `Endpoint detectado em ${pair.proxy.listen || "0.0.0.0"}:${pair.proxy.port} — ${String(pair.proxy.protocol).toUpperCase()} / e SSH /ssh.`;
+}
+
+function updateSharedEndpointControls() {
+  const protocol = document.getElementById("sharedXHTTPProtocol")?.value || "vless";
+  const security = document.getElementById("sharedXHTTPSecurity")?.value || "none";
+  document.getElementById("sharedProxyRouteLabel").textContent = protocol.toUpperCase();
+  document.querySelectorAll(".shared-tls-field").forEach(el => el.classList.toggle("hidden", security !== "tls"));
+}
+
+function applySharedXHTTPEndpoint() {
+  const status = document.getElementById("sharedXHTTPStatus");
+  const selectedID = selectedXrayServer() || "local";
+  if (!wzLoadedConfigText || String(wzLoadedServerID || "") !== String(selectedID)) {
+    status.textContent = "Carregue a configuração do servidor selecionado antes de editar.";
+    return;
+  }
+  if ((document.getElementById("xCoreMode")?.value || "native") !== "native") {
+    status.textContent = "O endpoint compartilhado requer o modo Xray nativo.";
+    return;
+  }
+  const protocol = document.getElementById("sharedXHTTPProtocol").value;
+  const port = Number(document.getElementById("sharedXHTTPPort").value || 0);
+  const listen = document.getElementById("sharedXHTTPListen").value.trim() || "0.0.0.0";
+  const host = document.getElementById("sharedXHTTPHost").value.trim();
+  const mode = document.getElementById("sharedXHTTPMode").value || "auto";
+  const security = document.getElementById("sharedXHTTPSecurity").value;
+  const cert = document.getElementById("sharedXHTTPCert").value.trim();
+  const key = document.getElementById("sharedXHTTPKey").value.trim();
+  if (!["vless", "vmess"].includes(protocol) || !Number.isInteger(port) || port < 1 || port > 65535) {
+    status.textContent = "Escolha VLESS/VMess e uma porta válida.";
+    return;
+  }
+  if (/[\u0000-\u001f\u007f]/.test(`${listen}${host}${cert}${key}`)) {
+    status.textContent = "Os campos contêm caracteres de controle inválidos.";
+    return;
+  }
+  if (security === "tls" && (!cert || !key)) {
+    status.textContent = "Informe os arquivos do certificado e da chave para usar TLS.";
+    return;
+  }
+
+  const pair = findSharedEndpointPair();
+  const sameEndpoint = ib => String(ib?.listen || "0.0.0.0") === listen && String(ib?.port) === String(port);
+  const existingProxy = pair?.proxy || wzInbounds.find(ib => ib?.tag === "shared-proxy-xhttp") || wzInbounds.find(ib => {
+    const xh = visualXHTTPSettings(ib);
+    return sameEndpoint(ib) && !!xh && ["vless", "vmess"].includes(String(ib?.protocol || "").toLowerCase()) && normalizeVisualPath(xh.path) === "/";
+  }) || null;
+  const existingSSH = pair?.ssh || wzInbounds.find(ib => ib?.tag === "shared-ssh-xhttp") || wzInbounds.find(ib => {
+    const xh = visualXHTTPSettings(ib);
+    return sameEndpoint(ib) && !!xh && String(ib?.protocol || "").toLowerCase() === "ssh" && normalizeVisualPath(xh.path) === "/ssh";
+  }) || null;
+  const removeSet = new Set([existingProxy, existingSSH].filter(Boolean));
+  const others = wzInbounds.filter(ib => !removeSet.has(ib));
+  const blocking = others.find(ib => String(ib.listen || "0.0.0.0") === listen && String(ib.port) === String(port) && !visualXHTTPSettings(ib));
+  if (blocking) {
+    status.textContent = `A porta já é usada pelo inbound não-XHTTP ${blocking.tag || "sem tag"}. Escolha outra porta.`;
+    return;
+  }
+
+  const buildSharedStream = (existing, path) => {
+    const stream = cloneJsonSafe(existing?.streamSettings || {});
+    stream.network = "xhttp";
+    stream.xhttpSettings = Object.assign({}, stream.xhttpSettings || stream.splithttpSettings || {}, { path, mode });
+    delete stream.splithttpSettings;
+    if (host) stream.xhttpSettings.host = host;
+    else delete stream.xhttpSettings.host;
+    if (security === "tls") {
+      stream.security = "tls";
+      stream.tlsSettings = Object.assign({}, stream.tlsSettings || {}, { certificates:[{ certificateFile:cert, keyFile:key }] });
+    } else {
+      delete stream.security;
+      delete stream.tlsSettings;
+    }
+    delete stream.realitySettings;
+    return stream;
+  };
+  const previousClients = Array.isArray(existingProxy?.settings?.clients) ? cloneJsonSafe(existingProxy.settings.clients) : [];
+  const proxyInbound = cloneJsonSafe(existingProxy || {});
+  proxyInbound.tag = existingProxy?.tag || "shared-proxy-xhttp";
+  proxyInbound.listen = listen;
+  proxyInbound.port = port;
+  proxyInbound.protocol = protocol;
+  proxyInbound.settings = existingProxy?.protocol === protocol ? cloneJsonSafe(existingProxy.settings || {}) : {};
+  proxyInbound.settings.clients = previousClients;
+  if (protocol === "vless") proxyInbound.settings.decryption = "none";
+  else delete proxyInbound.settings.decryption;
+  proxyInbound.streamSettings = buildSharedStream(existingProxy, "/");
+  const sshInbound = cloneJsonSafe(existingSSH || {});
+  sshInbound.tag = existingSSH?.tag || "shared-ssh-xhttp";
+  sshInbound.listen = listen;
+  sshInbound.port = port;
+  sshInbound.protocol = "ssh";
+  sshInbound.settings = {};
+  sshInbound.streamSettings = buildSharedStream(existingSSH, "/ssh");
+  wzInbounds = [...others, proxyInbound, sshInbound];
+  wzDirty = true;
+  renderWzInbounds();
+  loadSharedEndpointForm();
+  status.textContent = "Endpoint atualizado no rascunho. Clique em Salvar configuração e reiniciar para aplicar.";
+}
+
+document.getElementById("sharedXHTTPProtocol")?.addEventListener("change", updateSharedEndpointControls);
+document.getElementById("sharedXHTTPSecurity")?.addEventListener("change", updateSharedEndpointControls);
+document.getElementById("sharedXHTTPApplyBtn")?.addEventListener("click", applySharedXHTTPEndpoint);
+updateSharedEndpointControls();
 
 function onWzProtoChange(val) {
   const isSSH = val === "ssh";
@@ -227,78 +578,115 @@ function wzSaveInbound() {
   const port   = parseInt(document.getElementById("wzPort").value || "0", 10);
   const listen = document.getElementById("wzListenIP").value.trim() || "0.0.0.0";
   const tag    = document.getElementById("wzTag").value.trim() || proto+"-in";
-  if (!port) { alert("Port required."); return; }
-  const ib = { tag, port, listen, protocol: proto, settings: {} };
+  const st = document.getElementById("wzStatus");
+  if (!Number.isInteger(port) || port < 1 || port > 65535) { st.textContent = "Informe uma porta válida."; return; }
+  if (/[\u0000-\u001f\u007f]/.test(`${listen}${tag}`)) { st.textContent = "Listen ou tag contém caracteres inválidos."; return; }
+  if (wzInbounds.some((item, index) => index !== wzEditingIndex && item?.tag === tag)) { st.textContent = `A tag ${tag} já está em uso.`; return; }
+
+  const original = wzEditingIndex >= 0 ? cloneJsonSafe(wzInbounds[wzEditingIndex]) : null;
+  const ib = original || {};
+  const previousClients = Array.isArray(original?.settings?.clients) ? cloneJsonSafe(original.settings.clients) : [];
+  ib.tag = tag;
+  ib.port = port;
+  ib.listen = listen;
+  ib.protocol = proto;
+  ib.settings = {};
   if (proto === "vless" || proto === "vmess") {
-    ib.settings = proto === "vless" ? { clients: [], decryption: "none" } : { clients: [] };
+    ib.settings = original?.protocol === proto && original.settings ? cloneJsonSafe(original.settings) : {};
+    ib.settings.clients = previousClients;
+    if (proto === "vless") ib.settings.decryption = "none";
+    else delete ib.settings.decryption;
     const net    = document.getElementById("wzNetwork").value;
     const tlsVal = document.getElementById("wzTLS").value;
-    ib.streamSettings = { network: net };
+    const previousStream = original?.protocol === proto && original?.streamSettings?.network === net ? cloneJsonSafe(original.streamSettings) : {};
+    ib.streamSettings = previousStream || {};
+    ib.streamSettings.network = net;
+    ["wsSettings", "xhttpSettings", "splithttpSettings", "httpupgradeSettings", "httpSettings", "grpcSettings"].forEach(key => {
+      if (!((net === "ws" && key === "wsSettings") || (net === "xhttp" && (key === "xhttpSettings" || key === "splithttpSettings")) || (net === "httpupgrade" && key === "httpupgradeSettings") || (net === "h2" && key === "httpSettings") || (net === "grpc" && key === "grpcSettings"))) delete ib.streamSettings[key];
+    });
     // Transport-specific settings
     switch (net) {
       case "ws":
-        ib.streamSettings.wsSettings = { path: document.getElementById("wzWSPath").value.trim() || "/" };
+        ib.streamSettings.wsSettings = Object.assign({}, ib.streamSettings.wsSettings || {}, { path: document.getElementById("wzWSPath").value.trim() || "/" });
         break;
       case "xhttp":
-        ib.streamSettings.xhttpSettings = {
+        ib.streamSettings.xhttpSettings = Object.assign({}, ib.streamSettings.xhttpSettings || ib.streamSettings.splithttpSettings || {}, {
           path: document.getElementById("wzXHTTPPath").value.trim() || "/xhttp",
           host: document.getElementById("wzXHTTPHost").value.trim() || undefined,
           mode: document.getElementById("wzXHTTPMode").value,
-        };
+        });
+        delete ib.streamSettings.splithttpSettings;
         if (!ib.streamSettings.xhttpSettings.host) delete ib.streamSettings.xhttpSettings.host;
         break;
       case "httpupgrade":
-        ib.streamSettings.httpupgradeSettings = {
+        ib.streamSettings.httpupgradeSettings = Object.assign({}, ib.streamSettings.httpupgradeSettings || {}, {
           path: document.getElementById("wzHUPath").value.trim() || "/",
           host: document.getElementById("wzHUHost").value.trim() || undefined,
-        };
+        });
         if (!ib.streamSettings.httpupgradeSettings.host) delete ib.streamSettings.httpupgradeSettings.host;
         break;
       case "h2":
-        ib.streamSettings.httpSettings = {
+        ib.streamSettings.httpSettings = Object.assign({}, ib.streamSettings.httpSettings || {}, {
           path: document.getElementById("wzH2Path").value.trim() || "/",
           host: [document.getElementById("wzH2Host").value.trim()].filter(Boolean),
-        };
+        });
         break;
       case "grpc":
-        ib.streamSettings.grpcSettings = {
+        ib.streamSettings.grpcSettings = Object.assign({}, ib.streamSettings.grpcSettings || {}, {
           serviceName: document.getElementById("wzGRPCService").value.trim() || "grpc",
           multiMode:   document.getElementById("wzGRPCMulti").checked,
-        };
+        });
         break;
     }
     // TLS / Reality
     if (tlsVal === "tls") {
+      const certificateFile = document.getElementById("wzTLSCert").value.trim();
+      const keyFile = document.getElementById("wzTLSKey").value.trim();
+      if (!certificateFile || !keyFile) { st.textContent = "TLS exige os arquivos de certificado e chave."; return; }
       ib.streamSettings.security = "tls";
-      ib.streamSettings.tlsSettings = {
-        certificates: [{ certificateFile: document.getElementById("wzTLSCert").value.trim(), keyFile: document.getElementById("wzTLSKey").value.trim() }],
-      };
+      ib.streamSettings.tlsSettings = Object.assign({}, ib.streamSettings.tlsSettings || {}, {
+        certificates: [{ certificateFile, keyFile }],
+      });
+      delete ib.streamSettings.realitySettings;
     } else if (tlsVal === "reality" && proto === "vless") {
       ib.streamSettings.security = "reality";
-      ib.streamSettings.realitySettings = {
+      ib.streamSettings.realitySettings = Object.assign({}, ib.streamSettings.realitySettings || {}, {
         dest:        document.getElementById("wzRealityDest").value.trim(),
         serverNames: [document.getElementById("wzRealitySNI").value.trim()].filter(Boolean),
         privateKey:  document.getElementById("wzRealityPriv").value.trim(),
         shortIds:    [document.getElementById("wzRealityShortID").value.trim()].filter(Boolean),
-      };
+      });
+      delete ib.streamSettings.tlsSettings;
+    } else {
+      delete ib.streamSettings.security;
+      delete ib.streamSettings.tlsSettings;
+      delete ib.streamSettings.realitySettings;
     }
   } else if (proto === "ssh") {
     // SSH tunnel over XHTTP: no proxy clients — the decoded stream is handed to
     // the SSH server, so authentication is an ordinary SSH account.
     ib.settings = {};
-    ib.streamSettings = { network: "xhttp" };
-    ib.streamSettings.xhttpSettings = {
+    ib.streamSettings = original?.protocol === "ssh" ? (cloneJsonSafe(original.streamSettings) || {}) : {};
+    ib.streamSettings.network = "xhttp";
+    ib.streamSettings.xhttpSettings = Object.assign({}, ib.streamSettings.xhttpSettings || ib.streamSettings.splithttpSettings || {}, {
       path: document.getElementById("wzXHTTPPath").value.trim() || "/xhttp",
       host: document.getElementById("wzXHTTPHost").value.trim() || undefined,
       mode: document.getElementById("wzXHTTPMode").value,
-    };
+    });
+    delete ib.streamSettings.splithttpSettings;
     if (!ib.streamSettings.xhttpSettings.host) delete ib.streamSettings.xhttpSettings.host;
     const tlsVal = document.getElementById("wzTLS").value;
     if (tlsVal === "tls") {
+      const certificateFile = document.getElementById("wzTLSCert").value.trim();
+      const keyFile = document.getElementById("wzTLSKey").value.trim();
+      if (!certificateFile || !keyFile) { st.textContent = "TLS exige os arquivos de certificado e chave."; return; }
       ib.streamSettings.security = "tls";
-      ib.streamSettings.tlsSettings = {
-        certificates: [{ certificateFile: document.getElementById("wzTLSCert").value.trim(), keyFile: document.getElementById("wzTLSKey").value.trim() }],
-      };
+      ib.streamSettings.tlsSettings = Object.assign({}, ib.streamSettings.tlsSettings || {}, {
+        certificates: [{ certificateFile, keyFile }],
+      });
+    } else {
+      delete ib.streamSettings.security;
+      delete ib.streamSettings.tlsSettings;
     }
   } else if (proto === "trojan") {
     ib.settings = { clients: [{ password: document.getElementById("wzTrojanPass").value.trim() || "change-me" }] };
@@ -309,13 +697,13 @@ function wzSaveInbound() {
     ib.settings = { auth: "noauth", udp: true };
     ib.streamSettings = { network: "tcp" };
   }
-  wzInbounds.push(ib);
+  if (wzEditingIndex >= 0) wzInbounds[wzEditingIndex] = ib;
+  else wzInbounds.push(ib);
   wzDirty = true;
   renderWzInbounds();
-  document.getElementById("wzAddInboundForm").classList.add("hidden");
-  document.getElementById("wzPort").value = "";
-  document.getElementById("wzTag").value  = "";
-  document.getElementById("wzListenIP").value = "";
+  loadSharedEndpointForm();
+  st.textContent = original ? `Inbound ${tag} atualizado no rascunho.` : `Inbound ${tag} adicionado ao rascunho.`;
+  wzCancelInbound();
 }
 
 
@@ -344,6 +732,7 @@ function buildConfigFromVisualEditor() {
   const existingInbounds = Array.isArray(cfg.inbounds) ? cfg.inbounds : [];
   const hiddenApiInbounds = existingInbounds.filter(ib => ib && ib.tag === "api");
   const visualInbounds = cloneJsonSafe((wzInbounds || []).filter(ib => ib && ib.tag !== "api")) || [];
+  validateVisualInbounds(visualInbounds);
   cfg.inbounds = [...hiddenApiInbounds, ...visualInbounds];
 
   return cfg;
@@ -384,8 +773,10 @@ async function applyWizardConfig() {
     wzLoadedServerID = selectedID;
     wzDirty = false;
     if (st) st.textContent = `Saved on ${target}. Restarting Xray...`;
-    await xrayCtrl("restart");
-    if (st) st.textContent = `Config saved on ${target} and Xray restarted.`;
+    const restarted = await xrayCtrl("restart");
+    if (st) st.textContent = restarted
+      ? `Config saved on ${target} and Xray restarted.`
+      : `Config saved on ${target}, but Xray could not restart. Check Xray logs before editing again.`;
     setTimeout(() => { loadXrayStatus(); loadInbounds({ force: true }); }, 700);
   } catch (e) {
     if (e.message==="auth") doAuthError();

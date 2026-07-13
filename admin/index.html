@@ -16,7 +16,7 @@
   setTimeout(function(){document.documentElement.classList.remove("i18n-pending");},2500);
 })();
 </script>
-<link rel="stylesheet" href="assets/app.css?v=20260713secure1"/>
+<link rel="stylesheet" href="assets/app.css?v=20260713xhttp2"/>
 </head>
 <body>
 <div class="app">
@@ -87,6 +87,10 @@
 
   <!-- ═══════════ Dashboard Tab ═══════════ -->
   <div class="tab-pane active" id="tab-dashboard">
+    <section class="page-hero" data-tone="cyan">
+      <div class="page-hero-copy"><span class="page-kicker">Command center</span><h2>Visão geral</h2><p>Contas, conexões e infraestrutura em uma leitura rápida.</p></div>
+      <div class="page-hero-mark" aria-hidden="true">DC</div>
+    </section>
     <div class="dash-grid">
       <div class="dash-card accent-blue">
         <div class="dash-card-main">
@@ -209,6 +213,10 @@
 
 <!-- ═══════════ SSH Users Tab ═══════════ -->
   <div class="tab-pane" id="tab-ssh">
+    <section class="page-hero" data-tone="green">
+      <div class="page-hero-copy"><span class="page-kicker">Access workspace</span><h2>Contas SSH</h2><p>Crie, limite e acompanhe acessos SSH e SlowDNS com segurança.</p></div>
+      <div class="page-hero-pills"><span>SSH</span><span>TOTP</span><span>SlowDNS</span></div>
+    </section>
 
     <!-- Reseller info card (visible to resellers only) -->
     <div id="resellerInfoCard" class="card hidden" style="margin-bottom:12px;">
@@ -304,6 +312,10 @@
 
   <!-- ═══════════ Xray Tab (superadmin only) ═══════════ -->
   <div class="tab-pane" id="tab-xray">
+    <section class="page-hero" data-tone="purple">
+      <div class="page-hero-copy"><span class="page-kicker">Proxy studio</span><h2>Xray visual</h2><p>Gerencie clientes, inbounds e um endpoint XHTTP compartilhado sem editar JSON.</p></div>
+      <div class="page-hero-pills"><span>VLESS</span><span>VMess</span><span>XHTTP</span><span>SSH</span></div>
+    </section>
     <!-- Edit Client Panel (hidden by default) -->
     <div id="editXrayClientPanel" class="card hidden" style="margin-bottom:12px;border-color:rgba(245,158,11,.4);">
       <div class="card-hdr">
@@ -393,7 +405,30 @@
       </div>
       <!-- Wizard pane -->
       <div id="xrayWizardPane">
-        <div class="form-grid" style="margin-bottom:8px;">
+        <section class="shared-endpoint-card">
+          <div class="shared-endpoint-head">
+            <div><span class="page-kicker">Shared XHTTP endpoint</span><h3>Um domínio e uma porta</h3><p>O protocolo selecionado usa <code>/</code>; SSH usa <code>/ssh</code>. Disponível no modo Xray nativo.</p></div>
+            <span class="chip green">path routing</span>
+          </div>
+          <div class="shared-route-preview" aria-label="Shared endpoint route preview">
+            <span><strong id="sharedProxyRouteLabel">VLESS</strong><code>/</code></span>
+            <i></i>
+            <span><strong>SSH</strong><code>/ssh</code></span>
+          </div>
+          <div class="form-grid shared-endpoint-grid">
+            <div class="field"><label>Protocolo em /</label><select id="sharedXHTTPProtocol"><option value="vless">VLESS</option><option value="vmess">VMess</option></select></div>
+            <div class="field"><label>Porta compartilhada</label><input id="sharedXHTTPPort" type="number" min="1" max="65535" value="443"/></div>
+            <div class="field"><label>IP de listen</label><input id="sharedXHTTPListen" value="0.0.0.0" placeholder="0.0.0.0"/></div>
+            <div class="field"><label>Host HTTP <span class="hint">opcional</span></label><input id="sharedXHTTPHost" placeholder="vpn.seudominio.com"/></div>
+            <div class="field"><label>Modo XHTTP</label><select id="sharedXHTTPMode"><option value="auto">auto</option><option value="packet-up">packet-up</option><option value="stream-up">stream-up</option><option value="stream-down">stream-down</option><option value="stream-one">stream-one</option></select></div>
+            <div class="field"><label>Segurança</label><select id="sharedXHTTPSecurity"><option value="none">Sem TLS</option><option value="tls">TLS</option></select></div>
+            <div class="field shared-tls-field hidden"><label>Arquivo do certificado</label><input id="sharedXHTTPCert" placeholder="/opt/sshpanel/certs/domain/cert.pem"/></div>
+            <div class="field shared-tls-field hidden"><label>Arquivo da chave</label><input id="sharedXHTTPKey" placeholder="/opt/sshpanel/certs/domain/key.pem"/></div>
+          </div>
+          <div class="shared-endpoint-actions"><span id="sharedXHTTPStatus" class="hint">Carregue a configuração para detectar um endpoint existente.</span><button class="btn" id="sharedXHTTPApplyBtn" type="button">Criar / atualizar endpoint</button></div>
+        </section>
+
+        <div class="visual-config-toolbar">
           <div class="field">
             <label>Log Level</label>
             <select id="wzLogLevel">
@@ -404,14 +439,13 @@
               <option value="debug">debug</option>
             </select>
           </div>
+          <div class="visual-config-toolbar-copy"><strong>Inbounds configurados</strong><span>Edite qualquer cartão visualmente ou use JSON para campos avançados.</span></div>
+          <button class="btn btn-ghost btn-sm" type="button" onclick="wzToggleAddInbound()">+ Novo inbound</button>
         </div>
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-          <span style="font-size:.8rem;font-weight:600;">Inbounds</span>
-          <button class="btn btn-ghost btn-sm" type="button" onclick="wzToggleAddInbound()">+ Add</button>
-        </div>
-        <div id="wzInboundsList" style="margin-bottom:8px;"></div>
+        <div id="wzInboundsList" class="visual-inbound-list"></div>
         <!-- Add inbound form -->
-        <div id="wzAddInboundForm" class="hidden" style="border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:8px;">
+        <div id="wzAddInboundForm" class="visual-inbound-editor hidden">
+          <div class="visual-editor-heading"><div><span class="page-kicker">Visual editor</span><h3 id="wzInboundFormTitle">Novo inbound</h3></div><span id="wzEditingBadge" class="chip hidden">editing</span></div>
           <div class="form-grid">
             <div class="field">
               <label>Protocol</label>
@@ -537,13 +571,13 @@
             </div>
           </div>
           <div class="form-actions" style="margin-top:8px;">
-            <button class="btn btn-sm" type="button" onclick="wzSaveInbound()">Add Inbound</button>
-            <button class="btn btn-ghost btn-sm" type="button" onclick="document.getElementById('wzAddInboundForm').classList.add('hidden')">Cancel</button>
+            <button class="btn btn-sm" id="wzSaveInboundBtn" type="button" onclick="wzSaveInbound()">Adicionar inbound</button>
+            <button class="btn btn-ghost btn-sm" id="wzCancelInboundBtn" type="button" onclick="wzCancelInbound()">Cancelar</button>
           </div>
         </div>
-        <div class="form-actions" style="margin-top:8px;border-top:1px solid var(--border);padding-top:8px;">
-          <button class="btn btn-sm" type="button" onclick="applyWizardConfig()">Save Config</button>
-          <span class="hint" id="wzStatus" style="margin-left:8px;"></span>
+        <div class="visual-save-bar">
+          <span class="hint" id="wzStatus"></span>
+          <button class="btn" type="button" onclick="applyWizardConfig()">Salvar configuração e reiniciar</button>
         </div>
       </div>
       <!-- JSON pane (hidden by default) -->
@@ -569,6 +603,7 @@
 
   <!-- ═══════════ Resellers Tab (superadmin only) ═══════════ -->
   <div class="tab-pane" id="tab-resellers">
+    <section class="page-hero" data-tone="amber"><div class="page-hero-copy"><span class="page-kicker">Partner operations</span><h2>Revendedores</h2><p>Controle cotas, validade e acesso dos parceiros em um só lugar.</p></div><div class="page-hero-pills"><span>Cotas</span><span>Expiração</span><span>Auditoria</span></div></section>
     <div class="grid2">
       <!-- Resellers list -->
       <div class="card">
@@ -614,6 +649,7 @@
 
   <!-- ═══════════ Servers Tab (superadmin only) ═══════════ -->
   <div class="tab-pane" id="tab-servers">
+    <section class="page-hero" data-tone="blue"><div class="page-hero-copy"><span class="page-kicker">Fleet control</span><h2>Servidores</h2><p>Adicione nós, teste credenciais e configure a infraestrutura remota.</p></div><div class="page-hero-pills"><span>Master</span><span>Nodes</span><span>Encrypted</span></div></section>
     <div id="serversListView">
       <div class="grid2 servers-grid">
         <div class="card">
@@ -841,6 +877,7 @@
 
   <!-- ═══════════ Servers Status Tab (superadmin only) ═══════════ -->
   <div class="tab-pane" id="tab-servers-status">
+    <section class="page-hero" data-tone="green"><div class="page-hero-copy"><span class="page-kicker">Live fleet</span><h2>Status dos servidores</h2><p>Saúde, carga e sessões ativas de cada nó gerenciado.</p></div><div class="page-hero-pills"><span>CPU</span><span>RAM</span><span>Uptime</span></div></section>
     <div class="card servers-status-toolbar">
       <div class="card-hdr">
         <div class="card-title">Servers Status <span class="chip" id="serversStatusCountChip">0</span></div>
@@ -857,6 +894,7 @@
 
   <!-- ═══════════ Stats Tab (superadmin only) ═══════════ -->
   <div class="tab-pane" id="tab-stats">
+    <section class="page-hero" data-tone="cyan"><div class="page-hero-copy"><span class="page-kicker">Observability</span><h2>Monitoramento</h2><p>Recursos, interfaces e capacidade do servidor em tempo real.</p></div><div class="page-hero-pills"><span>2s live</span><span>Network</span><span>Load</span></div></section>
     <div class="grid2">
       <div class="card">
         <div class="card-hdr"><div class="card-title">Server Load</div><span class="hint" id="statsUpdated">--</span></div>
@@ -891,6 +929,7 @@
 
   <!-- ═══════════ VnStat Tab (superadmin only) ═══════════ -->
   <div class="tab-pane" id="tab-vnstat">
+    <section class="page-hero" data-tone="purple"><div class="page-hero-copy"><span class="page-kicker">Traffic intelligence</span><h2>Tráfego de rede</h2><p>Histórico diário e mensal para entender o consumo da infraestrutura.</p></div><div class="page-hero-pills"><span>RX</span><span>TX</span><span>History</span></div></section>
     <div class="card">
       <div class="card-hdr">
         <div class="card-title">VnStat Usage <span class="chip">daily / monthly</span></div>
@@ -931,6 +970,7 @@
 
   <!-- ═══════════ Logs Tab (superadmin only) ═══════════ -->
   <div class="tab-pane" id="tab-logs">
+    <section class="page-hero" data-tone="amber"><div class="page-hero-copy"><span class="page-kicker">Diagnostics</span><h2>Logs do sistema</h2><p>Investigue painel, DNSTT e Xray com uma visualização focada.</p></div><div class="page-hero-pills"><span>Panel</span><span>DNSTT</span><span>Xray</span></div></section>
     <div class="card">
       <div class="card-hdr">
         <div class="card-title">System Logs</div>
@@ -1085,6 +1125,7 @@
 
   <!-- ═══════════ Server Config Tab (superadmin only) ═══════════ -->
   <div class="tab-pane" id="tab-server">
+    <section class="page-hero" data-tone="blue"><div class="page-hero-copy"><span class="page-kicker">System studio</span><h2>Configurações</h2><p>Rede, SSH, túneis e TLS organizados em blocos visuais e aplicados ao vivo.</p></div><div class="page-hero-pills"><span>Network</span><span>Tunnels</span><span>TLS</span></div></section>
 
     <div class="grid2">
       <!-- ── Left column ── -->
@@ -1396,17 +1437,17 @@
 <!-- app.js was split into ordered modules for maintainability. They are plain
      classic scripts sharing one global scope; `defer` preserves execution order,
      so behavior is identical to the old single file. Keep this load order. -->
-<script defer src="assets/js/01-core.js?v=20260713secure1"></script>
-<script defer src="assets/js/02-shell.js?v=20260713secure1"></script>
-<script defer src="assets/js/03-ssh-users.js?v=20260713secure1"></script>
-<script defer src="assets/js/04-xray.js?v=20260713secure1"></script>
-<script defer src="assets/js/05-resellers.js?v=20260713secure1"></script>
-<script defer src="assets/js/06-servers.js?v=20260713secure1"></script>
-<script defer src="assets/js/07-stats-logs.js?v=20260713secure1"></script>
-<script defer src="assets/js/08-server-config.js?v=20260713secure1"></script>
-<script defer src="assets/js/09-xray-wizard.js?v=20260713secure1"></script>
-<script defer src="assets/js/11-update-status.js?v=20260713secure1"></script>
-<script defer src="assets/js/12-bot.js?v=20260713secure1"></script>
-<script defer src="assets/js/10-boot.js?v=20260713secure1"></script>
+<script defer src="assets/js/01-core.js?v=20260713xhttp2"></script>
+<script defer src="assets/js/02-shell.js?v=20260713xhttp2"></script>
+<script defer src="assets/js/03-ssh-users.js?v=20260713xhttp2"></script>
+<script defer src="assets/js/04-xray.js?v=20260713xhttp2"></script>
+<script defer src="assets/js/05-resellers.js?v=20260713xhttp2"></script>
+<script defer src="assets/js/06-servers.js?v=20260713xhttp2"></script>
+<script defer src="assets/js/07-stats-logs.js?v=20260713xhttp2"></script>
+<script defer src="assets/js/08-server-config.js?v=20260713xhttp2"></script>
+<script defer src="assets/js/09-xray-wizard.js?v=20260713xhttp2"></script>
+<script defer src="assets/js/11-update-status.js?v=20260713xhttp2"></script>
+<script defer src="assets/js/12-bot.js?v=20260713xhttp2"></script>
+<script defer src="assets/js/10-boot.js?v=20260713xhttp2"></script>
 </body>
 </html>

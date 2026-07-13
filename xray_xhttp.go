@@ -3,6 +3,7 @@ package main
 import (
 	"container/heap"
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -97,34 +98,112 @@ func mergeNativeXHTTPSettings(primary, fallback nativeXHTTPSettingsJSON) nativeX
 	return out
 }
 
+func newNativeXHTTPListener(addr string, inbounds []*nativeInbound) (*nativeXHTTPListener, error) {
+	if len(inbounds) == 0 {
+		return nil, fmt.Errorf("native xray: shared XHTTP listener %s has no inbounds", addr)
+	}
+	group := &nativeXHTTPListener{addr: addr, inbounds: append([]*nativeInbound(nil), inbounds...)}
+	paths := make(map[string]string, len(inbounds))
+	for i, ib := range group.inbounds {
+		if ib == nil || !ib.isXHTTP() {
+			return nil, fmt.Errorf("native xray: shared XHTTP listener %s contains a non-XHTTP inbound", addr)
+		}
+		ib.path = normalizeXHTTPPath(ib.path)
+		if previous, exists := paths[ib.path]; exists {
+			return nil, fmt.Errorf("native xray: XHTTP inbounds %q and %q use the same path %s on %s", previous, ib.tag, ib.path, addr)
+		}
+		paths[ib.path] = ib.tag
+		if size := ib.xhttpServerMaxHeaderBytes(); size > group.headerSize {
+			group.headerSize = size
+		}
+		if i == 0 {
+			group.security = ib.security
+			group.tlsConfig = ib.tlsConfig
+			continue
+		}
+		if ib.security != group.security {
+			return nil, fmt.Errorf("native xray: XHTTP inbounds sharing %s must use the same TLS setting", addr)
+		}
+		if group.security == "tls" && !sameNativeTLSCertificate(group.tlsConfig, ib.tlsConfig) {
+			return nil, fmt.Errorf("native xray: XHTTP inbounds sharing %s must use the same TLS certificate", addr)
+		}
+	}
+	if group.security == "tls" && group.tlsConfig == nil {
+		return nil, fmt.Errorf("native xray: shared XHTTP listener %s has no TLS configuration", addr)
+	}
+	return group, nil
+}
+
+func sameNativeTLSCertificate(a, b *tls.Config) bool {
+	if a == nil || b == nil || len(a.Certificates) == 0 || len(b.Certificates) == 0 {
+		return a == b
+	}
+	ac := a.Certificates[0].Certificate
+	bc := b.Certificates[0].Certificate
+	if len(ac) == 0 || len(bc) == 0 || len(ac[0]) != len(bc[0]) {
+		return false
+	}
+	return string(ac[0]) == string(bc[0])
+}
+
 func (ib *nativeInbound) serveXHTTPListener(ln net.Listener) {
-	defer xrayRecover(fmt.Sprintf("native xray XHTTP listener inbound=%q addr=%s", ib.tag, ln.Addr()))
+	group, err := newNativeXHTTPListener(ln.Addr().String(), []*nativeInbound{ib})
+	if err != nil {
+		xrayLogf("native xray: XHTTP listener %q rejected: %v", ib.tag, err)
+		return
+	}
+	group.serve(ln)
+}
+
+func (g *nativeXHTTPListener) serve(ln net.Listener) {
+	defer xrayRecover(fmt.Sprintf("native xray shared XHTTP listener addr=%s", ln.Addr()))
 	h2s := &http2.Server{}
-	handler := http.Handler(ib)
+	handler := http.Handler(g)
 	// Official Xray accepts plaintext HTTP/1.1 and h2c on non-TLS XHTTP
 	// listeners, and negotiates h2/http1 through ALPN on TLS listeners. Without
 	// h2c, some clients/CDNs can reach the port but the request never reaches the
 	// XHTTP handler, which makes the proxy look dead with no useful target logs.
-	if ib.security != "tls" {
-		handler = h2c.NewHandler(ib, h2s)
+	if g.security != "tls" {
+		handler = h2c.NewHandler(g, h2s)
 	}
 	srv := &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: 4 * time.Second,
-		MaxHeaderBytes:    ib.xhttpServerMaxHeaderBytes(),
+		MaxHeaderBytes:    g.headerSize,
 	}
-	if ib.security == "tls" && ib.tlsConfig != nil {
-		srv.TLSConfig = ib.tlsConfig
+	if g.security == "tls" && g.tlsConfig != nil {
+		srv.TLSConfig = g.tlsConfig
 		_ = http2.ConfigureServer(srv, h2s)
 	}
-	// Backstop reaper for connected sessions whose client vanished without the
-	// request context ever firing. Lives for the lifetime of this listener.
+	// Each path has its own session namespace and idle sweeper.
 	stopSweep := make(chan struct{})
 	defer close(stopSweep)
-	xrayGo(fmt.Sprintf("native xray XHTTP idle sweeper inbound=%q", ib.tag), func() { ib.sweepXHTTPSessions(stopSweep) })
-	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) && !isListenerClosed(err) {
-		xrayLogf("native xray: XHTTP server for inbound %q stopped: %v", ib.tag, err)
+	for _, ib := range g.inbounds {
+		ib := ib
+		xrayGo(fmt.Sprintf("native xray XHTTP idle sweeper inbound=%q", ib.tag), func() { ib.sweepXHTTPSessions(stopSweep) })
 	}
+	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) && !isListenerClosed(err) {
+		xrayLogf("native xray: shared XHTTP server on %s stopped: %v", g.addr, err)
+	}
+}
+
+// ServeHTTP picks the longest configured path. This makes a root XHTTP inbound
+// coexist with more specific services such as /ssh without allowing the root
+// handler to steal the SSH session path.
+func (g *nativeXHTTPListener) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	var selected *nativeInbound
+	selectedLen := -1
+	for _, ib := range g.inbounds {
+		if _, ok := ib.matchXHTTPPath(r.URL.Path); ok && len(ib.path) > selectedLen {
+			selected = ib
+			selectedLen = len(ib.path)
+		}
+	}
+	if selected == nil {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	selected.ServeHTTP(w, r)
 }
 
 // sweepXHTTPSessions periodically evicts connected XHTTP sessions that have seen

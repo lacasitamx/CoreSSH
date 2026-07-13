@@ -1103,7 +1103,7 @@ func (m *XrayManager) readConfigLocked() ([]byte, error) {
 			if err != nil {
 				return nil, err
 			}
-			_ = os.WriteFile(configFile, pretty, 0o600)
+			_ = writeFileAtomic(configFile, pretty, 0o600)
 			return pretty, nil
 		}
 	}
@@ -1115,7 +1115,7 @@ func (m *XrayManager) readConfigLocked() ([]byte, error) {
 		return nil, err
 	} else if changed {
 		data = forced
-		_ = os.WriteFile(configFile, forced, 0o600)
+		_ = writeFileAtomic(configFile, forced, 0o600)
 		xrayLogf("xray: forced debug log output in file config")
 	}
 	return data, nil
@@ -1141,7 +1141,7 @@ func (m *XrayManager) writeConfigLocked(data []byte) error {
 			return fmt.Errorf("save Xray config to database: %w", err)
 		}
 	}
-	if err := os.WriteFile(configFile, pretty, 0o600); err != nil {
+	if err := writeFileAtomic(configFile, pretty, 0o600); err != nil {
 		return err
 	}
 	m.importConfigClientsLocked(pretty, "saved xray config")
@@ -1226,7 +1226,7 @@ func (m *XrayManager) bootstrapConfigStoreLocked() error {
 			return err
 		}
 		m.importConfigClientsLocked(pretty, "database xray config")
-		return os.WriteFile(configFile, pretty, 0o600)
+		return writeFileAtomic(configFile, pretty, 0o600)
 	}
 
 	data, err := os.ReadFile(configFile)
@@ -1252,7 +1252,7 @@ func (m *XrayManager) bootstrapConfigStoreLocked() error {
 				if err := statsStore.UpsertXrayConfig(ctx, key, pretty); err != nil {
 					return err
 				}
-				return os.WriteFile(configFile, pretty, 0o600)
+				return writeFileAtomic(configFile, pretty, 0o600)
 			}
 		}
 		if os.IsNotExist(err) {
@@ -1319,7 +1319,7 @@ func (m *XrayManager) syncConfigFileFromStoreLocked() error {
 		return err
 	}
 	m.importConfigClientsLocked(pretty, "database xray config")
-	return os.WriteFile(configFile, pretty, 0o600)
+	return writeFileAtomic(configFile, pretty, 0o600)
 }
 
 // GetConfig reads the current Xray JSON config. With PostgreSQL enabled, the
@@ -1340,6 +1340,11 @@ func (m *XrayManager) SetConfig(data []byte) error {
 	}
 	if changed {
 		xrayLogf("xray: added/repaired Stats API support and forced debug logs while saving config")
+	}
+	if m.cfg != nil && m.cfg.UseNative() {
+		if err := validateNativeInboundBindings(patched); err != nil {
+			return err
+		}
 	}
 	return m.writeConfigLocked(patched)
 }

@@ -10,11 +10,61 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestSharedXHTTPListenerRoutesMostSpecificPath(t *testing.T) {
+	root := &nativeInbound{tag: "shared-proxy-xhttp", protocol: "vless", transport: "xhttp", path: "/", xhttpHost: "proxy.example", xhttpSessions: make(map[string]*nativeXHTTPSession)}
+	ssh := &nativeInbound{tag: "shared-ssh-xhttp", protocol: "ssh", transport: "xhttp", path: "/ssh", xhttpHost: "ssh.example", xhttpSessions: make(map[string]*nativeXHTTPSession)}
+	group, err := newNativeXHTTPListener("127.0.0.1:443", []*nativeInbound{root, ssh})
+	if err != nil {
+		t.Fatalf("new shared XHTTP listener: %v", err)
+	}
+
+	sshReq := httptest.NewRequest(http.MethodOptions, "http://ssh.example/ssh/session", nil)
+	sshRec := httptest.NewRecorder()
+	group.ServeHTTP(sshRec, sshReq)
+	if sshRec.Code != http.StatusOK {
+		t.Fatalf("/ssh routed to root instead of SSH inbound: status=%d", sshRec.Code)
+	}
+
+	rootReq := httptest.NewRequest(http.MethodOptions, "http://proxy.example/session", nil)
+	rootRec := httptest.NewRecorder()
+	group.ServeHTTP(rootRec, rootReq)
+	if rootRec.Code != http.StatusOK {
+		t.Fatalf("/ routed incorrectly: status=%d", rootRec.Code)
+	}
+}
+
+func TestSharedXHTTPListenerRejectsDuplicatePath(t *testing.T) {
+	a := &nativeInbound{tag: "a", transport: "xhttp", path: "/same"}
+	b := &nativeInbound{tag: "b", transport: "xhttp", path: "/same/"}
+	if _, err := newNativeXHTTPListener("127.0.0.1:443", []*nativeInbound{a, b}); err == nil {
+		t.Fatal("expected duplicate normalized XHTTP path to be rejected")
+	}
+}
+
+func TestValidateNativeSharedXHTTPConfig(t *testing.T) {
+	valid := []byte(`{"inbounds":[
+		{"tag":"proxy","listen":"0.0.0.0","port":443,"protocol":"vless","streamSettings":{"network":"xhttp","xhttpSettings":{"path":"/"}}},
+		{"tag":"ssh","listen":"0.0.0.0","port":443,"protocol":"ssh","streamSettings":{"network":"xhttp","xhttpSettings":{"path":"/ssh"}}}
+	]}`)
+	if err := validateNativeInboundBindings(valid); err != nil {
+		t.Fatalf("valid shared endpoint rejected: %v", err)
+	}
+
+	duplicate := []byte(`{"inbounds":[
+		{"tag":"a","listen":"0.0.0.0","port":443,"protocol":"vless","streamSettings":{"network":"xhttp","xhttpSettings":{"path":"/same"}}},
+		{"tag":"b","listen":"0.0.0.0","port":443,"protocol":"ssh","streamSettings":{"network":"xhttp","xhttpSettings":{"path":"/same/"}}}
+	]}`)
+	if err := validateNativeInboundBindings(duplicate); err == nil {
+		t.Fatal("duplicate normalized XHTTP path was accepted")
+	}
+}
 
 // startEchoServer starts a TCP server that echoes everything back and returns
 // its port and a cleanup func.

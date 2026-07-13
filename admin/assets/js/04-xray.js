@@ -98,9 +98,11 @@ async function xrayCtrl(action) {
     xStatus.textContent = currentLang === "pt-BR" ? "Xray OK." : "Xray "+action+" OK.";
     setTimeout(loadXrayStatus, 700);
     setTimeout(() => loadInbounds({ force: true }), 1200);
+    return true;
   } catch (e) {
     if (e.message==="auth") doAuthError();
     else xStatus.textContent = t("Error: {error}", {error: e.message});
+    return false;
   }
 }
 

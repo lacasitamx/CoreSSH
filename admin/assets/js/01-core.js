@@ -15,6 +15,7 @@ let wzLoadedFullConfig = null;
 let wzLoadedConfigText = "";
 let wzLoadedServerID = null;
 let wzDirty = false;
+let wzEditingIndex = -1;
 let dashboardCache = { sshUsers: [], xrayInbounds: [], me: null };
 let currentTab = "dashboard";
 let inboundsRefreshInFlight = false;
@@ -113,6 +114,22 @@ Object.assign(I18N_TEXT["pt-BR"], {
 Object.assign(I18N_ALIASES, {
   "Atualizações do painel":"Panel Updates","Verificando…":"Checking…","Abrir Git":"Open Git","Verificar agora":"Check now","Versão instalada":"Installed version","Última versão no Git":"Latest Git version","Última verificação":"Last checked",
   "Comparando a versão instalada com o repositório Git.":"Comparing the installed version with the Git repository.","Para atualizar:":"To update:","Copiar comando":"Copy command","Atualizado":"Up to date","Atualização disponível":"Update available","Alterações locais":"Local changes","Desconhecido":"Unknown"
+});
+Object.assign(I18N_TEXT["en-US"], {
+  "Command center":"Command center","Overview command copy":"Accounts, connections, and infrastructure at a glance.","Access workspace":"Access workspace","SSH accounts":"SSH accounts","SSH accounts copy":"Create, limit, and monitor SSH and SlowDNS access securely.",
+  "Proxy studio":"Proxy studio","Xray visual":"Visual Xray","Xray visual copy":"Manage clients, inbounds, and a shared XHTTP endpoint without editing JSON.","Partner operations":"Partner operations","Partner operations copy":"Control partner quotas, expiration, and access in one place.",
+  "Fleet control":"Fleet control","Fleet control copy":"Add nodes, test credentials, and configure remote infrastructure.","Live fleet":"Live fleet","Server status copy":"Health, load, and active sessions for every managed node.","Observability":"Observability","Monitoring copy":"Server resources, interfaces, and capacity in real time.",
+  "Traffic intelligence":"Traffic intelligence","Network traffic":"Network traffic","Network traffic copy":"Daily and monthly history for understanding infrastructure usage.","Diagnostics":"Diagnostics","System logs copy":"Investigate the panel, DNSTT, and Xray in a focused view.","System studio":"System studio","Settings copy":"Network, SSH, tunnels, and TLS organized visually and applied live.",
+  "One domain and port":"One domain and port","Shared endpoint copy":"The selected protocol uses /; SSH uses /ssh. Available in native Xray mode.","Protocol on /":"Protocol on /","Shared port":"Shared port","Listen IP":"Listen IP","HTTP host":"HTTP host","optional":"optional","XHTTP mode":"XHTTP mode","Security":"Security","No TLS":"No TLS","Certificate file":"Certificate file","Key file":"Key file","Create / update endpoint":"Create / update endpoint",
+  "Configured inbounds":"Configured inbounds","Visual inbound help":"Edit any card visually or use JSON for advanced fields.","New inbound":"New inbound","Visual editor":"Visual editor","Add inbound":"Add inbound","Save changes":"Save changes","Duplicate":"Duplicate","Remove":"Remove","Save config and restart":"Save config and restart"
+});
+Object.assign(I18N_TEXT["pt-BR"], {
+  "Command center":"Central de comando","Overview command copy":"Contas, conexões e infraestrutura em uma leitura rápida.","Access workspace":"Área de acessos","SSH accounts":"Contas SSH","SSH accounts copy":"Crie, limite e acompanhe acessos SSH e SlowDNS com segurança.",
+  "Proxy studio":"Estúdio de proxy","Xray visual":"Xray visual","Xray visual copy":"Gerencie clientes, inbounds e um endpoint XHTTP compartilhado sem editar JSON.","Partner operations":"Operação de parceiros","Partner operations copy":"Controle cotas, validade e acesso dos parceiros em um só lugar.",
+  "Fleet control":"Controle da frota","Fleet control copy":"Adicione nós, teste credenciais e configure a infraestrutura remota.","Live fleet":"Frota ao vivo","Server status copy":"Saúde, carga e sessões ativas de cada nó gerenciado.","Observability":"Observabilidade","Monitoring copy":"Recursos, interfaces e capacidade do servidor em tempo real.",
+  "Traffic intelligence":"Inteligência de tráfego","Network traffic":"Tráfego de rede","Network traffic copy":"Histórico diário e mensal para entender o consumo da infraestrutura.","Diagnostics":"Diagnóstico","System logs copy":"Investigue painel, DNSTT e Xray com uma visualização focada.","System studio":"Estúdio do sistema","Settings copy":"Rede, SSH, túneis e TLS organizados em blocos visuais e aplicados ao vivo.",
+  "One domain and port":"Um domínio e uma porta","Shared endpoint copy":"O protocolo selecionado usa /; SSH usa /ssh. Disponível no modo Xray nativo.","Protocol on /":"Protocolo em /","Shared port":"Porta compartilhada","Listen IP":"IP de listen","HTTP host":"Host HTTP","optional":"opcional","XHTTP mode":"Modo XHTTP","Security":"Segurança","No TLS":"Sem TLS","Certificate file":"Arquivo do certificado","Key file":"Arquivo da chave","Create / update endpoint":"Criar / atualizar endpoint",
+  "Configured inbounds":"Inbounds configurados","Visual inbound help":"Edite qualquer cartão visualmente ou use JSON para campos avançados.","New inbound":"Novo inbound","Visual editor":"Editor visual","Add inbound":"Adicionar inbound","Save changes":"Salvar alterações","Duplicate":"Duplicar","Remove":"Remover","Save config and restart":"Salvar configuração e reiniciar"
 });
 const I18N_REVERSE = Object.fromEntries(SUPPORTED_LANGS.map(lang => [lang, Object.fromEntries(Object.entries(I18N_TEXT[lang] || {}).map(([k, v]) => [v, k]))]));
 let currentLang = detectInitialLanguage();

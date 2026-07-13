@@ -110,6 +110,18 @@ type nativeXrayServer struct {
 
 var nativeXray = &nativeXrayServer{}
 
+// nativeXHTTPListener groups all XHTTP inbounds that bind the same address.
+// XHTTP is ordinary HTTP at the transport layer, so routing by the configured
+// path lets VLESS/VMess and the DragonCore SSH tunnel safely share one TLS port.
+// The most specific path wins: for example /ssh/ is checked before /.
+type nativeXHTTPListener struct {
+	addr       string
+	inbounds   []*nativeInbound
+	tlsConfig  *tls.Config
+	security   string
+	headerSize int
+}
+
 // nativeRunning reports whether the in-process Xray listeners are up.
 func (s *nativeXrayServer) nativeRunning() bool {
 	s.mu.Lock()
@@ -140,7 +152,18 @@ func (s *nativeXrayServer) start(configFile string) error {
 
 	var opened []net.Listener
 	active := make(map[string]*nativeInbound, len(inbounds))
+	xhttpGroups := make(map[string][]*nativeInbound)
+	var xhttpOrder []string
 	for _, ib := range inbounds {
+		if ib.isXHTTP() {
+			addr := net.JoinHostPort(ib.listen, strconv.Itoa(ib.port))
+			if _, exists := xhttpGroups[addr]; !exists {
+				xhttpOrder = append(xhttpOrder, addr)
+			}
+			xhttpGroups[addr] = append(xhttpGroups[addr], ib)
+			active[ib.tag] = ib
+			continue
+		}
 		addr := net.JoinHostPort(ib.listen, strconv.Itoa(ib.port))
 		ln, err := net.Listen("tcp", addr)
 		if err != nil {
@@ -151,23 +174,38 @@ func (s *nativeXrayServer) start(configFile string) error {
 			return fmt.Errorf("native xray: listen %s (inbound %q): %w", addr, ib.tag, err)
 		}
 
-		serveLn := ln
-		if ib.isXHTTP() {
-			// HTTP/XHTTP needs a real http.Server because one logical XHTTP
-			// session can span several HTTP requests/connections. TLS is therefore
-			// wrapped at listener level instead of inside serve().
-			if ib.security == "tls" {
-				serveLn = tls.NewListener(ln, ib.tlsConfig)
-			}
-			opened = append(opened, serveLn)
-			xrayGo(fmt.Sprintf("native xray xhttp listener %s", addr), func() { ib.serveXHTTPListener(serveLn) })
-		} else {
-			opened = append(opened, serveLn)
-			xrayGo(fmt.Sprintf("native xray accept loop %s", addr), func() { ib.acceptLoop(serveLn) })
-		}
+		opened = append(opened, ln)
+		xrayGo(fmt.Sprintf("native xray accept loop %s", addr), func() { ib.acceptLoop(ln) })
 		active[ib.tag] = ib
 		xrayLogf("native xray: serving %s/%s on %s (inbound %q, security=%s, %d clients)",
 			ib.protocol, ib.transport, addr, ib.tag, orNone(ib.security), ib.clientCount())
+	}
+
+	for _, addr := range xhttpOrder {
+		group, err := newNativeXHTTPListener(addr, xhttpGroups[addr])
+		if err != nil {
+			for _, l := range opened {
+				_ = l.Close()
+			}
+			return err
+		}
+		ln, err := net.Listen("tcp", addr)
+		if err != nil {
+			for _, l := range opened {
+				_ = l.Close()
+			}
+			return fmt.Errorf("native xray: listen %s (shared XHTTP): %w", addr, err)
+		}
+		serveLn := net.Listener(ln)
+		if group.security == "tls" {
+			serveLn = tls.NewListener(ln, group.tlsConfig)
+		}
+		opened = append(opened, serveLn)
+		xrayGo(fmt.Sprintf("native xray shared xhttp listener %s", addr), func() { group.serve(serveLn) })
+		for _, ib := range group.inbounds {
+			xrayLogf("native xray: serving %s/%s on %s%s (inbound %q, security=%s, %d clients)",
+				ib.protocol, ib.transport, addr, ib.path, ib.tag, orNone(ib.security), ib.clientCount())
+		}
 	}
 
 	s.listeners = opened
@@ -939,6 +977,79 @@ type nativeInboundJSON struct {
 		XHTTPSettings     nativeXHTTPSettingsJSON `json:"xhttpSettings"`
 		SplitHTTPSettings nativeXHTTPSettingsJSON `json:"splithttpSettings"`
 	} `json:"streamSettings"`
+}
+
+// validateNativeInboundBindings checks the listener topology before a visual or
+// raw-JSON update replaces the running native config. It intentionally mirrors
+// the startup rules so an invalid shared-port edit is rejected before the last
+// working file is overwritten.
+func validateNativeInboundBindings(data []byte) error {
+	var cf nativeXrayConfigFile
+	if err := json.Unmarshal(data, &cf); err != nil {
+		return fmt.Errorf("native xray: parse config: %w", err)
+	}
+	type binding struct {
+		tag      string
+		xhttp    bool
+		path     string
+		security string
+		certFile string
+		keyFile  string
+	}
+	groups := make(map[string][]binding)
+	for _, in := range cf.Inbounds {
+		proto := strings.ToLower(strings.TrimSpace(in.Protocol))
+		if proto != "ssh" && !xrayClientProtos[proto] {
+			continue
+		}
+		port, ok := parseSinglePort(in.Port)
+		if !ok {
+			return fmt.Errorf("native xray: inbound %q has an unsupported port", in.Tag)
+		}
+		network := strings.ToLower(firstNonEmpty(in.StreamSettings.Network, "tcp"))
+		isXHTTP := network == "xhttp" || network == "splithttp"
+		if proto == "ssh" && !isXHTTP {
+			return fmt.Errorf("native xray: inbound %q protocol ssh requires XHTTP", in.Tag)
+		}
+		item := binding{tag: in.Tag, xhttp: isXHTTP, security: strings.ToLower(strings.TrimSpace(in.StreamSettings.Security))}
+		if item.security == "none" {
+			item.security = ""
+		}
+		if isXHTTP {
+			xh := mergeNativeXHTTPSettings(in.StreamSettings.XHTTPSettings, in.StreamSettings.SplitHTTPSettings)
+			item.path = normalizeXHTTPPath(firstNonEmpty(xh.Path, "/xhttp"))
+		}
+		if len(in.StreamSettings.TLSSettings.Certificates) > 0 {
+			item.certFile = strings.TrimSpace(in.StreamSettings.TLSSettings.Certificates[0].CertificateFile)
+			item.keyFile = strings.TrimSpace(in.StreamSettings.TLSSettings.Certificates[0].KeyFile)
+		}
+		host := normalizeNativeListenHost(firstNonEmpty(in.Listen, "0.0.0.0"))
+		addr := net.JoinHostPort(host, strconv.Itoa(port))
+		groups[addr] = append(groups[addr], item)
+	}
+	for addr, items := range groups {
+		if len(items) < 2 {
+			continue
+		}
+		paths := make(map[string]string, len(items))
+		first := items[0]
+		for _, item := range items {
+			if !item.xhttp {
+				return fmt.Errorf("native xray: multiple inbounds on %s require XHTTP path routing", addr)
+			}
+			if previous, exists := paths[item.path]; exists {
+				return fmt.Errorf("native xray: XHTTP inbounds %q and %q use the same path %s on %s", previous, item.tag, item.path, addr)
+			}
+			paths[item.path] = item.tag
+			if item.security != first.security {
+				return fmt.Errorf("native xray: XHTTP inbounds sharing %s must use the same TLS setting", addr)
+			}
+			if item.security == "tls" && (item.certFile != first.certFile || item.keyFile != first.keyFile) {
+				return fmt.Errorf("native xray: XHTTP inbounds sharing %s must use the same TLS certificate", addr)
+			}
+		}
+	}
+	return nil
 }
 
 // parseNativeInbounds reads the Xray config file and returns one nativeInbound
