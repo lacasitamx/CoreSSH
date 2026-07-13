@@ -38,13 +38,13 @@ function renderResellers(list) {
     const pct = max ? Math.min(100, Math.round((used / max) * 100)) : 0;
     const tr = document.createElement("tr");
     tr.innerHTML = `
-      <td>${r.username}</td>
+      <td>${escapeHTML(r.username)}</td>
       <td>
         <strong>${used} / ${max || "∞"}</strong>
         <div class="hint">Disponível ${remaining} · SSH ${r.used_ssh_users || 0} · Xray ${r.used_xray_users || 0}</div>
         <div class="table-meter"><span style="width:${pct}%"></span></div>
       </td>
-      <td>${r.expires_at ? fmtDate(r.expires_at) : "—"}</td>
+      <td>${r.expires_at ? escapeHTML(fmtDate(r.expires_at)) : "—"}</td>
       <td><span class="${r.is_active && !expired ? 'badge-on' : 'badge-off'}">${r.is_active && !expired ? "Active" : expired ? "Expired" : "Suspended"}</span></td>
       <td></td>`;
     const tdA = tr.lastElementChild;
@@ -110,4 +110,3 @@ async function deleteReseller(username) {
     else resellerStatus.textContent = "Error deleting.";
   }
 }
-

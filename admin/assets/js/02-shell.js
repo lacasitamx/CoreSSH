@@ -56,7 +56,7 @@ loginPass.addEventListener("keydown", e => { if (e.key==="Enter") doLogin(); });
 logoutBtn.addEventListener("click", async () => {
   try { await api("/api/auth/logout", { method: "POST" }); } catch {}
   sessionToken = "";
-  localStorage.removeItem("SESSION_TOKEN");
+  sessionStorage.removeItem("SESSION_TOKEN");
   clearTimers();
   mainApp.classList.add("hidden");
   loginOverlay.classList.remove("hidden");
@@ -83,7 +83,7 @@ async function doLogin() {
     sessionToken = data.token;
     currentRole  = data.role;
     currentUser  = data.username;
-    localStorage.setItem("SESSION_TOKEN", sessionToken);
+    sessionStorage.setItem("SESSION_TOKEN", sessionToken);
     loginOverlay.classList.add("hidden");
     mainApp.classList.remove("hidden");
     initAfterLogin();
@@ -288,4 +288,3 @@ function refreshDashboard() {
   if (currentRole === "superadmin") loadStats();
   if (currentRole === "reseller") loadMe();
 }
-

@@ -1532,7 +1532,6 @@ func sendLoop(ttConn *turbotunnel.QueuePacketConn, ch <-chan *record, maxEncoded
 		atomic.AddUint64(&dnsttStats.RespSent, 1)
 		atomic.AddUint64(&dnsttStats.RespSentBytes, uint64(len(buf)))
 	}
-	return nil
 }
 
 // computeMaxEncodedPayload computes the maximum amount of downstream TXT RR

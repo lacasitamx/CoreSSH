@@ -113,9 +113,9 @@ function renderWzInbounds() {
     const sec = ss.security || "";
     const secLabel = sec === "tls" ? " TLS" : sec === "reality" ? " Reality" : "";
     const modeLabel = net === "xhttp" && ss.xhttpSettings?.mode ? " ("+ss.xhttpSettings.mode+")" : "";
-    row.innerHTML = `<span class="chip">${ib.protocol}</span>
-      <span style="font-family:monospace;">${ib.tag||"untagged"}${portStr}</span>
-      <span class="hint" style="flex:1;">${ib.listen||"0.0.0.0"}${net?" · "+net:""}${modeLabel}${secLabel}</span>`;
+    row.innerHTML = `<span class="chip">${escapeHTML(ib.protocol || "")}</span>
+      <span style="font-family:monospace;">${escapeHTML((ib.tag||"untagged")+portStr)}</span>
+      <span class="hint" style="flex:1;">${escapeHTML((ib.listen||"0.0.0.0")+(net?" · "+net:"")+modeLabel+secLabel)}</span>`;
     const clients = ib.settings?.clients;
     if (Array.isArray(clients) && clients.length) {
       const badge = document.createElement("span");
@@ -392,4 +392,3 @@ async function applyWizardConfig() {
     else if (st) st.textContent = "Error: " + e.message;
   }
 }
-

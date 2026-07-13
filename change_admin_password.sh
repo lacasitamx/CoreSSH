@@ -104,18 +104,15 @@ get_env_value() {
   ' "$ENV_FILE"
 }
 
-update_env_password() {
-  local new_password="$1"
+remove_legacy_env_password() {
   local tmp
   tmp="$(mktemp)"
-  awk -v line="ADMIN_PASSWORD=${new_password}" '
-    BEGIN { done = 0 }
-    /^ADMIN_PASSWORD=/ { print line; done = 1; next }
+  awk '
+    /^ADMIN_PASSWORD=/ { next }
     { print }
-    END { if (!done) print line }
   ' "$ENV_FILE" > "$tmp"
-  cat "$tmp" > "$ENV_FILE"
-  rm -f "$tmp"
+  install -m 600 "$tmp" "$ENV_FILE"
+  rm -f -- "$tmp"
   chmod 600 "$ENV_FILE" 2>/dev/null || true
 }
 
@@ -135,15 +132,8 @@ generate_password() {
 
 hash_password() {
   local pw="$1"
-  if command -v sha256sum >/dev/null 2>&1; then
-    printf '%s' "$pw" | sha256sum | awk '{print $1}'
-  elif command -v shasum >/dev/null 2>&1; then
-    printf '%s' "$pw" | shasum -a 256 | awk '{print $1}'
-  elif command -v openssl >/dev/null 2>&1; then
-    printf '%s' "$pw" | openssl dgst -sha256 -r | awk '{print $1}'
-  else
-    error "No SHA-256 tool found. Install coreutils or openssl."
-  fi
+  [[ -x "$INSTALL_DIR/sshpanel" ]] || error "Panel binary not found: $INSTALL_DIR/sshpanel"
+  printf '%s' "$pw" | "$INSTALL_DIR/sshpanel" -hash-admin-password-stdin 2>/dev/null
 }
 
 PG_DSN="$(get_env_value PG_DSN)"
@@ -168,12 +158,12 @@ elif [[ -z "$NEW_PASSWORD" ]]; then
 fi
 
 [[ -n "$NEW_PASSWORD" ]] || error "Password cannot be empty."
-if [[ ${#NEW_PASSWORD} -lt 8 ]]; then
-  error "Password must have at least 8 characters."
+if [[ ${#NEW_PASSWORD} -lt 10 ]]; then
+  error "Password must have at least 10 characters."
 fi
 
 PASSWORD_HASH="$(hash_password "$NEW_PASSWORD")"
-[[ ${#PASSWORD_HASH} -eq 64 ]] || error "Failed to generate valid SHA-256 password hash."
+[[ "$PASSWORD_HASH" == \$2* ]] || error "Failed to generate a valid bcrypt password hash."
 
 info "Updating admin user '${ADMIN_USER}' in PostgreSQL..."
 psql "$PG_DSN" -v ON_ERROR_STOP=1 \
@@ -201,10 +191,8 @@ ON CONFLICT (username) DO UPDATE SET
 SQL
 
 if [[ "$ADMIN_USER" == "admin" ]]; then
-  update_env_password "$NEW_PASSWORD"
-  info "Updated ADMIN_PASSWORD inside $ENV_FILE"
-else
-  warn "ADMIN_PASSWORD in $ENV_FILE was not changed because username is not 'admin'."
+  remove_legacy_env_password
+  info "Removed any legacy plaintext ADMIN_PASSWORD entry from $ENV_FILE"
 fi
 
 if ! $NO_RESTART; then

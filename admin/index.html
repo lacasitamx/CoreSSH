@@ -16,7 +16,7 @@
   setTimeout(function(){document.documentElement.classList.remove("i18n-pending");},2500);
 })();
 </script>
-<link rel="stylesheet" href="assets/app.css?v=20260713bot3"/>
+<link rel="stylesheet" href="assets/app.css?v=20260713secure1"/>
 </head>
 <body>
 <div class="app">
@@ -951,234 +951,136 @@
 
   <!-- ═══════════ Bot / Vendas Tab (superadmin only) ═══════════ -->
   <div class="tab-pane" id="tab-bot">
-
-    <!-- Section switcher -->
-    <div class="card">
-      <div class="card-hdr" style="align-items:center;">
-        <div class="card-title">🤖 Bot / Vendas</div>
-        <select id="botSection" class="btn-sm" style="min-width:230px;font-weight:600;">
-          <option value="config">⚙️ Configuração</option>
-          <option value="plans">💎 Planos</option>
-          <option value="packages">💳 Pacotes de Crédito</option>
-          <option value="messages">✉️ Mensagens</option>
-          <option value="users">👥 Clientes</option>
-          <option value="transactions">💰 Pagamentos</option>
-        </select>
+    <section class="bot-hero">
+      <div class="bot-hero-copy">
+        <span class="bot-eyebrow">Central de automação</span>
+        <h2>Bot de vendas</h2>
+        <p>Telegram, PIX, planos e clientes em um único fluxo.</p>
       </div>
+      <div class="bot-hero-actions">
+        <span id="botConfigStatus" class="bot-live-status">Aguardando dados</span>
+        <button class="btn btn-ghost btn-sm" id="botTestBtn" type="button">Testar integrações</button>
+        <button class="btn btn-ghost btn-sm" id="botConfigReloadBtn" type="button">Atualizar tudo</button>
+      </div>
+      <div class="bot-overview-grid">
+        <article class="bot-overview-card"><span class="bot-overview-icon">●</span><div><small>Operação</small><strong id="botMetricState">Carregando</strong></div></article>
+        <article class="bot-overview-card"><span class="bot-overview-icon bot-purple">◆</span><div><small>Planos</small><strong id="botMetricPlans">0</strong></div></article>
+        <article class="bot-overview-card"><span class="bot-overview-icon bot-green">↗</span><div><small>Clientes</small><strong id="botMetricUsers">0</strong></div></article>
+        <article class="bot-overview-card"><span class="bot-overview-icon bot-amber">$</span><div><small>PIX pendentes</small><strong id="botMetricPending">0</strong></div></article>
+      </div>
+    </section>
+
+    <div class="bot-nav-shell">
+      <nav class="bot-section-nav" id="botSectionNav" aria-label="Áreas do bot">
+        <button class="active" type="button" data-bot-section="config"><span>⚙</span> Integrações</button>
+        <button type="button" data-bot-section="plans"><span>◆</span> Planos</button>
+        <button type="button" data-bot-section="packages"><span>▤</span> Créditos</button>
+        <button type="button" data-bot-section="messages"><span>✉</span> Mensagens</button>
+        <button type="button" data-bot-section="users"><span>◎</span> Clientes</button>
+        <button type="button" data-bot-section="transactions"><span>$</span> Pagamentos</button>
+      </nav>
+      <select id="botSection" class="bot-section-select" aria-label="Área do bot">
+        <option value="config">Integrações</option><option value="plans">Planos</option><option value="packages">Créditos</option>
+        <option value="messages">Mensagens</option><option value="users">Clientes</option><option value="transactions">Pagamentos</option>
+      </select>
     </div>
 
-    <!-- ═══ Section: Config ═══ -->
-    <div class="bot-section" id="botSec-config">
-    <!-- Config: sticky action bar -->
-    <div class="card">
-      <div class="card-hdr">
-        <div class="card-title">⚙️ Configuração do Bot</div>
-        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
-          <span id="botConfigStatus" class="hint">Pronto.</span>
-          <button class="btn btn-ghost btn-sm" id="botTestBtn">Testar conexão</button>
-          <button class="btn btn-ghost btn-sm" id="botConfigReloadBtn">Recarregar</button>
-          <button class="btn btn-sm" id="botConfigSaveBtn">Salvar configuração</button>
-        </div>
-      </div>
-      <p class="hint" style="margin:2px 0 0;">1) Cole os tokens abaixo e clique <b>Testar</b> · 2) Crie os <b>Planos</b> · 3) Promova revendedores em <b>Clientes</b>. O Telegram funciona por long-polling — não precisa de domínio.</p>
-    </div>
+    <section class="bot-section active" id="botSec-config" data-bot-panel="config">
+      <div class="bot-section-heading"><div><span>01 · Integrações</span><h3>Conecte os serviços</h3><p>Tokens ficam criptografados. Campos vazios mantêm o valor atual.</p></div><button class="btn btn-sm" id="botConfigSaveBtn" type="button">Salvar e reiniciar bot</button></div>
+      <div class="bot-config-grid">
+        <article class="card bot-integration-card">
+          <div class="bot-card-heading"><div class="bot-service-icon telegram">✈</div><div><h4>Telegram</h4><p>Canal de atendimento e entrega</p></div><label class="bot-switch"><input id="botEnabled" type="checkbox"/><span></span></label></div>
+          <div class="field"><label>Token do @BotFather <span class="bot-secret-state" id="botHasTgToken"></span></label><input id="botTelegramToken" type="password" autocomplete="new-password" placeholder="Em branco para manter o token salvo"/></div>
+          <div class="field"><label>IDs dos administradores</label><input id="botAdminIDs" inputmode="numeric" placeholder="111111111, 222222222"/><span class="hint">Separe mais de um ID por vírgula.</span></div>
+        </article>
 
-    <div class="grid2">
-      <!-- Telegram -->
-      <div class="card">
-        <div class="card-hdr"><div class="card-title">✈️ Telegram</div></div>
-        <label style="display:flex;align-items:center;gap:8px;margin-bottom:12px;cursor:pointer;">
-          <input id="botEnabled" type="checkbox" style="width:16px;height:16px;"/> <span>Bot ativo</span>
-        </label>
-        <div class="field"><label>Token do bot <span class="hint" id="botHasTgToken"></span></label><input id="botTelegramToken" type="password" autocomplete="new-password" placeholder="cole o token do @BotFather (em branco = manter)"/></div>
-        <div class="field"><label>IDs de admin <span class="hint">separados por vírgula</span></label><input id="botAdminIDs" placeholder="111111111,222222222"/></div>
-      </div>
-
-      <!-- Mercado Pago -->
-      <div class="card">
-        <div class="card-hdr"><div class="card-title">💠 Mercado Pago (PIX)</div></div>
-        <div class="field"><label>Access Token <span class="hint" id="botHasMpToken"></span></label><input id="botMPToken" type="password" autocomplete="new-password" placeholder="APP_USR-... (em branco = manter)"/></div>
-        <div class="form-grid">
-          <div class="field"><label>Confirmação</label><select id="botMPConfirmMode"><option value="polling">Polling (sem domínio)</option><option value="webhook">Webhook</option></select></div>
-          <div class="field"><label>Intervalo do polling</label><input id="botMPPollInterval" placeholder="20s"/></div>
-          <div class="field"><label>Expiração do PIX (min)</label><input id="botPixExp" type="number" min="1" placeholder="30"/></div>
-        </div>
-        <div id="botMPWebhookBox" style="display:none;margin-top:6px;">
-          <div class="field"><label>Webhook Secret <span class="hint" id="botHasMpSecret"></span></label><input id="botMPWebhookSecret" type="password" autocomplete="new-password" placeholder="(em branco = manter)"/></div>
-          <p class="hint" style="margin:4px 0 0;">No Mercado Pago, cadastre a URL de notificação:<br><code id="botMPWebhookURL">https://SEU_HOST/api/mp/webhook</code></p>
-        </div>
-      </div>
-    </div>
-
-    <div class="grid2">
-      <!-- Trial -->
-      <div class="card">
-        <div class="card-hdr"><div class="card-title">⏳ Teste Grátis</div></div>
-        <label style="display:flex;align-items:center;gap:8px;margin-bottom:12px;cursor:pointer;">
-          <input id="botTrialEnabled" type="checkbox" style="width:16px;height:16px;"/> <span>Oferecer teste grátis</span>
-        </label>
-        <div class="form-grid">
-          <div class="field"><label>Duração (horas)</label><input id="botTrialHours" type="number" min="1" placeholder="1"/></div>
-          <div class="field"><label>Conexões</label><input id="botTrialMaxConns" type="number" min="1" placeholder="1"/></div>
-          <div class="field"><label>Tipo</label><select id="botTrialKind"><option value="ssh">SSH</option><option value="xray">Xray</option></select></div>
-          <div class="field"><label>Inbound (se Xray)</label><input id="botTrialInbound" list="botInboundList" placeholder="tag"/></div>
-        </div>
-      </div>
-
-      <!-- Delivery host -->
-      <div class="card">
-        <div class="card-hdr"><div class="card-title">🌐 Host de entrega</div></div>
-        <div class="field"><label>Host/IP para SSH</label><input id="botPublicHost" placeholder="seu.dominio ou IP público"/></div>
-        <div class="field"><label>Host para links Xray</label><input id="botXrayPublicHost" placeholder="seu.dominio (vless/vmess)"/></div>
-        <p class="hint" style="margin:4px 0 0;">Enviado ao cliente nas credenciais após o pagamento.</p>
-      </div>
-    </div>
-    </div><!-- /botSec-config -->
-
-    <!-- ═══ Section: Plans ═══ -->
-    <div class="bot-section" id="botSec-plans" style="display:none;">
-    <div class="grid2">
-      <!-- Plans -->
-      <div class="card">
-        <div class="card-hdr">
-          <div class="card-title">💎 Planos <span class="chip" id="botPlanCount">0</span></div>
-          <div style="display:flex;gap:5px;">
-            <button class="btn btn-ghost btn-sm" id="botNewPlanBtn">+ Novo</button>
-            <button class="btn btn-ghost btn-sm" id="botReloadPlansBtn">Recarregar</button>
-          </div>
-        </div>
-        <div class="tbl-wrap">
-          <table>
-            <thead><tr><th>Nome</th><th>Tipo</th><th>Dias</th><th>Preço</th><th>Créd.</th><th>Ativo</th><th>Ações</th></tr></thead>
-            <tbody id="botPlansBody"></tbody>
-          </table>
-        </div>
-        <div class="statusbar"><span id="botPlansStatus">Ready.</span></div>
-      </div>
-
-      <!-- Plan form -->
-      <div class="card">
-        <div class="card-hdr">
-          <div class="card-title" id="botPlanFormTitle">Novo Plano</div>
-          <button class="btn btn-ghost btn-sm" id="botCancelPlanBtn">Limpar</button>
-        </div>
-        <form id="botPlanForm">
-          <input type="hidden" id="planId"/>
+        <article class="card bot-integration-card">
+          <div class="bot-card-heading"><div class="bot-service-icon mercado">MP</div><div><h4>Mercado Pago</h4><p>Recebimentos PIX automáticos</p></div></div>
+          <div class="field"><label>Access Token <span class="bot-secret-state" id="botHasMpToken"></span></label><input id="botMPToken" type="password" autocomplete="new-password" placeholder="APP_USR-… (vazio mantém o atual)"/></div>
           <div class="form-grid">
-            <div class="field"><label>Nome</label><input id="planName" required/></div>
-            <div class="field"><label>Tipo</label><select id="planKind"><option value="ssh">SSH</option><option value="xray">Xray</option></select></div>
-            <div class="field"><label>Dias de validade</label><input id="planDays" type="number" min="1" value="30"/></div>
-            <div class="field"><label>Máx. conexões</label><input id="planMaxConns" type="number" min="0" value="1"/></div>
-            <div class="field"><label>Limite Mbps ↑ (SSH)</label><input id="planUpMbps" type="number" min="0" value="0"/></div>
-            <div class="field"><label>Limite Mbps ↓ (SSH)</label><input id="planDownMbps" type="number" min="0" value="0"/></div>
-            <div class="field"><label>Inbound Xray</label><input id="planInbound" list="botInboundList" placeholder="tag (se Xray)"/><datalist id="botInboundList"></datalist></div>
-            <div class="field"><label>Protocolo Xray</label><select id="planProtocol"><option value="">-</option><option value="vless">vless</option><option value="vmess">vmess</option><option value="trojan">trojan</option></select></div>
-            <div class="field"><label>Preço (R$)</label><input id="planPrice" type="number" step="0.01" min="0" value="0"/></div>
-            <div class="field"><label>Custo em créditos</label><input id="planCreditCost" type="number" min="0" value="1"/></div>
-            <div class="field"><label>Server ID <span class="hint">(vazio=local)</span></label><input id="planServerId"/></div>
-            <div class="field"><label>Ordem</label><input id="planSort" type="number" value="0"/></div>
-            <div class="field"><label>Ativo</label><input id="planActive" type="checkbox" checked style="width:16px;height:16px;margin-top:10px;"/></div>
+            <div class="field"><label>Confirmação</label><select id="botMPConfirmMode"><option value="polling">Polling — recomendado</option><option value="webhook">Webhook assinado</option></select></div>
+            <div class="field"><label>Intervalo</label><input id="botMPPollInterval" value="20s" placeholder="20s"/></div>
+            <div class="field"><label>Validade do PIX</label><div class="bot-input-suffix"><input id="botPixExp" type="number" min="5" max="1440" value="30"/><span>min</span></div></div>
           </div>
-          <div class="form-actions"><button class="btn" type="submit">Salvar plano</button></div>
+          <div id="botMPWebhookBox" class="bot-webhook-box hidden">
+            <div class="field"><label>Webhook Secret <span class="bot-secret-state" id="botHasMpSecret"></span></label><input id="botMPWebhookSecret" type="password" autocomplete="new-password" placeholder="Mínimo de 16 caracteres"/></div>
+            <div class="bot-copy-row"><code id="botMPWebhookURL">https://SEU_HOST/api/mp/webhook</code><button class="btn btn-ghost btn-sm" id="botCopyWebhookBtn" type="button">Copiar</button></div>
+          </div>
+        </article>
+
+        <article class="card bot-integration-card">
+          <div class="bot-card-heading"><div class="bot-service-icon trial">◷</div><div><h4>Teste grátis</h4><p>Entrada controlada para novos clientes</p></div><label class="bot-switch"><input id="botTrialEnabled" type="checkbox"/><span></span></label></div>
+          <div class="form-grid">
+            <div class="field"><label>Duração</label><div class="bot-input-suffix"><input id="botTrialHours" type="number" min="1" max="720" value="1"/><span>h</span></div></div>
+            <div class="field"><label>Conexões</label><input id="botTrialMaxConns" type="number" min="1" max="1000" value="1"/></div>
+            <div class="field"><label>Tipo</label><select id="botTrialKind"><option value="ssh">SSH</option><option value="xray">Xray</option></select></div>
+            <div class="field"><label>Inbound Xray</label><input id="botTrialInbound" list="botInboundList" placeholder="Somente para Xray"/></div>
+          </div>
+        </article>
+
+        <article class="card bot-integration-card">
+          <div class="bot-card-heading"><div class="bot-service-icon host">⌁</div><div><h4>Entrega</h4><p>Endereços enviados após a compra</p></div></div>
+          <div class="field"><label>Host/IP para SSH</label><input id="botPublicHost" placeholder="vpn.seudominio.com ou IP"/></div>
+          <div class="field"><label>Host para links Xray</label><input id="botXrayPublicHost" placeholder="xray.seudominio.com"/></div>
+          <div class="bot-note">Esses endereços aparecem nas credenciais entregues ao cliente.</div>
+        </article>
+      </div>
+    </section>
+
+    <section class="bot-section" id="botSec-plans" data-bot-panel="plans">
+      <div class="bot-section-heading"><div><span>02 · Catálogo</span><h3>Planos de acesso</h3><p>Configure preço, validade, protocolo e limites.</p></div><div class="card-actions"><button class="btn btn-ghost btn-sm" id="botReloadPlansBtn" type="button">Atualizar</button><button class="btn btn-sm" id="botNewPlanBtn" type="button">Novo plano</button></div></div>
+      <div class="bot-master-detail">
+        <article class="card"><div class="bot-list-heading"><strong>Planos cadastrados</strong><span class="chip" id="botPlanCount">0</span></div><div class="tbl-wrap"><table class="bot-table"><thead><tr><th>Plano</th><th>Entrega</th><th>Validade</th><th>Preço</th><th>Status</th><th></th></tr></thead><tbody id="botPlansBody"></tbody></table></div><div class="statusbar"><span id="botPlansStatus">Aguardando.</span></div></article>
+        <article class="card bot-editor-card"><div class="card-hdr"><div><div class="card-title" id="botPlanFormTitle">Novo plano</div><p class="hint">Defina como a conta será criada.</p></div><button class="btn btn-ghost btn-sm" id="botCancelPlanBtn" type="button">Limpar</button></div>
+          <form id="botPlanForm"><input type="hidden" id="planId"/><div class="form-grid">
+            <div class="field bot-span-2"><label>Nome do plano</label><input id="planName" maxlength="120" required placeholder="Ex.: Premium 30 dias"/></div>
+            <div class="field"><label>Tipo</label><select id="planKind"><option value="ssh">SSH</option><option value="xray">Xray</option></select></div><div class="field"><label>Dias</label><input id="planDays" type="number" min="1" max="3650" value="30"/></div>
+            <div class="field"><label>Máx. conexões</label><input id="planMaxConns" type="number" min="0" max="10000" value="1"/></div><div class="field"><label>Preço (R$)</label><input id="planPrice" type="number" step="0.01" min="0" value="0"/></div>
+            <div class="field"><label>Upload Mbps</label><input id="planUpMbps" type="number" min="0" value="0"/></div><div class="field"><label>Download Mbps</label><input id="planDownMbps" type="number" min="0" value="0"/></div>
+            <div class="field"><label>Inbound Xray</label><input id="planInbound" list="botInboundList" placeholder="tag do inbound"/><datalist id="botInboundList"></datalist></div><div class="field"><label>Protocolo Xray</label><select id="planProtocol"><option value="">Automático</option><option value="vless">VLESS</option><option value="vmess">VMess</option><option value="trojan">Trojan</option></select></div>
+            <div class="field"><label>Custo em créditos</label><input id="planCreditCost" type="number" min="0" value="1"/></div><div class="field"><label>Servidor</label><input id="planServerId" placeholder="Vazio = local"/></div>
+            <div class="field"><label>Ordem</label><input id="planSort" type="number" value="0"/></div><label class="bot-check-field"><input id="planActive" type="checkbox" checked/><span>Plano visível no bot</span></label>
+          </div><div class="form-actions"><button class="btn" type="submit">Salvar plano</button></div></form>
+        </article>
+      </div>
+    </section>
+
+    <section class="bot-section" id="botSec-packages" data-bot-panel="packages">
+      <div class="bot-section-heading"><div><span>03 · Revendedores</span><h3>Pacotes de créditos</h3><p>Crie recargas para revendedores comprarem planos.</p></div><div class="card-actions"><button class="btn btn-ghost btn-sm" id="botReloadPkgsBtn" type="button">Atualizar</button><button class="btn btn-sm" id="botNewPkgBtn" type="button">Novo pacote</button></div></div>
+      <div class="bot-master-detail">
+        <article class="card"><div class="bot-list-heading"><strong>Pacotes cadastrados</strong><span class="chip" id="botPkgCount">0</span></div><div class="tbl-wrap"><table class="bot-table"><thead><tr><th>Pacote</th><th>Créditos</th><th>Preço</th><th>Status</th><th></th></tr></thead><tbody id="botPkgsBody"></tbody></table></div><div class="statusbar"><span id="botPkgStatus">Aguardando.</span></div></article>
+        <article class="card bot-editor-card"><div class="card-hdr"><div><div class="card-title">Editar pacote</div><p class="hint">Defina o saldo entregue e o preço PIX.</p></div></div><form id="botPkgForm"><input type="hidden" id="pkgId"/><div class="form-grid">
+          <div class="field bot-span-2"><label>Nome</label><input id="pkgName" maxlength="120" required placeholder="Ex.: Recarga 50 créditos"/></div><div class="field"><label>Créditos</label><input id="pkgCredits" type="number" min="1" value="10"/></div><div class="field"><label>Preço (R$)</label><input id="pkgPrice" type="number" step="0.01" min="0" value="0"/></div><div class="field"><label>Ordem</label><input id="pkgSort" type="number" value="0"/></div><label class="bot-check-field"><input id="pkgActive" type="checkbox" checked/><span>Pacote visível</span></label>
+        </div><div class="form-actions"><button class="btn" type="submit">Salvar pacote</button><button class="btn btn-ghost" id="botClearPkgBtn" type="button">Limpar</button></div></form></article>
+      </div>
+    </section>
+
+    <section class="bot-section" id="botSec-messages" data-bot-panel="messages">
+      <div class="bot-section-heading"><div><span>04 · Conteúdo</span><h3>Mensagens do bot</h3><p>Personalize os textos vistos pelo cliente.</p></div><button class="btn btn-ghost btn-sm" id="botReloadSettingsBtn" type="button">Restaurar salvo</button></div>
+      <article class="card bot-message-editor"><div class="bot-message-grid"><div class="field"><label>Mensagem de boas-vindas</label><textarea id="setWelcome" rows="7" maxlength="4096" placeholder="Olá, {name}! Escolha uma opção abaixo."></textarea><span class="hint">Use <code>{name}</code> para inserir o primeiro nome.</span></div><div class="field"><label>Contato e suporte</label><textarea id="setContact" rows="7" maxlength="4096" placeholder="Explique como falar com o suporte."></textarea></div><div class="field"><label>Texto para baixar o app</label><textarea id="setAppText" rows="5" maxlength="4096" placeholder="Baixe nosso aplicativo para conectar."></textarea></div><div class="field"><label>Link do aplicativo</label><input id="setAppUrl" type="url" maxlength="2048" placeholder="https://..."/><span class="hint">Somente links HTTP ou HTTPS.</span></div></div><div class="bot-save-row"><span id="botSettingsStatus" class="hint">Aguardando.</span><button class="btn" id="botSaveSettingsBtn" type="button">Salvar mensagens</button></div></article>
+    </section>
+
+    <section class="bot-section" id="botSec-users" data-bot-panel="users">
+      <div class="bot-section-heading"><div><span>05 · Relacionamento</span><h3>Clientes do Telegram</h3><p>Gerencie funções, vínculos e saldo sem sair da lista.</p></div><button class="btn btn-ghost btn-sm" id="botReloadUsersBtn" type="button">Atualizar clientes</button></div>
+      <article class="card"><div class="bot-list-heading"><div><strong>Base de clientes</strong><span class="hint"> Ações administrativas são registradas no livro de créditos.</span></div><span class="chip" id="botUserCount">0</span></div><div class="tbl-wrap"><table class="bot-table"><thead><tr><th>Cliente</th><th>Telegram ID</th><th>Função</th><th>Revenda vinculada</th><th>Saldo</th><th></th></tr></thead><tbody id="botUsersBody"></tbody></table></div><div class="statusbar"><span id="botUsersStatus">Aguardando.</span></div></article>
+    </section>
+
+    <section class="bot-section" id="botSec-transactions" data-bot-panel="transactions">
+      <div class="bot-section-heading"><div><span>06 · Financeiro</span><h3>Pagamentos PIX</h3><p>Acompanhe confirmações e reprocessamentos.</p></div><div class="card-actions"><select id="botTxnFilter" class="input-sm"><option value="">Todos os status</option><option value="pending">Pendentes</option><option value="approved">Aprovados</option><option value="expired">Expirados</option><option value="refunded">Marcados como estornados</option><option value="error">Com erro</option></select><button class="btn btn-ghost btn-sm" id="botReloadTxnsBtn" type="button">Atualizar</button></div></div>
+      <article class="card"><div class="bot-list-heading"><strong>Histórico recente</strong><span class="chip" id="botTxnCount">0</span></div><div class="tbl-wrap"><table class="bot-table"><thead><tr><th>Pagamento</th><th>Cliente</th><th>Tipo</th><th>Valor</th><th>Status</th><th>Entrega</th><th>Data</th><th></th></tr></thead><tbody id="botTxnsBody"></tbody></table></div><div class="statusbar"><span id="botTxnStatus">Aguardando.</span></div></article>
+    </section>
+
+    <div class="bot-modal hidden" id="botUserActionModal" role="dialog" aria-modal="true" aria-labelledby="botUserActionTitle">
+      <div class="bot-modal-backdrop" data-bot-modal-close></div>
+      <div class="bot-modal-card">
+        <div class="card-hdr"><div><div class="card-title" id="botUserActionTitle">Editar cliente</div><p class="hint" id="botUserActionSubtitle"></p></div><button class="btn btn-ghost btn-sm" type="button" data-bot-modal-close>Fechar</button></div>
+        <form id="botUserActionForm"><input type="hidden" id="botActionTelegramID"/><input type="hidden" id="botActionMode"/>
+          <div id="botRoleFields"><div class="field"><label>Função</label><select id="botActionRole"><option value="customer">Cliente</option><option value="reseller">Revendedor</option><option value="blocked">Bloqueado</option></select></div><div class="field" id="botActionLinkedField"><label>Usuário da revenda vinculada</label><input id="botActionLinked" placeholder="username em Revendedores"/></div></div>
+          <div id="botCreditFields" class="hidden"><div class="field"><label>Ajuste de créditos</label><input id="botActionCredits" type="number" placeholder="Ex.: 10 ou -5"/><span class="hint">Use número negativo para remover saldo.</span></div></div>
+          <div class="form-actions"><button class="btn" type="submit">Confirmar alteração</button></div>
         </form>
       </div>
     </div>
-    </div><!-- /botSec-plans -->
-
-    <!-- ═══ Section: Credit packages ═══ -->
-    <div class="bot-section" id="botSec-packages" style="display:none;">
-      <!-- Credit packages -->
-      <div class="card">
-        <div class="card-hdr">
-          <div class="card-title">💳 Pacotes de Crédito <span class="chip" id="botPkgCount">0</span></div>
-          <div style="display:flex;gap:5px;">
-            <button class="btn btn-ghost btn-sm" id="botNewPkgBtn">+ Novo</button>
-            <button class="btn btn-ghost btn-sm" id="botReloadPkgsBtn">Recarregar</button>
-          </div>
-        </div>
-        <div class="tbl-wrap">
-          <table>
-            <thead><tr><th>Nome</th><th>Créditos</th><th>Preço</th><th>Ativo</th><th>Ações</th></tr></thead>
-            <tbody id="botPkgsBody"></tbody>
-          </table>
-        </div>
-        <form id="botPkgForm" style="margin-top:10px;">
-          <input type="hidden" id="pkgId"/>
-          <div class="form-grid">
-            <div class="field"><label>Nome</label><input id="pkgName" required/></div>
-            <div class="field"><label>Créditos</label><input id="pkgCredits" type="number" min="1" value="10"/></div>
-            <div class="field"><label>Preço (R$)</label><input id="pkgPrice" type="number" step="0.01" min="0" value="0"/></div>
-            <div class="field"><label>Ordem</label><input id="pkgSort" type="number" value="0"/></div>
-            <div class="field"><label>Ativo</label><input id="pkgActive" type="checkbox" checked style="width:16px;height:16px;margin-top:10px;"/></div>
-          </div>
-          <div class="form-actions"><button class="btn" type="submit">Salvar pacote</button></div>
-        </form>
-        <div class="statusbar"><span id="botPkgStatus">Ready.</span></div>
-      </div>
-    </div><!-- /botSec-packages -->
-
-    <!-- ═══ Section: Messages ═══ -->
-    <div class="bot-section" id="botSec-messages" style="display:none;">
-      <!-- Messages -->
-      <div class="card">
-        <div class="card-hdr">
-          <div class="card-title">✉️ Mensagens do Bot</div>
-          <button class="btn btn-ghost btn-sm" id="botReloadSettingsBtn">Recarregar</button>
-        </div>
-        <div class="field"><label>Boas-vindas <span class="hint">({name} = nome)</span></label><textarea id="setWelcome" rows="4"></textarea></div>
-        <div class="field"><label>Texto de Contato</label><textarea id="setContact" rows="3"></textarea></div>
-        <div class="field"><label>Texto Baixar APP</label><textarea id="setAppText" rows="2"></textarea></div>
-        <div class="field"><label>URL do APP <span class="hint">(botão vira link)</span></label><input id="setAppUrl" placeholder="https://..."/></div>
-        <div class="form-actions"><button class="btn" id="botSaveSettingsBtn">Salvar mensagens</button></div>
-        <div class="statusbar"><span id="botSettingsStatus">Ready.</span></div>
-      </div>
-    </div><!-- /botSec-messages -->
-
-    <!-- ═══ Section: Users ═══ -->
-    <div class="bot-section" id="botSec-users" style="display:none;">
-    <!-- Bot users -->
-    <div class="card">
-      <div class="card-hdr">
-        <div class="card-title">👥 Clientes do Bot <span class="chip" id="botUserCount">0</span></div>
-        <button class="btn btn-ghost btn-sm" id="botReloadUsersBtn">Recarregar</button>
-      </div>
-      <div class="tbl-wrap">
-        <table>
-          <thead><tr><th>Telegram ID</th><th>Nome</th><th>@user</th><th>Papel</th><th>Revenda</th><th>Créditos</th><th>Ações</th></tr></thead>
-          <tbody id="botUsersBody"></tbody>
-        </table>
-      </div>
-      <div class="statusbar"><span id="botUsersStatus">Ready.</span></div>
-    </div>
-    </div><!-- /botSec-users -->
-
-    <!-- ═══ Section: Transactions ═══ -->
-    <div class="bot-section" id="botSec-transactions" style="display:none;">
-    <!-- Transactions -->
-    <div class="card">
-      <div class="card-hdr">
-        <div class="card-title">💰 Pagamentos <span class="chip" id="botTxnCount">0</span></div>
-        <div style="display:flex;gap:5px;align-items:center;">
-          <select id="botTxnFilter" class="btn-sm">
-            <option value="">Todos</option>
-            <option value="pending">Pendentes</option>
-            <option value="approved">Aprovados</option>
-            <option value="expired">Expirados</option>
-            <option value="refunded">Estornados</option>
-          </select>
-          <button class="btn btn-ghost btn-sm" id="botReloadTxnsBtn">Recarregar</button>
-        </div>
-      </div>
-      <div class="tbl-wrap">
-        <table>
-          <thead><tr><th>#</th><th>Telegram</th><th>Tipo</th><th>Valor</th><th>Status</th><th>Conta</th><th>Data</th><th>Ações</th></tr></thead>
-          <tbody id="botTxnsBody"></tbody>
-        </table>
-      </div>
-      <div class="statusbar"><span id="botTxnStatus">Ready.</span></div>
-    </div>
-    </div><!-- /botSec-transactions -->
-
   </div><!-- /tab-bot -->
 
   <!-- ═══════════ Server Config Tab (superadmin only) ═══════════ -->
@@ -1494,17 +1396,17 @@
 <!-- app.js was split into ordered modules for maintainability. They are plain
      classic scripts sharing one global scope; `defer` preserves execution order,
      so behavior is identical to the old single file. Keep this load order. -->
-<script defer src="assets/js/01-core.js?v=20260713bot3"></script>
-<script defer src="assets/js/02-shell.js?v=20260713bot3"></script>
-<script defer src="assets/js/03-ssh-users.js?v=20260713bot3"></script>
-<script defer src="assets/js/04-xray.js?v=20260713bot3"></script>
-<script defer src="assets/js/05-resellers.js?v=20260713bot3"></script>
-<script defer src="assets/js/06-servers.js?v=20260713bot3"></script>
-<script defer src="assets/js/07-stats-logs.js?v=20260713bot3"></script>
-<script defer src="assets/js/08-server-config.js?v=20260713bot3"></script>
-<script defer src="assets/js/09-xray-wizard.js?v=20260713bot3"></script>
-<script defer src="assets/js/11-update-status.js?v=20260713bot3"></script>
-<script defer src="assets/js/12-bot.js?v=20260713bot3"></script>
-<script defer src="assets/js/10-boot.js?v=20260713bot3"></script>
+<script defer src="assets/js/01-core.js?v=20260713secure1"></script>
+<script defer src="assets/js/02-shell.js?v=20260713secure1"></script>
+<script defer src="assets/js/03-ssh-users.js?v=20260713secure1"></script>
+<script defer src="assets/js/04-xray.js?v=20260713secure1"></script>
+<script defer src="assets/js/05-resellers.js?v=20260713secure1"></script>
+<script defer src="assets/js/06-servers.js?v=20260713secure1"></script>
+<script defer src="assets/js/07-stats-logs.js?v=20260713secure1"></script>
+<script defer src="assets/js/08-server-config.js?v=20260713secure1"></script>
+<script defer src="assets/js/09-xray-wizard.js?v=20260713secure1"></script>
+<script defer src="assets/js/11-update-status.js?v=20260713secure1"></script>
+<script defer src="assets/js/12-bot.js?v=20260713secure1"></script>
+<script defer src="assets/js/10-boot.js?v=20260713secure1"></script>
 </body>
 </html>

@@ -161,7 +161,8 @@ function renderInbounds(inbounds, options = {}) {
   }
   inboundsContainer.innerHTML = "";
   lastInboundsStructure = nextStructure;
-  inbounds.forEach(ib => {
+  inbounds.forEach((ib, inboundIndex) => {
+	const formKey = String(inboundIndex);
     const section = document.createElement("div");
     section.dataset.inboundTag = String(ib.tag || "");
     section.dataset.inboundProtocol = String(ib.protocol || "");
@@ -179,13 +180,18 @@ function renderInbounds(inbounds, options = {}) {
         ${escapeHTML(ib.tag || "untagged")}
         <span class="hint">:${escapeHTML(ib.port ?? "?")}</span>
         <span class="chip ${onlineCount ? "green" : ""}" data-role="inbound-online-chip">${t("{count} online", {count: onlineCount})}</span>
-      </div>
-      <button class="btn btn-sm" onclick="openAddClient('${ib.tag}')">${t("+ Add Client")}</button>`;
+	  </div>`;
+	const openButton = document.createElement("button");
+	openButton.className = "btn btn-sm";
+	openButton.type = "button";
+	openButton.textContent = t("+ Add Client");
+	openButton.addEventListener("click", () => openAddClient(ib.tag, formKey));
+	hdr.appendChild(openButton);
     section.appendChild(hdr);
 
     // Add client mini-form (hidden by default)
     const addForm = document.createElement("div");
-    addForm.id = `add-form-${ib.tag}`;
+    addForm.id = `add-form-${formKey}`;
     addForm.className = "hidden";
     addForm.style = "background:rgba(15,23,42,.9);border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:8px;";
     addForm.innerHTML = `
@@ -193,19 +199,22 @@ function renderInbounds(inbounds, options = {}) {
         <div class="field">
           <label>UUID</label>
           <div class="field-row">
-            <input id="newUUID-${ib.tag}" placeholder="auto-generate" style="border-radius:6px;"/>
-            <button class="btn btn-ghost btn-sm" type="button" onclick="document.getElementById('newUUID-${ib.tag}').value=genUUID()">Gen</button>
+			<input id="newUUID-${formKey}" placeholder="auto-generate" style="border-radius:6px;"/>
+			<button class="btn btn-ghost btn-sm" id="genUUID-${formKey}" type="button">Gen</button>
           </div>
         </div>
-        <div class="field"><label>${t("Email / label")}</label><input id="newEmail-${ib.tag}" placeholder="user@example" style="border-radius:6px;"/></div>
-        <div class="field"><label>${t("Display Name")}</label><input id="newName-${ib.tag}" placeholder="e.g. Maykinho01" style="border-radius:6px;"/></div>
-        <div class="field"><label>${t("Expiry Date")}</label><input type="datetime-local" id="newExpiry-${ib.tag}" style="border-radius:6px;color-scheme:dark;"/></div>
-        <div class="field"><label>${t("Max Connections")} <span class="hint">${t("(0 = unlimited)")}</span></label><input type="number" min="0" id="newMaxConns-${ib.tag}" placeholder="0" style="border-radius:6px;"/></div>
+		<div class="field"><label>${t("Email / label")}</label><input id="newEmail-${formKey}" placeholder="user@example" style="border-radius:6px;"/></div>
+		<div class="field"><label>${t("Display Name")}</label><input id="newName-${formKey}" placeholder="e.g. Maykinho01" style="border-radius:6px;"/></div>
+		<div class="field"><label>${t("Expiry Date")}</label><input type="datetime-local" id="newExpiry-${formKey}" style="border-radius:6px;color-scheme:dark;"/></div>
+		<div class="field"><label>${t("Max Connections")} <span class="hint">${t("(0 = unlimited)")}</span></label><input type="number" min="0" id="newMaxConns-${formKey}" placeholder="0" style="border-radius:6px;"/></div>
       </div>
       <div class="form-actions" style="margin-top:6px;">
-        <button class="btn btn-sm" onclick="addClient('${ib.tag}')">${t("Add")}</button>
-        <button class="btn btn-ghost btn-sm" onclick="document.getElementById('add-form-${ib.tag}').classList.add('hidden')">${t("Cancel")}</button>
+		<button class="btn btn-sm" id="addClient-${formKey}" type="button">${t("Add")}</button>
+		<button class="btn btn-ghost btn-sm" id="cancelAddClient-${formKey}" type="button">${t("Cancel")}</button>
       </div>`;
+	addForm.querySelector(`#genUUID-${formKey}`).addEventListener("click", () => { document.getElementById(`newUUID-${formKey}`).value = genUUID(); });
+	addForm.querySelector(`#addClient-${formKey}`).addEventListener("click", () => addClient(ib.tag, formKey));
+	addForm.querySelector(`#cancelAddClient-${formKey}`).addEventListener("click", () => addForm.classList.add("hidden"));
     section.appendChild(addForm);
 
     // Clients table
@@ -262,19 +271,19 @@ function renderInbounds(inbounds, options = {}) {
   });
 }
 
-function openAddClient(tag) {
-  const form = document.getElementById(`add-form-${tag}`);
+function openAddClient(tag, formKey = tag) {
+	const form = document.getElementById(`add-form-${formKey}`);
   if (form) { form.classList.remove("hidden"); }
-  const uuidField = document.getElementById(`newUUID-${tag}`);
+	const uuidField = document.getElementById(`newUUID-${formKey}`);
   if (uuidField && !uuidField.value) uuidField.value = genUUID();
 }
 
-async function addClient(tag) {
-  const uuidEl     = document.getElementById(`newUUID-${tag}`);
-  const emailEl    = document.getElementById(`newEmail-${tag}`);
-  const nameEl     = document.getElementById(`newName-${tag}`);
-  const expiryEl   = document.getElementById(`newExpiry-${tag}`);
-  const maxConnsEl = document.getElementById(`newMaxConns-${tag}`);
+async function addClient(tag, formKey = tag) {
+	const uuidEl     = document.getElementById(`newUUID-${formKey}`);
+	const emailEl    = document.getElementById(`newEmail-${formKey}`);
+	const nameEl     = document.getElementById(`newName-${formKey}`);
+	const expiryEl   = document.getElementById(`newExpiry-${formKey}`);
+	const maxConnsEl = document.getElementById(`newMaxConns-${formKey}`);
   const uuid       = (uuidEl?.value || "").trim();
   const email      = (emailEl?.value || "").trim();
   const name       = (nameEl?.value || "").trim();
@@ -349,4 +358,3 @@ async function loadXrayLogs() {
     xLogsBox.scrollTop   = xLogsBox.scrollHeight;
   } catch (e) { if (e.message==="auth") doAuthError(); }
 }
-

@@ -129,7 +129,7 @@ func (c *mpClient) do(ctx context.Context, method, path string, body interface{}
 // Manifest: "id:<dataID>;request-id:<x-request-id>;ts:<ts>;" HMAC-SHA256(secret).
 func verifyMPSignature(xSignature, xRequestID, dataID, secret string) bool {
 	if secret == "" {
-		return true // validation disabled
+		return false
 	}
 	var ts, v1 string
 	for _, part := range strings.Split(xSignature, ",") {
@@ -147,7 +147,18 @@ func verifyMPSignature(xSignature, xRequestID, dataID, secret string) bool {
 	if ts == "" || v1 == "" {
 		return false
 	}
-	manifest := fmt.Sprintf("id:%s;request-id:%s;ts:%s;", strings.ToLower(dataID), xRequestID, ts)
+	if timestamp, err := strconv.ParseInt(ts, 10, 64); err != nil || timestamp <= 0 {
+		return false
+	}
+	parts := make([]string, 0, 3)
+	if dataID != "" {
+		parts = append(parts, "id:"+strings.ToLower(dataID))
+	}
+	if xRequestID != "" {
+		parts = append(parts, "request-id:"+xRequestID)
+	}
+	parts = append(parts, "ts:"+ts)
+	manifest := strings.Join(parts, ";") + ";"
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write([]byte(manifest))
 	expected := hex.EncodeToString(mac.Sum(nil))
@@ -157,6 +168,10 @@ func verifyMPSignature(xSignature, xRequestID, dataID, secret string) bool {
 // handleMPWebhook is the public endpoint Mercado Pago calls on payment events.
 // It never trusts the body: it re-fetches the payment and fulfills idempotently.
 func handleMPWebhook(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
 	b := currentBot()
 	if b == nil {
 		w.WriteHeader(http.StatusOK) // bot disabled; acknowledge to stop retries
@@ -173,6 +188,7 @@ func handleMPWebhook(w http.ResponseWriter, r *http.Request) {
 	if dataID == "" {
 		dataID = r.URL.Query().Get("id")
 	}
+	signatureDataID := dataID
 	var payload struct {
 		Type   string `json:"type"`
 		Action string `json:"action"`
@@ -180,7 +196,12 @@ func handleMPWebhook(w http.ResponseWriter, r *http.Request) {
 			ID json.Number `json:"id"`
 		} `json:"data"`
 	}
-	body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "invalid webhook body", http.StatusRequestEntityTooLarge)
+		return
+	}
 	if len(body) > 0 {
 		_ = json.Unmarshal(body, &payload)
 		if dataID == "" {
@@ -191,8 +212,18 @@ func handleMPWebhook(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
+	if len(dataID) > 32 {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	for _, char := range dataID {
+		if char < '0' || char > '9' {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+	}
 
-	if !verifyMPSignature(r.Header.Get("x-signature"), r.Header.Get("x-request-id"), dataID, b.cfg.MPWebhookSecret) {
+	if !verifyMPSignature(r.Header.Get("x-signature"), r.Header.Get("x-request-id"), signatureDataID, b.cfg.MPWebhookSecret) {
 		log.Printf("[bot] MP webhook: invalid signature for payment %s", dataID)
 		w.WriteHeader(http.StatusUnauthorized)
 		return

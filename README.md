@@ -268,7 +268,7 @@ Ou gerar uma senha nova automaticamente:
 sudo bash /opt/sshpanel/change_admin_password.sh --user admin --generate
 ```
 
-O script atualiza o usuário `admin` no PostgreSQL, ativa ele como `superadmin`, salva `ADMIN_PASSWORD` em `/opt/sshpanel/.env` e reinicia o serviço `sshpanel` para recarregar o cache interno de admins.
+O script atualiza o usuário `admin` no PostgreSQL com hash bcrypt, ativa ele como `superadmin`, remove qualquer `ADMIN_PASSWORD` legado em texto puro de `/opt/sshpanel/.env` e reinicia o serviço `sshpanel` para recarregar o cache interno de admins.
 
 ### Atualização automática pelo Git
 
@@ -779,7 +779,7 @@ Or generate a new password automatically:
 sudo bash /opt/sshpanel/change_admin_password.sh --user admin --generate
 ```
 
-The script updates the `admin` user in PostgreSQL, enables it as `superadmin`, saves `ADMIN_PASSWORD` in `/opt/sshpanel/.env`, and restarts `sshpanel` so the in-memory admin cache is reloaded.
+The script updates the `admin` user in PostgreSQL with a bcrypt hash, enables it as `superadmin`, removes any legacy plaintext `ADMIN_PASSWORD` from `/opt/sshpanel/.env`, and restarts `sshpanel` so the in-memory admin cache is reloaded.
 
 ### Automatic Git update
 

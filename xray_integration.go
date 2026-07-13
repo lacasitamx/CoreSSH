@@ -2458,6 +2458,25 @@ func handleXrayClientAdd(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if sess := sessionFromCtx(r.Context()); sess != nil && sess.Role == RoleReseller {
+			_, exists, ownerErr := remoteXrayClientOwner(r.Context(), ms, req.UUID)
+			if ownerErr != nil {
+				http.Error(w, "could not verify remote ownership", http.StatusBadGateway)
+				return
+			}
+			if exists {
+				http.Error(w, "UUID already exists", http.StatusConflict)
+				return
+			}
+			owner, ok := adminUsers.get(sess.Username)
+			used, quotaErr := countOwnedQuotaAcrossManagedServers(r.Context(), statsStore, sess.Username)
+			if quotaErr != nil {
+				http.Error(w, "could not verify reseller quota", http.StatusBadGateway)
+				return
+			}
+			if ok && owner.MaxUsers > 0 && used >= owner.MaxUsers {
+				http.Error(w, fmt.Sprintf("user limit reached (%d)", owner.MaxUsers), http.StatusForbidden)
+				return
+			}
 			req.OwnerUsername = sess.Username
 		}
 		req.ServerID = ""
@@ -2491,7 +2510,12 @@ func handleXrayClientAdd(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "reseller account suspended or expired", http.StatusForbidden)
 			return
 		}
-		if owner.MaxUsers > 0 && countOwnedQuota(r.Context(), statsStore, sess.Username) >= owner.MaxUsers {
+		used, quotaErr := countOwnedQuotaAcrossManagedServers(r.Context(), statsStore, sess.Username)
+		if quotaErr != nil {
+			http.Error(w, "could not verify reseller quota", http.StatusBadGateway)
+			return
+		}
+		if owner.MaxUsers > 0 && used >= owner.MaxUsers {
 			http.Error(w, fmt.Sprintf("user limit reached (%d)", owner.MaxUsers), http.StatusForbidden)
 			return
 		}

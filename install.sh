@@ -493,7 +493,8 @@ ADMIN_PASSWORD=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 20 || true)
 if [[ ${#ADMIN_PASSWORD} -lt 20 ]]; then
   ADMIN_PASSWORD=$(openssl rand -hex 10 2>/dev/null || date +%s%N)
 fi
-ADMIN_PASSWORD_HASH=$(printf '%s' "${ADMIN_PASSWORD}" | sha256sum | awk '{print $1}')
+ADMIN_PASSWORD_HASH=$(printf '%s' "${ADMIN_PASSWORD}" | "$INSTALL_DIR/sshpanel" -hash-admin-password-stdin 2>/dev/null)
+[[ "$ADMIN_PASSWORD_HASH" == \$2* ]] || error "Failed to generate admin bcrypt password hash"
 su -c "psql -d ${DB_NAME}" postgres <<SQL
 INSERT INTO admin_users (username, password_hash, role, max_users, expires_at, is_active)
 VALUES ('admin', '${ADMIN_PASSWORD_HASH}', 'superadmin', 0, NULL, TRUE)
@@ -509,7 +510,6 @@ SQL
 cat > "$INSTALL_DIR/.env" <<EOF
 PG_DSN=postgres://${DB_USER}:${DB_PASS}@127.0.0.1:5432/${DB_NAME}?sslmode=disable
 ADMIN_TOKEN=${ADMIN_TOKEN}
-ADMIN_PASSWORD=${ADMIN_PASSWORD}
 ADMIN_HTTP_ADDR=0.0.0.0:9090
 EOF
 chmod 600 "$INSTALL_DIR/.env"
@@ -703,7 +703,7 @@ echo -e "  Admin login  : ${YELLOW}admin${NC}"
 echo -e "  Admin password: ${YELLOW}${ADMIN_PASSWORD}${NC}"
 echo -e "  Admin token  : ${YELLOW}${ADMIN_TOKEN}${NC}"
 echo ""
-echo -e "  Token + DB creds stored in: ${INSTALL_DIR}/.env"
+echo -e "  API token + DB credentials stored in: ${INSTALL_DIR}/.env"
 echo -e "  Logs: journalctl -u ${SERVICE_NAME} -f"
 echo -e "        tail -f ${INSTALL_DIR}/logs/panel.log"
 echo ""

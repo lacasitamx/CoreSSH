@@ -1068,18 +1068,30 @@ func TestVLESSMuxSlowDialDoesNotBlockOtherSessions(t *testing.T) {
 		t.Fatalf("write fast mux frame: %v", err)
 	}
 
-	meta, err := readNativeMuxMetadata(conn)
-	if err != nil {
-		t.Fatalf("read fast session response meta (head-of-line stall?): %v", err)
-	}
-	if meta.sessionID != 2 || meta.status != nativeMuxStatusKeep || meta.option&nativeMuxOptionData == 0 {
-		t.Fatalf("expected session 2 keep-data frame, got: %#v", meta)
-	}
-	got, err := readNativeMuxDataBlock(conn)
-	if err != nil {
-		t.Fatalf("read fast session payload: %v", err)
-	}
-	if !bytes.Equal(got, want) {
-		t.Fatalf("fast session echo mismatch: got %q want %q", got, want)
+	for {
+		meta, err := readNativeMuxMetadata(conn)
+		if err != nil {
+			t.Fatalf("read fast session response meta (head-of-line stall?): %v", err)
+		}
+		var got []byte
+		if meta.option&nativeMuxOptionData != 0 {
+			got, err = readNativeMuxDataBlock(conn)
+			if err != nil {
+				t.Fatalf("read mux response payload: %v", err)
+			}
+		}
+		// Some networks reject TEST-NET immediately instead of letting the dial
+		// time out. Ignore that session-1 error frame and keep waiting for the
+		// independent fast session.
+		if meta.sessionID != 2 {
+			continue
+		}
+		if meta.status != nativeMuxStatusKeep || meta.option&nativeMuxOptionData == 0 {
+			t.Fatalf("expected session 2 keep-data frame, got: %#v", meta)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("fast session echo mismatch: got %q want %q", got, want)
+		}
+		break
 	}
 }

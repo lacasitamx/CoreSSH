@@ -1,6 +1,8 @@
 
 // ─── State ───────────────────────────────────────────────────────────────────
-let sessionToken = localStorage.getItem("SESSION_TOKEN") || "";
+let sessionToken = sessionStorage.getItem("SESSION_TOKEN") || localStorage.getItem("SESSION_TOKEN") || "";
+if (sessionToken) sessionStorage.setItem("SESSION_TOKEN", sessionToken);
+localStorage.removeItem("SESSION_TOKEN");
 let currentRole  = "";
 let currentUser  = "";
 let statsTimer   = null, usersTimer = null, xrayTimer = null;
@@ -564,4 +566,3 @@ function patchRenderedInbounds(inbounds) {
   }
   return true;
 }
-

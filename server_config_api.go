@@ -78,9 +78,13 @@ func serverConfigPost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "config path not set", http.StatusInternalServerError)
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, 512*1024))
+	body, err := io.ReadAll(io.LimitReader(r.Body, 512*1024+1))
 	if err != nil {
 		http.Error(w, "failed to read body", http.StatusBadRequest)
+		return
+	}
+	if len(body) > 512*1024 {
+		http.Error(w, "config exceeds 512 KiB", http.StatusRequestEntityTooLarge)
 		return
 	}
 	var newCfg Config
@@ -110,7 +114,7 @@ func serverConfigPost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "marshal error", http.StatusInternalServerError)
 		return
 	}
-	if err := os.WriteFile(globalCfgPath, out, 0o644); err != nil {
+	if err := writeFileAtomic(globalCfgPath, out, 0o600); err != nil {
 		http.Error(w, "failed to write config: "+err.Error(), http.StatusInternalServerError)
 		return
 	}

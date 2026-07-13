@@ -4,21 +4,31 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"regexp"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 const (
-	RoleSuperAdmin = "superadmin"
-	RoleReseller   = "reseller"
-	sessionTTL     = 12 * time.Hour
+	RoleSuperAdmin  = "superadmin"
+	RoleReseller    = "reseller"
+	sessionTTL      = 12 * time.Hour
+	adminBcryptCost = 12
 )
+
+var adminUsernamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
 // ---------- AdminUser ----------
 
@@ -50,9 +60,11 @@ type sessionStoreT struct {
 
 var sessions = &sessionStoreT{m: make(map[string]*AdminSession)}
 
-func (s *sessionStoreT) Create(userID int, username, role string) *AdminSession {
+func (s *sessionStoreT) Create(userID int, username, role string) (*AdminSession, error) {
 	b := make([]byte, 32)
-	_, _ = rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		return nil, fmt.Errorf("generate session token: %w", err)
+	}
 	tok := hex.EncodeToString(b)
 	sess := &AdminSession{
 		Token:     tok,
@@ -64,7 +76,7 @@ func (s *sessionStoreT) Create(userID int, username, role string) *AdminSession 
 	s.mu.Lock()
 	s.m[tok] = sess
 	s.mu.Unlock()
-	return sess
+	return sess, nil
 }
 
 func (s *sessionStoreT) Get(token string) *AdminSession {
@@ -84,6 +96,16 @@ func (s *sessionStoreT) Delete(token string) {
 	s.mu.Lock()
 	delete(s.m, token)
 	s.mu.Unlock()
+}
+
+func (s *sessionStoreT) DeleteUser(userID int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for token, sess := range s.m {
+		if sess.UserID == userID {
+			delete(s.m, token)
+		}
+	}
 }
 
 func (s *sessionStoreT) cleanup() {
@@ -170,6 +192,15 @@ func sessionMiddleware(next http.Handler) http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		// Re-check the account on every request. This immediately revokes sessions
+		// after an account is suspended, expired, deleted, or has its role changed.
+		u, ok := adminUsers.get(s.Username)
+		if !ok || u.ID != s.UserID || !u.IsActive || u.Role != s.Role ||
+			(u.ExpiresAt != nil && time.Now().After(*u.ExpiresAt)) {
+			sessions.Delete(token)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
 		next.ServeHTTP(w, r.WithContext(withSession(r.Context(), s)))
 	})
 }
@@ -194,9 +225,110 @@ func saSession(next http.Handler) http.Handler {
 
 // ---------- Password hashing ----------
 
-func hashAdminPassword(pw string) string {
+func legacyAdminPasswordHash(pw string) string {
 	h := sha256.Sum256([]byte(pw))
 	return hex.EncodeToString(h[:])
+}
+
+func hashAdminPassword(pw string) (string, error) {
+	hash, err := bcrypt.GenerateFromPassword([]byte(pw), adminBcryptCost)
+	if err != nil {
+		return "", fmt.Errorf("hash admin password: %w", err)
+	}
+	return string(hash), nil
+}
+
+// verifyAdminPassword accepts bcrypt and the legacy unsalted SHA-256 format.
+// Legacy hashes are upgraded immediately after a successful login.
+func verifyAdminPassword(storedHash, password string) (valid bool, needsUpgrade bool) {
+	if strings.HasPrefix(storedHash, "$2a$") || strings.HasPrefix(storedHash, "$2b$") || strings.HasPrefix(storedHash, "$2y$") {
+		if bcrypt.CompareHashAndPassword([]byte(storedHash), []byte(password)) != nil {
+			return false, false
+		}
+		cost, err := bcrypt.Cost([]byte(storedHash))
+		return true, err != nil || cost < adminBcryptCost
+	}
+	if len(storedHash) != sha256.Size*2 {
+		return false, false
+	}
+	expected := legacyAdminPasswordHash(password)
+	return subtle.ConstantTimeCompare([]byte(storedHash), []byte(expected)) == 1, true
+}
+
+func validateAdminPassword(password string) error {
+	if len(password) < 10 {
+		return fmt.Errorf("password must contain at least 10 characters")
+	}
+	if len(password) > 1024 {
+		return fmt.Errorf("password is too long")
+	}
+	return nil
+}
+
+func validateAdminUsername(username string) error {
+	if !adminUsernamePattern.MatchString(username) {
+		return fmt.Errorf("username must be 1-64 characters using letters, numbers, dot, underscore, or hyphen")
+	}
+	return nil
+}
+
+// ---------- Login throttling ----------
+
+type loginAttempt struct {
+	Failures  int
+	FirstSeen time.Time
+	BlockedTo time.Time
+}
+
+type loginThrottleT struct {
+	mu       sync.Mutex
+	attempts map[string]loginAttempt
+}
+
+var loginThrottle = &loginThrottleT{attempts: make(map[string]loginAttempt)}
+
+func loginAttemptKey(r *http.Request, username string) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	return host + "\x00" + strings.ToLower(username)
+}
+
+func (l *loginThrottleT) retryAfter(key string, now time.Time) time.Duration {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	a, ok := l.attempts[key]
+	if !ok {
+		return 0
+	}
+	if !a.BlockedTo.IsZero() && now.Before(a.BlockedTo) {
+		return time.Until(a.BlockedTo)
+	}
+	if now.Sub(a.FirstSeen) > 15*time.Minute {
+		delete(l.attempts, key)
+	}
+	return 0
+}
+
+func (l *loginThrottleT) fail(key string, now time.Time) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	a := l.attempts[key]
+	if a.FirstSeen.IsZero() || now.Sub(a.FirstSeen) > 15*time.Minute {
+		a = loginAttempt{FirstSeen: now}
+	}
+	a.Failures++
+	if a.Failures >= 5 {
+		a.BlockedTo = now.Add(15 * time.Minute)
+	}
+	l.attempts[key] = a
+}
+
+func (l *loginThrottleT) success(key string) {
+	l.mu.Lock()
+	delete(l.attempts, key)
+	l.mu.Unlock()
 }
 
 // ---------- DB methods on Store ----------
@@ -286,6 +418,11 @@ func (s *Store) UpsertAdminUser(ctx context.Context, u *AdminUser) error {
 	return err
 }
 
+func (s *Store) UpdateAdminPasswordHash(ctx context.Context, id int, passwordHash string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE admin_users SET password_hash=$2 WHERE id=$1`, id, passwordHash)
+	return err
+}
+
 func (s *Store) DeleteAdminUser(ctx context.Context, username string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM admin_users WHERE username=$1`, username)
 	return err
@@ -352,11 +489,17 @@ func (s *Store) BootstrapSuperAdmin(ctx context.Context) (string, error) {
 		return "", nil
 	}
 	b := make([]byte, 10)
-	_, _ = rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate bootstrap password: %w", err)
+	}
 	pw := hex.EncodeToString(b)
+	passwordHash, err := hashAdminPassword(pw)
+	if err != nil {
+		return "", err
+	}
 	u := &AdminUser{
 		Username:     "admin",
-		PasswordHash: hashAdminPassword(pw),
+		PasswordHash: passwordHash,
 		Role:         RoleSuperAdmin,
 		MaxUsers:     0,
 		IsActive:     true,
@@ -474,16 +617,31 @@ func handleLogin(store *Store) http.HandlerFunc {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
+		if store == nil {
+			http.Error(w, "database not configured", http.StatusServiceUnavailable)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 16*1024)
 		var req struct {
 			Username string `json:"username"`
 			Password string `json:"password"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil {
 			http.Error(w, "invalid json", http.StatusBadRequest)
 			return
 		}
+		req.Username = strings.TrimSpace(req.Username)
 		if req.Username == "" || req.Password == "" {
 			http.Error(w, "username and password required", http.StatusBadRequest)
+			return
+		}
+		key := loginAttemptKey(r, req.Username)
+		now := time.Now()
+		if retry := loginThrottle.retryAfter(key, now); retry > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(max(1, int(retry.Seconds()))))
+			http.Error(w, "too many login attempts", http.StatusTooManyRequests)
 			return
 		}
 
@@ -493,7 +651,16 @@ func handleLogin(store *Store) http.HandlerFunc {
 			http.Error(w, "server error", http.StatusInternalServerError)
 			return
 		}
-		if u == nil || u.PasswordHash != hashAdminPassword(req.Password) {
+		valid := false
+		needsUpgrade := false
+		if u != nil {
+			valid, needsUpgrade = verifyAdminPassword(u.PasswordHash, req.Password)
+		} else {
+			// Keep roughly the same CPU cost for unknown users to reduce account probing.
+			_, _ = hashAdminPassword(req.Password)
+		}
+		if !valid {
+			loginThrottle.fail(key, now)
 			http.Error(w, "invalid credentials", http.StatusUnauthorized)
 			return
 		}
@@ -506,7 +673,23 @@ func handleLogin(store *Store) http.HandlerFunc {
 			return
 		}
 
-		sess := sessions.Create(u.ID, u.Username, u.Role)
+		if needsUpgrade {
+			if upgradedHash, hashErr := hashAdminPassword(req.Password); hashErr == nil {
+				if updateErr := store.UpdateAdminPasswordHash(r.Context(), u.ID, upgradedHash); updateErr != nil {
+					log.Printf("upgrade admin password hash for %s: %v", u.Username, updateErr)
+				} else {
+					u.PasswordHash = upgradedHash
+					adminUsers.set(u)
+				}
+			}
+		}
+		loginThrottle.success(key)
+		sess, err := sessions.Create(u.ID, u.Username, u.Role)
+		if err != nil {
+			log.Printf("create admin session: %v", err)
+			http.Error(w, "server error", http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"token":    sess.Token,
@@ -614,8 +797,13 @@ func handleCreateReseller(store *Store) http.HandlerFunc {
 			http.Error(w, "invalid json", http.StatusBadRequest)
 			return
 		}
-		if p.Username == "" {
-			http.Error(w, "username required", http.StatusBadRequest)
+		p.Username = strings.TrimSpace(p.Username)
+		if err := validateAdminUsername(p.Username); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if p.MaxUsers < 0 || p.MaxUsers > 1000000 {
+			http.Error(w, "max_users must be between 0 and 1000000", http.StatusBadRequest)
 			return
 		}
 
@@ -638,7 +826,16 @@ func handleCreateReseller(store *Store) http.HandlerFunc {
 		}
 
 		if p.Password != "" {
-			u.PasswordHash = hashAdminPassword(p.Password)
+			if err := validateAdminPassword(p.Password); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			passwordHash, err := hashAdminPassword(p.Password)
+			if err != nil {
+				http.Error(w, "failed to hash password", http.StatusInternalServerError)
+				return
+			}
+			u.PasswordHash = passwordHash
 		}
 		u.MaxUsers = p.MaxUsers
 		u.IsActive = p.IsActive
@@ -658,6 +855,9 @@ func handleCreateReseller(store *Store) http.HandlerFunc {
 			return
 		}
 		adminUsers.set(u)
+		if p.Password != "" && existing != nil {
+			sessions.DeleteUser(u.ID)
+		}
 
 		if u.Role == RoleReseller {
 			if !u.IsActive || (u.ExpiresAt != nil && time.Now().After(*u.ExpiresAt)) {
@@ -676,12 +876,17 @@ func handleDeleteReseller(store *Store) http.HandlerFunc {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		username := r.URL.Query().Get("username")
-		if username == "" {
-			http.Error(w, "username required", http.StatusBadRequest)
+		username := strings.TrimSpace(r.URL.Query().Get("username"))
+		if err := validateAdminUsername(username); err != nil {
+			http.Error(w, "invalid username", http.StatusBadRequest)
 			return
 		}
 		ctx := r.Context()
+		u, _ := store.GetAdminUserByUsername(ctx, username)
+		if u != nil && u.Role == RoleSuperAdmin {
+			http.Error(w, "superadmin accounts cannot be deleted from the reseller endpoint", http.StatusForbidden)
+			return
+		}
 		if err := store.DeleteAdminUser(ctx, username); err != nil {
 			http.Error(w, "db error", http.StatusInternalServerError)
 			return
@@ -689,6 +894,9 @@ func handleDeleteReseller(store *Store) http.HandlerFunc {
 		disconnectOwnerUsers(username)
 		removeOwnerXrayClients(ctx, store, username)
 		adminUsers.delete(username)
+		if u != nil {
+			sessions.DeleteUser(u.ID)
+		}
 		w.WriteHeader(http.StatusNoContent)
 	}
 }

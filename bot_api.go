@@ -4,10 +4,72 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
+	"time"
+	"unicode"
 )
+
+var botSettingKeys = map[string]int{
+	"welcome_text": 4096,
+	"contact_text": 4096,
+	"app_text":     4096,
+	"app_url":      2048,
+}
+
+func botHasControlCharacters(value string) bool {
+	return strings.IndexFunc(value, func(r rune) bool {
+		return unicode.IsControl(r) && r != '\n' && r != '\r' && r != '\t'
+	}) >= 0
+}
+
+func botHasAnyControlCharacters(value string) bool {
+	return strings.IndexFunc(value, unicode.IsControl) >= 0
+}
+
+func validateBotPlan(p *BotPlan) error {
+	p.Name = strings.TrimSpace(p.Name)
+	p.Kind = strings.ToLower(strings.TrimSpace(p.Kind))
+	p.XrayProtocol = strings.ToLower(strings.TrimSpace(p.XrayProtocol))
+	p.XrayInboundTag = strings.TrimSpace(p.XrayInboundTag)
+	p.ServerID = strings.TrimSpace(p.ServerID)
+	if p.Name == "" || len(p.Name) > 120 || botHasControlCharacters(p.Name) {
+		return fmt.Errorf("plan name must contain 1-120 safe characters")
+	}
+	if p.Kind != "ssh" && p.Kind != "xray" {
+		return fmt.Errorf("plan kind must be ssh or xray")
+	}
+	if p.Days < 1 || p.Days > 3650 || p.MaxConnections < 0 || p.MaxConnections > 10000 {
+		return fmt.Errorf("invalid plan duration or connection limit")
+	}
+	if p.LimitMbpsUp < 0 || p.LimitMbpsUp > 1000000 || p.LimitMbpsDown < 0 || p.LimitMbpsDown > 1000000 {
+		return fmt.Errorf("invalid bandwidth limit")
+	}
+	if p.PriceCents < 0 || p.PriceCents > 1000000000 || p.CreditCost < 0 || p.CreditCost > 1000000000 {
+		return fmt.Errorf("invalid plan price or credit cost")
+	}
+	if p.Kind == "xray" && p.XrayProtocol != "" && p.XrayProtocol != "vless" && p.XrayProtocol != "vmess" && p.XrayProtocol != "trojan" {
+		return fmt.Errorf("invalid Xray protocol")
+	}
+	if len(p.XrayInboundTag) > 128 || len(p.ServerID) > 128 {
+		return fmt.Errorf("inbound tag or server id is too long")
+	}
+	return nil
+}
+
+func validateBotPackage(p *BotCreditPackage) error {
+	p.Name = strings.TrimSpace(p.Name)
+	if p.Name == "" || len(p.Name) > 120 || botHasControlCharacters(p.Name) {
+		return fmt.Errorf("package name must contain 1-120 safe characters")
+	}
+	if p.Credits < 1 || p.Credits > 1000000000 || p.PriceCents < 0 || p.PriceCents > 1000000000 {
+		return fmt.Errorf("invalid package credits or price")
+	}
+	return nil
+}
 
 func botWriteJSON(w http.ResponseWriter, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
@@ -80,8 +142,67 @@ func handleBotConfig(store *Store) http.HandlerFunc {
 			})
 		case http.MethodPost:
 			var dto botConfigDTO
-			if err := json.NewDecoder(r.Body).Decode(&dto); err != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
+			dec := json.NewDecoder(r.Body)
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&dto); err != nil {
 				http.Error(w, "invalid json", http.StatusBadRequest)
+				return
+			}
+			dto.MPConfirmMode = strings.ToLower(strings.TrimSpace(dto.MPConfirmMode))
+			if dto.MPConfirmMode != "polling" && dto.MPConfirmMode != "webhook" {
+				http.Error(w, "confirmation mode must be polling or webhook", http.StatusBadRequest)
+				return
+			}
+			pollInterval, err := time.ParseDuration(strings.TrimSpace(dto.MPPollInterval))
+			if err != nil || pollInterval < 5*time.Second || pollInterval > 5*time.Minute {
+				http.Error(w, "poll interval must be between 5s and 5m", http.StatusBadRequest)
+				return
+			}
+			if dto.PixExpirationMinutes < 5 || dto.PixExpirationMinutes > 1440 || dto.TrialHours < 1 || dto.TrialHours > 720 || dto.TrialMaxConnections < 1 || dto.TrialMaxConnections > 1000 {
+				http.Error(w, "invalid PIX expiration or trial limits", http.StatusBadRequest)
+				return
+			}
+			dto.TrialKind = strings.ToLower(strings.TrimSpace(dto.TrialKind))
+			if dto.TrialKind != "ssh" && dto.TrialKind != "xray" {
+				http.Error(w, "trial kind must be ssh or xray", http.StatusBadRequest)
+				return
+			}
+			if len(dto.AdminTelegramIDs) > 100 {
+				http.Error(w, "too many admin Telegram IDs", http.StatusBadRequest)
+				return
+			}
+			for _, id := range dto.AdminTelegramIDs {
+				if id <= 0 {
+					http.Error(w, "admin Telegram IDs must be positive", http.StatusBadRequest)
+					return
+				}
+			}
+			for _, value := range []string{dto.TelegramToken, dto.MPAccessToken, dto.MPWebhookSecret, dto.PublicHost, dto.XrayPublicHost, dto.TrialInboundTag} {
+				if len(value) > 2048 || botHasAnyControlCharacters(value) {
+					http.Error(w, "configuration contains an invalid value", http.StatusBadRequest)
+					return
+				}
+			}
+			existing, err := LoadBotConfig(ctx, store)
+			if err != nil {
+				http.Error(w, "load existing config", http.StatusInternalServerError)
+				return
+			}
+			effectiveTelegramToken := strings.TrimSpace(dto.TelegramToken)
+			if effectiveTelegramToken == "" {
+				effectiveTelegramToken = existing.TelegramToken
+			}
+			if dto.Enabled && effectiveTelegramToken == "" {
+				http.Error(w, "Telegram token is required before enabling the bot", http.StatusBadRequest)
+				return
+			}
+			effectiveWebhookSecret := strings.TrimSpace(dto.MPWebhookSecret)
+			if effectiveWebhookSecret == "" {
+				effectiveWebhookSecret = existing.MPWebhookSecret
+			}
+			if dto.MPConfirmMode == "webhook" && len(effectiveWebhookSecret) < 16 {
+				http.Error(w, "a webhook secret of at least 16 characters is required", http.StatusBadRequest)
 				return
 			}
 			cfg := &BotConfig{
@@ -139,6 +260,10 @@ func handleBotPlans(store *Store) http.HandlerFunc {
 			if p.Kind == "" {
 				p.Kind = "ssh"
 			}
+			if err := validateBotPlan(&p); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
 			if err := store.UpsertPlan(ctx, &p); err != nil {
 				http.Error(w, "db error: "+err.Error(), http.StatusInternalServerError)
 				return
@@ -181,6 +306,10 @@ func handleBotCreditPackages(store *Store) http.HandlerFunc {
 			var p BotCreditPackage
 			if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
 				http.Error(w, "invalid json", http.StatusBadRequest)
+				return
+			}
+			if err := validateBotPackage(&p); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
 			if err := store.UpsertCreditPackage(ctx, &p); err != nil {
@@ -238,6 +367,21 @@ func handleBotUsers(store *Store) http.HandlerFunc {
 				if req.Role == "" {
 					req.Role = "customer"
 				}
+				req.Role = strings.ToLower(strings.TrimSpace(req.Role))
+				if req.Role != "customer" && req.Role != "reseller" && req.Role != "blocked" {
+					http.Error(w, "role must be customer, reseller, or blocked", http.StatusBadRequest)
+					return
+				}
+				req.LinkedAdminUsername = strings.TrimSpace(req.LinkedAdminUsername)
+				if req.Role == "reseller" {
+					linked, err := store.GetAdminUserByUsername(ctx, req.LinkedAdminUsername)
+					if err != nil || linked == nil || linked.Role != RoleReseller {
+						http.Error(w, "linked reseller account not found", http.StatusBadRequest)
+						return
+					}
+				} else {
+					req.LinkedAdminUsername = ""
+				}
 				if err := store.SetBotUserRole(ctx, req.TelegramID, req.Role, req.LinkedAdminUsername); err != nil {
 					http.Error(w, "db error", http.StatusInternalServerError)
 					return
@@ -253,6 +397,10 @@ func handleBotUsers(store *Store) http.HandlerFunc {
 					return
 				}
 			case "adjust_credits":
+				if req.Credits == 0 || req.Credits < -1000000000 || req.Credits > 1000000000 {
+					http.Error(w, "invalid credit adjustment", http.StatusBadRequest)
+					return
+				}
 				if _, err := store.AdjustCredits(ctx, req.TelegramID, req.Credits, "admin_adjust", nil); err != nil {
 					http.Error(w, "adjust: "+err.Error(), http.StatusBadRequest)
 					return
@@ -278,8 +426,18 @@ func handleBotTransactions(store *Store) http.HandlerFunc {
 		ctx := r.Context()
 		switch r.Method {
 		case http.MethodGet:
-			status := r.URL.Query().Get("status")
+			status := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("status")))
+			if status != "" && status != "pending" && status != "approved" && status != "expired" && status != "refunded" && status != "error" {
+				http.Error(w, "invalid status", http.StatusBadRequest)
+				return
+			}
 			limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+			if limit <= 0 {
+				limit = 200
+			}
+			if limit > 500 {
+				limit = 500
+			}
 			txns, err := store.ListTransactions(ctx, status, limit)
 			if err != nil {
 				http.Error(w, "db error", http.StatusInternalServerError)
@@ -342,6 +500,18 @@ func handleBotSettings(store *Store) http.HandlerFunc {
 				return
 			}
 			for k, v := range kv {
+				maxLen, ok := botSettingKeys[k]
+				if !ok || len(v) > maxLen || botHasControlCharacters(v) {
+					http.Error(w, "invalid bot setting", http.StatusBadRequest)
+					return
+				}
+				if k == "app_url" && strings.TrimSpace(v) != "" {
+					u, err := url.ParseRequestURI(strings.TrimSpace(v))
+					if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+						http.Error(w, "app_url must be an http or https URL", http.StatusBadRequest)
+						return
+					}
+				}
 				if err := store.SetSetting(ctx, k, v); err != nil {
 					http.Error(w, "db error", http.StatusInternalServerError)
 					return

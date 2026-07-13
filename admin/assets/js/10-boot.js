@@ -1,7 +1,7 @@
 // ─── Auth error ───────────────────────────────────────────────────────────────
 function doAuthError() {
   sessionToken = "";
-  localStorage.removeItem("SESSION_TOKEN");
+  sessionStorage.removeItem("SESSION_TOKEN");
   clearTimers();
   mainApp.classList.add("hidden");
   loginOverlay.classList.remove("hidden");

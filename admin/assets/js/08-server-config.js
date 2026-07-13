@@ -263,8 +263,8 @@ function renderTLSForwarders() {
   tlsForwardersState.forEach((fw, i) => {
     const row = document.createElement("div");
     row.style = "display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--border);font-size:.73rem;";
-    row.innerHTML = `<span style="flex:1;font-family:monospace;">${fw.listen}</span>
-      <span class="hint">${fw.cert_file ? fw.cert_file.split("/").pop() : "no cert"}</span>`;
+    row.innerHTML = `<span style="flex:1;font-family:monospace;">${escapeHTML(fw.listen || "")}</span>
+      <span class="hint">${escapeHTML(fw.cert_file ? fw.cert_file.split("/").pop() : "no cert")}</span>`;
     const delBtn = document.createElement("button");
     delBtn.className = "btn btn-danger btn-sm";
     delBtn.textContent = "Remove";
@@ -446,4 +446,3 @@ async function loadDnsttPubkey() {
     else st.textContent = "Error: " + e.message;
   }
 }
-

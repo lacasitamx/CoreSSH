@@ -91,7 +91,7 @@ async function loadDnsttHealth() {
         const a = rows[i];
         const b = rows[i + 1] || ["", ""];
         const tr = document.createElement("tr");
-        tr.innerHTML = `<td>${a[0]}</td><td>${fmtInt(a[1])}</td><td>${b[0]}</td><td>${b[0] ? fmtInt(b[1]) : ""}</td>`;
+        tr.innerHTML = `<td>${escapeHTML(a[0])}</td><td>${escapeHTML(fmtInt(a[1]))}</td><td>${escapeHTML(b[0])}</td><td>${b[0] ? escapeHTML(fmtInt(b[1])) : ""}</td>`;
         dnsttHealthBody.appendChild(tr);
       }
     }
@@ -135,7 +135,7 @@ async function loadStats() {
       totRx += Number(it.rx_bytes||0); totTx += Number(it.tx_bytes||0);
       if (!ifaceBody) return;
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td>${it.name}</td><td>${fmtMbps(it.rx_mbps)}</td><td>${fmtMbps(it.tx_mbps)}</td><td>${fmtBytes(it.rx_bytes)}</td><td>${fmtBytes(it.tx_bytes)}</td>`;
+      tr.innerHTML = `<td>${escapeHTML(it.name)}</td><td>${escapeHTML(fmtMbps(it.rx_mbps))}</td><td>${escapeHTML(fmtMbps(it.tx_mbps))}</td><td>${escapeHTML(fmtBytes(it.rx_bytes))}</td><td>${escapeHTML(fmtBytes(it.tx_bytes))}</td>`;
       ifaceBody.appendChild(tr);
     });
     if (ifaceSummary) ifaceSummary.textContent = `Total: ${fmtBytes(totRx)} rx / ${fmtBytes(totTx)} tx`;
@@ -175,13 +175,13 @@ function renderVnstatRows(body, rows, emptyLabel) {
   body.innerHTML = "";
   if (!rows.length) {
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td colspan="5" class="hint">${emptyLabel}</td>`;
+    tr.innerHTML = `<td colspan="5" class="hint">${escapeHTML(emptyLabel)}</td>`;
     body.appendChild(tr);
     return;
   }
   rows.forEach(r => {
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td>${r.period || "--"}</td><td>${r.iface || "--"}</td><td>${fmtBytes(r.rx_bytes||0)}</td><td>${fmtBytes(r.tx_bytes||0)}</td><td>${fmtBytes(r.total_bytes||((r.rx_bytes||0)+(r.tx_bytes||0)))}</td>`;
+    tr.innerHTML = `<td>${escapeHTML(r.period || "--")}</td><td>${escapeHTML(r.iface || "--")}</td><td>${escapeHTML(fmtBytes(r.rx_bytes||0))}</td><td>${escapeHTML(fmtBytes(r.tx_bytes||0))}</td><td>${escapeHTML(fmtBytes(r.total_bytes||((r.rx_bytes||0)+(r.tx_bytes||0))))}</td>`;
     body.appendChild(tr);
   });
 }
@@ -273,4 +273,3 @@ async function clearPanelLog() {
     else st.textContent = "Error cleaning panel log: " + e.message;
   }
 }
-

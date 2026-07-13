@@ -1328,6 +1328,16 @@ func NewStore(dsn string) (*Store, error) {
 	return store, nil
 }
 
+const sshPasswordPrefix = "enc:v1:ssh:"
+
+func sealSSHPassword(password string) (string, error) {
+	return sealCredential(sshPasswordPrefix, password)
+}
+
+func openSSHPassword(password string) (string, error) {
+	return openCredential(sshPasswordPrefix, password)
+}
+
 func (s *Store) EnsureUsersSchema(ctx context.Context) error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS ssh_users (
@@ -1352,6 +1362,39 @@ func (s *Store) EnsureUsersSchema(ctx context.Context) error {
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	return s.migrateSSHPasswords(ctx)
+}
+
+func (s *Store) migrateSSHPasswords(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT username, password FROM ssh_users WHERE password <> '' AND password NOT LIKE 'enc:v1:ssh:%'`)
+	if err != nil {
+		return err
+	}
+	type legacyPassword struct {
+		username string
+		password string
+	}
+	var legacy []legacyPassword
+	for rows.Next() {
+		var item legacyPassword
+		if err := rows.Scan(&item.username, &item.password); err != nil {
+			rows.Close()
+			return err
+		}
+		legacy = append(legacy, item)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, item := range legacy {
+		sealed, err := sealSSHPassword(item.password)
+		if err != nil {
+			return fmt.Errorf("encrypt SSH password for %s: %w", item.username, err)
+		}
+		if _, err := s.db.ExecContext(ctx, `UPDATE ssh_users SET password=$2 WHERE username=$1`, item.username, sealed); err != nil {
 			return err
 		}
 	}
@@ -1391,6 +1434,10 @@ func (s *Store) LoadUsers(ctx context.Context) (map[string]*UserState, error) {
 			&totpSecret, &totpPeriod, &totpWindow, &totpDigits, &allowStaticPassword, &ownerUsername); err != nil {
 			return nil, err
 		}
+		password, err = openSSHPassword(password)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt SSH password for %s: %w", username, err)
+		}
 
 		cfg := UserConfig{
 			Username:            username,
@@ -1426,7 +1473,11 @@ func (s *Store) LoadUsers(ctx context.Context) (map[string]*UserState, error) {
 
 // UpsertUser creates or updates a row in ssh_users.
 func (s *Store) UpsertUser(ctx context.Context, u UserConfig) error {
-	_, err := s.db.ExecContext(ctx, `
+	storedPassword, err := sealSSHPassword(u.Password)
+	if err != nil {
+		return fmt.Errorf("encrypt SSH password: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO ssh_users (
 			username, password, max_connections, expires_at, limit_mbps_up, limit_mbps_down,
 			totp_secret, totp_period, totp_window, totp_digits, allow_static_password, owner_username
@@ -1444,7 +1495,7 @@ func (s *Store) UpsertUser(ctx context.Context, u UserConfig) error {
 		    totp_digits          = EXCLUDED.totp_digits,
 		    allow_static_password = EXCLUDED.allow_static_password`,
 		// owner_username is intentionally excluded from UPDATE — ownership is set at creation only.
-		u.Username, u.Password, u.MaxConnections, u.ExpiresAt, u.LimitMbpsUp, u.LimitMbpsDown,
+		u.Username, storedPassword, u.MaxConnections, u.ExpiresAt, u.LimitMbpsUp, u.LimitMbpsDown,
 		u.TOTPSecret, u.TOTPPeriod, u.TOTPWindow, u.TOTPDigits, u.AllowStaticPassword, u.OwnerUsername)
 	return err
 }
@@ -1634,7 +1685,16 @@ func startAdminAPI(store *Store, addr string, adminDir string) {
 
 	go func() {
 		log.Printf("Admin HTTP (panel + API) listening on %s", addr)
-		if err := http.ListenAndServe(addr, mux); err != nil {
+		server := &http.Server{
+			Addr:              addr,
+			Handler:           securePanelHandler(mux),
+			ReadHeaderTimeout: 10 * time.Second,
+			ReadTimeout:       30 * time.Second,
+			WriteTimeout:      2 * time.Minute,
+			IdleTimeout:       90 * time.Second,
+			MaxHeaderBytes:    1 << 20,
+		}
+		if err := server.ListenAndServe(); err != nil {
 			log.Printf("admin http error: %v", err)
 		}
 	}()
@@ -1756,6 +1816,27 @@ func handleCreateUser(store *Store) http.HandlerFunc {
 				return
 			}
 			if sess := sessionFromCtx(ctx); sess != nil && sess.Role == RoleReseller {
+				currentOwner, exists, ownerErr := remoteSSHUserOwner(ctx, ms, p.Username)
+				if ownerErr != nil {
+					http.Error(w, "could not verify remote ownership", http.StatusBadGateway)
+					return
+				}
+				if exists && currentOwner != sess.Username {
+					http.Error(w, "forbidden", http.StatusForbidden)
+					return
+				}
+				if !exists {
+					owner, ok := adminUsers.get(sess.Username)
+					used, quotaErr := countOwnedQuotaAcrossManagedServers(ctx, store, sess.Username)
+					if quotaErr != nil {
+						http.Error(w, "could not verify reseller quota", http.StatusBadGateway)
+						return
+					}
+					if ok && owner.MaxUsers > 0 && used >= owner.MaxUsers {
+						http.Error(w, fmt.Sprintf("user limit reached (%d)", owner.MaxUsers), http.StatusForbidden)
+						return
+					}
+				}
 				p.OwnerUsername = sess.Username
 			}
 			p.ServerID = ""
@@ -1767,6 +1848,20 @@ func handleCreateUser(store *Store) http.HandlerFunc {
 			}
 			writeProxyResponse(w, status, data, ct)
 			return
+		}
+
+		sess := sessionFromCtx(ctx)
+		if sess != nil && sess.Role == RoleReseller {
+			var existingOwner string
+			err := store.db.QueryRowContext(ctx, `SELECT owner_username FROM ssh_users WHERE username=$1`, p.Username).Scan(&existingOwner)
+			if err != nil && err != sql.ErrNoRows {
+				http.Error(w, "db error", http.StatusInternalServerError)
+				return
+			}
+			if err == nil && existingOwner != sess.Username {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
 		}
 
 		// Decide what password to use:
@@ -1802,7 +1897,6 @@ func handleCreateUser(store *Store) http.HandlerFunc {
 		}
 
 		// Determine owner and enforce reseller quota
-		sess := sessionFromCtx(ctx)
 		ownerUsername := ""
 		if sess != nil && sess.Role == RoleReseller {
 			ownerUsername = sess.Username
@@ -1813,7 +1907,12 @@ func handleCreateUser(store *Store) http.HandlerFunc {
 			).Scan(&existsInDB)
 			if !existsInDB {
 				owner, ok := adminUsers.get(sess.Username)
-				if ok && owner.MaxUsers > 0 && countOwnedQuota(ctx, store, sess.Username) >= owner.MaxUsers {
+				used, quotaErr := countOwnedQuotaAcrossManagedServers(ctx, store, sess.Username)
+				if quotaErr != nil {
+					http.Error(w, "could not verify reseller quota", http.StatusBadGateway)
+					return
+				}
+				if ok && owner.MaxUsers > 0 && used >= owner.MaxUsers {
 					http.Error(w, fmt.Sprintf("user limit reached (%d)", owner.MaxUsers), http.StatusForbidden)
 					return
 				}
@@ -2218,7 +2317,7 @@ func handleDirectTCPIP(newChan ssh.NewChannel, u *UserState, upLimiter, downLimi
 		return
 	}
 
-	target := fmt.Sprintf("%s:%d", req.Host, req.Port)
+	target := net.JoinHostPort(req.Host, strconv.FormatUint(uint64(req.Port), 10))
 	log.Printf("direct-tcpip: user=%s connecting to %s from %s:%d",
 		u.Cfg.Username, target, req.OriginAddr, req.OriginPort)
 
@@ -2841,7 +2940,23 @@ func main() {
 	configPath := flag.String("config", "", "path to JSON config file (default: ./config.json if present, otherwise /opt/sshpanel/config.json)")
 	quietFlag := flag.Bool("quiet", false, "override config and disable logs")
 	userCountFlag := flag.Bool("usercount", false, "show per-user connection counters (single line)")
+	hashAdminPasswordStdin := flag.Bool("hash-admin-password-stdin", false, "read an admin password from stdin and print a bcrypt hash")
 	flag.Parse()
+	if *hashAdminPasswordStdin {
+		password, readErr := io.ReadAll(io.LimitReader(os.Stdin, 1025))
+		if readErr != nil {
+			log.Fatalf("read admin password: %v", readErr)
+		}
+		if err := validateAdminPassword(string(password)); err != nil {
+			log.Fatal(err)
+		}
+		hash, hashErr := hashAdminPassword(string(password))
+		if hashErr != nil {
+			log.Fatal(hashErr)
+		}
+		fmt.Println(hash)
+		return
+	}
 
 	resolvedConfigPath := resolveMainConfigPath(*configPath)
 	cfg, userMap, err := loadConfig(resolvedConfigPath)
