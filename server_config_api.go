@@ -87,6 +87,17 @@ func serverConfigPost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "config exceeds 512 KiB", http.StatusRequestEntityTooLarge)
 		return
 	}
+	// Keep track of optional field presence separately from its boolean value.
+	// This protects a newly-added setting from being reset by a stale cached
+	// panel bundle that does not know how to send the field yet.
+	var fieldPresence struct {
+		PAMAuthEnabled *bool `json:"pam_auth_enabled"`
+	}
+	if err := json.Unmarshal(body, &fieldPresence); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	var newCfg Config
 	if err := json.Unmarshal(body, &newCfg); err != nil {
 		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
@@ -104,6 +115,9 @@ func serverConfigPost(w http.ResponseWriter, r *http.Request) {
 	globalCfgMu.RLock()
 	if globalCfg != nil {
 		newCfg.Users = globalCfg.Users
+		if fieldPresence.PAMAuthEnabled == nil {
+			newCfg.PAMAuthEnabled = globalCfg.PAMAuthEnabled
+		}
 	}
 	globalCfgMu.RUnlock()
 
