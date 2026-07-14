@@ -45,8 +45,15 @@ func pamLogf(format string, args ...interface{}) { pamLogger.Printf(format, args
 // reload. Guarded atomically so passwordCallback can read it lock-free.
 var pamAuthEnabled atomic.Bool
 
-func setPAMAuthEnabled(v bool) { pamAuthEnabled.Store(v) }
-func isPAMAuthEnabled() bool   { return pamAuthEnabled.Load() }
+func setPAMAuthEnabled(v bool) {
+	pamAuthEnabled.Store(v)
+	state := "disabled"
+	if v {
+		state = "ENABLED"
+	}
+	pamLogf("PAM: system (Linux /etc/shadow) login is now %s", state)
+}
+func isPAMAuthEnabled() bool { return pamAuthEnabled.Load() }
 
 // importPAMUser registers a freshly PAM-authenticated account in the running
 // user manager and persists it (marked use_pam) so it shows up in the panel and
