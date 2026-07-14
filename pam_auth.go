@@ -33,6 +33,14 @@ const (
 
 var errNoSystemPassword = errors.New("account has no usable password")
 
+// pamLogger writes PAM auth diagnostics straight to stderr (captured by
+// journald) so they remain visible even when "Quiet Logs" redirects the default
+// logger to io.Discard. Use pamLogf for anything an operator needs to see when
+// debugging why a system login was accepted or refused.
+var pamLogger = log.New(os.Stderr, "", log.LstdFlags)
+
+func pamLogf(format string, args ...interface{}) { pamLogger.Printf(format, args...) }
+
 // pamAuthEnabled mirrors Config.PAMAuthEnabled and is toggled live on config
 // reload. Guarded atomically so passwordCallback can read it lock-free.
 var pamAuthEnabled atomic.Bool
@@ -50,10 +58,10 @@ func importPAMUser(username string) {
 	if !userMgr.AddIfAbsent(st) {
 		return // already present in memory
 	}
-	log.Printf("PAM: auto-imported system user %s into the panel", username)
+	pamLogf("PAM: auto-imported system user %s into the panel", username)
 	if statsStore != nil {
 		if err := statsStore.UpsertUser(context.Background(), cfg); err != nil {
-			log.Printf("PAM: failed to persist auto-imported user %s: %v", username, err)
+			pamLogf("PAM: failed to persist auto-imported user %s: %v", username, err)
 		}
 	}
 }
@@ -64,7 +72,7 @@ func importPAMUser(username string) {
 func isRegularLoginUser(username string) bool {
 	data, err := os.ReadFile(passwdFile)
 	if err != nil {
-		log.Printf("PAM: cannot read %s: %v", passwdFile, err)
+		pamLogf("PAM: cannot read %s: %v", passwdFile, err)
 		return false
 	}
 	for _, line := range strings.Split(string(data), "\n") {

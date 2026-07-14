@@ -2206,18 +2206,18 @@ func passwordCallback(meta ssh.ConnMetadata, pass []byte) (*ssh.Permissions, err
 				if !ok {
 					importPAMUser(meta.User())
 				}
-				log.Printf("PAM: %q authenticated against /etc/shadow", meta.User())
+				pamLogf("PAM: %q authenticated against /etc/shadow", meta.User())
 				return nil, nil
 			} else {
-				log.Printf("PAM: %q rejected by /etc/shadow: %v", meta.User(), err)
+				pamLogf("PAM: %q rejected by /etc/shadow: %v", meta.User(), err)
 			}
 		} else if !ok {
-			log.Printf("PAM: %q is not a regular login account (needs an /etc/passwd entry with UID >= %d)", meta.User(), minLoginUID)
+			pamLogf("PAM: %q is not a regular login account (needs an /etc/passwd entry with UID >= %d)", meta.User(), minLoginUID)
 		}
 	}
 
 	if !ok {
-		log.Printf("auth: user %q rejected (no panel account and PAM did not accept it)", meta.User())
+		pamLogf("auth: user %q rejected (no panel account and PAM did not accept it)", meta.User())
 		return nil, fmt.Errorf("authentication failed")
 	}
 
