@@ -18,7 +18,6 @@ import (
 	_ "github.com/GehirnInc/crypt/sha512_crypt"
 	"github.com/openwall/yescrypt-go"
 	"golang.org/x/crypto/bcrypt"
-	"golang.org/x/crypto/ssh"
 )
 
 const (
@@ -40,23 +39,6 @@ var pamAuthEnabled atomic.Bool
 
 func setPAMAuthEnabled(v bool) { pamAuthEnabled.Store(v) }
 func isPAMAuthEnabled() bool   { return pamAuthEnabled.Load() }
-
-// pamLoginAndImport authenticates an unknown SSH username against the Linux
-// system password and, on success, auto-imports it as a panel user. It is only
-// called when server-wide PAM login is enabled. Returns nil permissions on
-// success (matching the panel's other auth callbacks).
-func pamLoginAndImport(username, password string) (*ssh.Permissions, error) {
-	if !isRegularLoginUser(username) {
-		// Not a regular human account (system/service account, root, or absent).
-		return nil, fmt.Errorf("authentication failed")
-	}
-	if err := authenticatePAM(username, password); err != nil {
-		log.Printf("PAM login failed for %s: %v", username, err)
-		return nil, fmt.Errorf("authentication failed")
-	}
-	importPAMUser(username)
-	return nil, nil
-}
 
 // importPAMUser registers a freshly PAM-authenticated account in the running
 // user manager and persists it (marked use_pam) so it shows up in the panel and

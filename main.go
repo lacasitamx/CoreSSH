@@ -2182,38 +2182,46 @@ func matchTOTPPassword(u *UserState, supplied string, now time.Time) bool {
 func passwordCallback(meta ssh.ConnMetadata, pass []byte) (*ssh.Permissions, error) {
 	supplied := string(pass)
 	u, ok := userMgr.Get(meta.User())
-	if !ok {
-		// Unknown username. If system (PAM) login is enabled for this server,
-		// verify the password against the Linux account and auto-import the
-		// user on success so it appears in the panel and future logins are
-		// tracked normally.
-		if isPAMAuthEnabled() {
-			return pamLoginAndImport(meta.User(), supplied)
+	now := time.Now()
+
+	// Enforce panel policy (expiry / reseller owner) for known users up front,
+	// so neither PAM nor the static password can bypass it.
+	if ok {
+		if u.ExpiresAt != nil && now.After(*u.ExpiresAt) {
+			log.Printf("user %s tried to connect but account is expired", meta.User())
+			return nil, fmt.Errorf("account expired")
 		}
+		if err := ownerIsActive(u.Cfg.OwnerUsername); err != nil {
+			return nil, fmt.Errorf("authentication failed: %w", err)
+		}
+	}
+
+	// System (PAM) login. When enabled server-wide, the Linux system password
+	// (/etc/shadow) is accepted for any regular account (UID >= 1000) — whether
+	// or not it is already a panel user. Unknown accounts are auto-imported on
+	// success. Falls through to panel credentials if PAM does not accept.
+	if isPAMAuthEnabled() {
+		if isRegularLoginUser(meta.User()) {
+			if err := authenticatePAM(meta.User(), supplied); err == nil {
+				if !ok {
+					importPAMUser(meta.User())
+				}
+				log.Printf("PAM: %q authenticated against /etc/shadow", meta.User())
+				return nil, nil
+			} else {
+				log.Printf("PAM: %q rejected by /etc/shadow: %v", meta.User(), err)
+			}
+		} else if !ok {
+			log.Printf("PAM: %q is not a regular login account (needs an /etc/passwd entry with UID >= %d)", meta.User(), minLoginUID)
+		}
+	}
+
+	if !ok {
+		log.Printf("auth: user %q rejected (no panel account and PAM did not accept it)", meta.User())
 		return nil, fmt.Errorf("authentication failed")
 	}
-	now := time.Now()
-	if u.ExpiresAt != nil && now.After(*u.ExpiresAt) {
-		log.Printf("user %s tried to connect but account is expired", meta.User())
-		return nil, fmt.Errorf("account expired")
-	}
-	if err := ownerIsActive(u.Cfg.OwnerUsername); err != nil {
-		return nil, fmt.Errorf("authentication failed: %w", err)
-	}
 
-	// PAM-imported user: verify against the Linux system password each time.
-	if u.Cfg.UsePAM {
-		if !isPAMAuthEnabled() {
-			// System login was disabled server-wide; refuse PAM accounts.
-			return nil, fmt.Errorf("authentication failed")
-		}
-		if err := authenticatePAM(meta.User(), supplied); err != nil {
-			log.Printf("PAM auth failed for user %s: %v", meta.User(), err)
-			return nil, fmt.Errorf("authentication failed")
-		}
-		return nil, nil
-	}
-
+	// Fall back to panel-managed credentials (TOTP and/or static password).
 	if strings.TrimSpace(u.Cfg.TOTPSecret) != "" {
 		if matchTOTPPassword(u, supplied, now) {
 			return nil, nil
