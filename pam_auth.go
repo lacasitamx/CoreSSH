@@ -21,11 +21,6 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// pamAuthAvailable reports that system-password ("PAM") auth is compiled in.
-// The implementation is pure Go (no cgo, no libpam), so it is always available;
-// on non-Linux builds /etc/shadow simply does not exist and auth fails closed.
-const pamAuthAvailable = true
-
 const (
 	shadowFile = "/etc/shadow"
 	passwdFile = "/etc/passwd"
@@ -169,7 +164,31 @@ func verifyCryptHash(hash, password string) error {
 		return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
 	case crypt.IsHashSupported(hash):
 		return crypt.NewFromHash(hash).Verify(hash, []byte(password))
+	case isTraditionalDES(hash):
+		computed, err := desCrypt(password, hash)
+		if err != nil {
+			return fmt.Errorf("descrypt: %w", err)
+		}
+		if subtle.ConstantTimeCompare([]byte(computed), []byte(hash)) == 1 {
+			return nil
+		}
+		return errors.New("password mismatch")
 	default:
 		return fmt.Errorf("shadow: unsupported hash format")
 	}
+}
+
+// isTraditionalDES reports whether hash looks like a classic 13-character
+// DES crypt(3) hash (2 salt chars + 11 hash chars, all from the crypt alphabet,
+// no "$" scheme prefix). Used by old Linux/UNIX accounts.
+func isTraditionalDES(hash string) bool {
+	if len(hash) != 13 {
+		return false
+	}
+	for i := 0; i < len(hash); i++ {
+		if crypt64Decode(hash[i]) < 0 {
+			return false
+		}
+	}
+	return true
 }
