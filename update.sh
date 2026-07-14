@@ -79,21 +79,29 @@ detect_pkg_manager() {
 }
 
 set_update_deps() {
+  # PAM_DEV_PKG provides <security/pam_appl.h>, needed to build the optional
+  # PAM auth support (cgo). Tracked separately because it is a dev header, not
+  # a command, so the command-based dependency check cannot detect it.
   case "$PKG_MANAGER" in
     apt)
-      UPDATE_DEPS=(git rsync wget ca-certificates python3 gcc make tar gzip)
+      PAM_DEV_PKG="libpam0g-dev"
+      UPDATE_DEPS=(git rsync wget ca-certificates python3 gcc make tar gzip "$PAM_DEV_PKG")
       ;;
     dnf|yum)
-      UPDATE_DEPS=(git rsync wget ca-certificates python3 gcc make tar gzip)
+      PAM_DEV_PKG="pam-devel"
+      UPDATE_DEPS=(git rsync wget ca-certificates python3 gcc make tar gzip "$PAM_DEV_PKG")
       ;;
     zypper)
-      UPDATE_DEPS=(git rsync wget ca-certificates python3 gcc make tar gzip)
+      PAM_DEV_PKG="pam-devel"
+      UPDATE_DEPS=(git rsync wget ca-certificates python3 gcc make tar gzip "$PAM_DEV_PKG")
       ;;
     pacman)
-      UPDATE_DEPS=(git rsync wget ca-certificates python gcc make tar gzip)
+      PAM_DEV_PKG="pam"
+      UPDATE_DEPS=(git rsync wget ca-certificates python gcc make tar gzip "$PAM_DEV_PKG")
       ;;
     apk)
-      UPDATE_DEPS=(git rsync wget ca-certificates python3 gcc make tar gzip)
+      PAM_DEV_PKG="linux-pam-dev"
+      UPDATE_DEPS=(git rsync wget ca-certificates python3 gcc make tar gzip "$PAM_DEV_PKG")
       ;;
   esac
 }
@@ -128,6 +136,11 @@ ensure_update_dependencies() {
     fi
   done
   if ! command -v python3 >/dev/null 2>&1; then
+    missing=true
+  fi
+  # The PAM auth build needs <security/pam_appl.h>; a dev header install, not a
+  # command, so check for the header file directly.
+  if [ ! -e /usr/include/security/pam_appl.h ]; then
     missing=true
   fi
   if $missing; then
