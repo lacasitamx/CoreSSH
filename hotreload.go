@@ -335,6 +335,7 @@ func applyFullConfigReload(newCfg *Config) ConfigReloadReport {
 	setDefaultLimits(newCfg.DefaultLimitMbpsUp, newCfg.DefaultLimitMbpsDown)
 	setSSHIdleTimeoutFromConfig(newCfg.SSHIdleTimeout)
 	setMaxTotalConnsFromConfig(newCfg.MaxTotalConnections)
+	setPAMAuthEnabled(newCfg.PAMAuthEnabled)
 
 	// Quiet logging / user count display
 	if newCfg.Quiet {

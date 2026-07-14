@@ -99,6 +99,7 @@ async function loadServerConfig() {
     document.getElementById("cfgSSHIdleTimeout").value = c.ssh_idle_timeout || "0s";
     document.getElementById("cfgQuiet").checked      = !!c.quiet;
     document.getElementById("cfgUserCount").checked  = !!c.user_count;
+    document.getElementById("cfgPamAuth").checked    = !!c.pam_auth_enabled;
 
     // Banner
     document.getElementById("cfgBanner").value       = c.banner || "";
@@ -182,6 +183,7 @@ async function saveServerConfig() {
     ssh_idle_timeout:         document.getElementById("cfgSSHIdleTimeout").value.trim() || "0s",
     quiet:      document.getElementById("cfgQuiet").checked,
     user_count: document.getElementById("cfgUserCount").checked,
+    pam_auth_enabled: document.getElementById("cfgPamAuth").checked,
     banner:      document.getElementById("cfgBanner").value,
     banner_file: "/opt/sshpanel/banner.txt",
     dnstt: document.getElementById("cfgDnsttEnabled").checked ? {

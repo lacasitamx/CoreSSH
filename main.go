@@ -97,6 +97,13 @@ type Config struct {
 
 	UserCount bool `json:"user_count"`
 
+	// PAMAuthEnabled turns on Linux system-password login for this server. When
+	// true, an SSH login with a username not present in the panel is verified
+	// against /etc/shadow; on success the account (regular users, UID >= 1000)
+	// is auto-imported into the panel. When false, only panel-managed accounts
+	// can log in and previously-imported PAM accounts are refused.
+	PAMAuthEnabled bool `json:"pam_auth_enabled"`
+
 	// SSHIdleTimeout controls how long an authenticated SSH connection may
 	// remain with no bytes moving in either direction before it is closed and
 	// released from the active user count. Empty, "0", or "0s" disables it.
@@ -388,6 +395,19 @@ func (m *UserManager) Get(username string) (*UserState, bool) {
 	defer m.mu.RUnlock()
 	u, ok := m.users[username]
 	return u, ok
+}
+
+// AddIfAbsent inserts u only if no user with the same username exists yet, and
+// reports whether it was added. Used by PAM auto-import to register a freshly
+// authenticated system account without clobbering an existing runtime state.
+func (m *UserManager) AddIfAbsent(u *UserState) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.users[u.Cfg.Username]; exists {
+		return false
+	}
+	m.users[u.Cfg.Username] = u
+	return true
 }
 
 func (m *UserManager) List() []*UserState {
@@ -2160,8 +2180,16 @@ func matchTOTPPassword(u *UserState, supplied string, now time.Time) bool {
 // ---------- Auth callbacks ----------
 
 func passwordCallback(meta ssh.ConnMetadata, pass []byte) (*ssh.Permissions, error) {
+	supplied := string(pass)
 	u, ok := userMgr.Get(meta.User())
 	if !ok {
+		// Unknown username. If system (PAM) login is enabled for this server,
+		// verify the password against the Linux account and auto-import the
+		// user on success so it appears in the panel and future logins are
+		// tracked normally.
+		if isPAMAuthEnabled() {
+			return pamLoginAndImport(meta.User(), supplied)
+		}
 		return nil, fmt.Errorf("authentication failed")
 	}
 	now := time.Now()
@@ -2172,13 +2200,11 @@ func passwordCallback(meta ssh.ConnMetadata, pass []byte) (*ssh.Permissions, err
 	if err := ownerIsActive(u.Cfg.OwnerUsername); err != nil {
 		return nil, fmt.Errorf("authentication failed: %w", err)
 	}
-	supplied := string(pass)
 
-	// Legacy PAM mode: authenticate against the Linux system account via PAM's
-	// auth phase only. This bypasses the panel-managed password/TOTP entirely.
+	// PAM-imported user: verify against the Linux system password each time.
 	if u.Cfg.UsePAM {
-		if !pamAuthAvailable {
-			log.Printf("user %s is configured for PAM auth but this build has no PAM support", meta.User())
+		if !isPAMAuthEnabled() {
+			// System login was disabled server-wide; refuse PAM accounts.
 			return nil, fmt.Errorf("authentication failed")
 		}
 		if err := authenticatePAM(meta.User(), supplied); err != nil {
@@ -3237,6 +3263,7 @@ func main() {
 	setDefaultLimits(cfg.DefaultLimitMbpsUp, cfg.DefaultLimitMbpsDown)
 	setSSHIdleTimeoutFromConfig(cfg.SSHIdleTimeout)
 	setMaxTotalConnsFromConfig(cfg.MaxTotalConnections)
+	setPAMAuthEnabled(cfg.PAMAuthEnabled)
 
 	// Initialise listener pools (used for initial startup and hot-reload alike).
 	publicPool = newListenerPool(serveHTTP80)

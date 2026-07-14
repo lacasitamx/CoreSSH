@@ -306,7 +306,6 @@
               <div class="field"><label>TOTP Window</label><input id="fTotpWindow" type="number" min="0" placeholder="1"/></div>
               <div class="field"><label>TOTP Digits</label><input id="fTotpDigits" type="number" min="6" max="8" placeholder="6"/></div>
               <div class="field"><label>Allow static password too</label><input id="fAllowStatic" type="checkbox" style="width:16px;height:16px;margin-top:10px;"/></div>
-              <div class="field"><label>Use Linux PAM auth (legacy)</label><input id="fUsePam" type="checkbox" style="width:16px;height:16px;margin-top:10px;"/></div>
               <div class="field"><label>Max connections</label><input id="fMaxConn" type="number" min="0" placeholder="0 = unlimited"/></div>
               <div class="field"><label>Expires at</label><input id="fExpires" type="datetime-local"/></div>
               <div class="field"><label>Max Upload (Mb/s)</label><input id="fUp" type="number" min="0" placeholder="0 = default"/></div>
@@ -808,6 +807,7 @@
               <div class="field"><label>SSH Idle Timeout <span class="hint">0s/off = disabled</span></label><input type="text" id="managedCfgSSHIdleTimeout" placeholder="0s" title="Keep disabled for VPN/XHTTP connections."/></div>
               <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;"><input type="checkbox" id="managedCfgQuiet"/> Quiet Logs</label>
               <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;"><input type="checkbox" id="managedCfgUserCount"/> User Count Display</label>
+              <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;" title="Verify SSH logins against the Linux system password (/etc/shadow); regular accounts (UID ≥ 1000) are auto-imported."><input type="checkbox" id="managedCfgPamAuth"/> Linux PAM Login (auto-import)</label>
             </div>
           </div>
 
@@ -1268,6 +1268,9 @@
             </label>
             <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;">
               <input type="checkbox" id="cfgUserCount"/> User Count Display
+            </label>
+            <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;" title="Verify SSH logins against the Linux system password (/etc/shadow). Regular accounts (UID ≥ 1000) that log in successfully are auto-imported into the panel.">
+              <input type="checkbox" id="cfgPamAuth"/> Linux PAM Login (auto-import)
             </label>
           </div>
         </div>

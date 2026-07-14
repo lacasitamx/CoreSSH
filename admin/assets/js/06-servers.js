@@ -418,6 +418,7 @@ async function loadManagedServerConfig(id) {
     document.getElementById("managedCfgSSHIdleTimeout").value = c.ssh_idle_timeout || "0s";
     document.getElementById("managedCfgQuiet").checked = !!c.quiet;
     document.getElementById("managedCfgUserCount").checked = !!c.user_count;
+    document.getElementById("managedCfgPamAuth").checked = !!c.pam_auth_enabled;
     document.getElementById("managedCfgBanner").value = c.banner || "";
 
     const hasDnstt = !!c.dnstt;
@@ -487,6 +488,7 @@ function managedConfigFromForm() {
     ssh_idle_timeout: document.getElementById("managedCfgSSHIdleTimeout").value.trim() || "0s",
     quiet: document.getElementById("managedCfgQuiet").checked,
     user_count: document.getElementById("managedCfgUserCount").checked,
+    pam_auth_enabled: document.getElementById("managedCfgPamAuth").checked,
     banner: document.getElementById("managedCfgBanner").value,
     banner_file: "/opt/sshpanel/banner.txt",
     dnstt: document.getElementById("managedCfgDnsttEnabled").checked ? {
