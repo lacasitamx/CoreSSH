@@ -750,3 +750,10 @@ select:disabled {
 @media(max-width:1180px){.bot-overview-grid{grid-template-columns:repeat(2,minmax(0,1fr));}.bot-section-nav{grid-template-columns:repeat(3,minmax(0,1fr));}.bot-master-detail{grid-template-columns:1fr;}.bot-editor-card{position:static;}.bot-nav-shell{top:78px;}}
 @media(max-width:760px){.bot-hero{padding:20px;border-radius:22px;}.bot-hero h2{font-size:1.55rem;}.bot-hero-actions{position:relative;right:auto;top:auto;max-width:none;justify-content:flex-start;margin-top:16px;}.bot-overview-grid{grid-template-columns:1fr 1fr;margin-top:18px;}.bot-section-nav{display:none;}.bot-section-select{display:block;}.bot-nav-shell{top:76px;}.bot-config-grid,.bot-message-grid{grid-template-columns:1fr;}.bot-section-heading{align-items:flex-start;flex-direction:column;}.bot-section-heading>.card-actions{width:100%;justify-content:flex-start;}.bot-master-detail{display:block;}.bot-master-detail>.card+.card{margin-top:14px!important;}.bot-save-row{align-items:flex-start;flex-direction:column;}}
 @media(max-width:460px){.bot-overview-grid{grid-template-columns:1fr;}.bot-overview-card{padding:11px 12px;}.bot-hero-actions .btn{width:100%;}.bot-section-heading .btn{width:100%;}.bot-copy-row{align-items:stretch;flex-direction:column;}.bot-copy-row .btn{width:100%;}}
+
+/* Sortable SSH user table headers */
+th[data-sort-key]{cursor:pointer;user-select:none;white-space:nowrap;transition:color .12s ease;}
+th[data-sort-key]:hover{color:var(--accent);}
+th[data-sort-key]::after{content:"";display:inline-block;width:.9em;font-size:.72em;opacity:.85;}
+th[data-sort-key].sort-asc::after{content:" \25B2";}
+th[data-sort-key].sort-desc::after{content:" \25BC";}

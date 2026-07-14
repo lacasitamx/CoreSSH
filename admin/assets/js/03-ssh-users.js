@@ -57,7 +57,77 @@ async function loadUsersSilent() {
   }
 }
 
+// ---- Column sorting (click a header to sort) ----
+// Value extractor per sortable column. Numbers sort numerically, strings
+// alphabetically; online counts as 1 so "status" groups online users together.
+const USER_SORT_EXTRACT = {
+  username: u => String(u.username || "").toLowerCase(),
+  status:   u => (u.active_conns || 0) > 0 ? 1 : 0,
+  auth:     u => u.use_pam ? "pam" : (u.totp_enabled ? (u.allow_static_password ? "totp+pw" : "totp") : "password"),
+  conn:     u => u.active_conns || 0,
+  max:      u => u.max_connections || 0,
+  up:       u => u.limit_mbps_up || 0,
+  down:     u => u.limit_mbps_down || 0,
+  expires:  u => u.expires_at ? new Date(u.expires_at).getTime() : Infinity,
+  owner:    u => String(u.owner_username || "").toLowerCase(),
+};
+// Columns that default to descending on first click (most/online first).
+const USER_SORT_DEFAULT_DESC = new Set(["status", "conn", "max", "up", "down"]);
+
+let userSort = { key: "username", dir: "asc" };
+let lastUsersData = [];
+
+function sortUsers(list) {
+  const ext = USER_SORT_EXTRACT[userSort.key] || USER_SORT_EXTRACT.username;
+  const dir = userSort.dir === "desc" ? -1 : 1;
+  return list.slice().sort((a, b) => {
+    const va = ext(a), vb = ext(b);
+    let cmp;
+    if (typeof va === "number" && typeof vb === "number") cmp = va - vb;
+    else cmp = String(va).localeCompare(String(vb));
+    // Stable tie-break by username so equal rows never shuffle between polls.
+    if (cmp === 0) cmp = String(a.username || "").localeCompare(String(b.username || ""));
+    return cmp * dir;
+  });
+}
+
+function updateSortIndicators() {
+  const table = usersBody && usersBody.closest("table");
+  if (!table) return;
+  table.querySelectorAll("th[data-sort-key]").forEach(th => {
+    th.classList.remove("sort-asc", "sort-desc");
+    if (th.getAttribute("data-sort-key") === userSort.key) {
+      th.classList.add(userSort.dir === "asc" ? "sort-asc" : "sort-desc");
+    }
+  });
+}
+
+function setUserSort(key) {
+  if (!USER_SORT_EXTRACT[key]) return;
+  if (userSort.key === key) {
+    userSort.dir = userSort.dir === "asc" ? "desc" : "asc";
+  } else {
+    userSort.key = key;
+    userSort.dir = USER_SORT_DEFAULT_DESC.has(key) ? "desc" : "asc";
+  }
+  updateSortIndicators();
+  renderUsers(lastUsersData);
+}
+
+(function initUserSortHeaders() {
+  const table = usersBody && usersBody.closest("table");
+  if (!table) return;
+  table.querySelectorAll("th[data-sort-key]").forEach(th => {
+    th.addEventListener("click", () => setUserSort(th.getAttribute("data-sort-key")));
+  });
+  updateSortIndicators();
+})();
+
 function renderUsers(users) {
+  // Cache the raw list so a header click can re-sort without refetching, and
+  // order by the active column so rows don't shuffle on each live poll.
+  lastUsersData = users || [];
+  users = sortUsers(lastUsersData);
   updateDashboardFromUsers(users);
   const isSA = currentRole === "superadmin";
   userCountChip.textContent = users.length;
