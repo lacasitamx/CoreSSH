@@ -4,6 +4,7 @@ go 1.25.4
 
 require (
 	github.com/lib/pq v1.10.9
+	github.com/msteinert/pam/v2 v2.1.0
 	github.com/xtaci/kcp-go/v5 v5.6.61
 	github.com/xtaci/smux v1.5.50
 	golang.org/x/crypto v0.45.0

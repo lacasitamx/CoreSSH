@@ -351,6 +351,12 @@ type UserConfig struct {
 	// When false and totp_secret is set, only the TOTP code is accepted.
 	AllowStaticPassword bool `json:"allow_static_password"`
 
+	// UsePAM is a legacy opt-in: when true, the supplied SSH password is
+	// verified against the Linux PAM auth stack (auth phase only) for the
+	// system account matching this username, instead of the panel-managed
+	// Password/TOTP. New users leave this false and keep the script's own auth.
+	UsePAM bool `json:"use_pam"`
+
 	MaxConnections int    `json:"max_connections"`
 	ExpiresAt      string `json:"expires_at"` // RFC3339 or empty
 
@@ -1351,13 +1357,15 @@ func (s *Store) EnsureUsersSchema(ctx context.Context) error {
 			totp_period INT NOT NULL DEFAULT 60,
 			totp_window INT NOT NULL DEFAULT 1,
 			totp_digits INT NOT NULL DEFAULT 6,
-			allow_static_password BOOLEAN NOT NULL DEFAULT FALSE
+			allow_static_password BOOLEAN NOT NULL DEFAULT FALSE,
+			use_pam BOOLEAN NOT NULL DEFAULT FALSE
 		)`,
 		`ALTER TABLE ssh_users ADD COLUMN IF NOT EXISTS totp_secret TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE ssh_users ADD COLUMN IF NOT EXISTS totp_period INT NOT NULL DEFAULT 60`,
 		`ALTER TABLE ssh_users ADD COLUMN IF NOT EXISTS totp_window INT NOT NULL DEFAULT 1`,
 		`ALTER TABLE ssh_users ADD COLUMN IF NOT EXISTS totp_digits INT NOT NULL DEFAULT 6`,
 		`ALTER TABLE ssh_users ADD COLUMN IF NOT EXISTS allow_static_password BOOLEAN NOT NULL DEFAULT FALSE`,
+		`ALTER TABLE ssh_users ADD COLUMN IF NOT EXISTS use_pam BOOLEAN NOT NULL DEFAULT FALSE`,
 		`ALTER TABLE ssh_users ALTER COLUMN password SET DEFAULT ''`,
 	}
 	for _, stmt := range stmts {
@@ -1407,7 +1415,7 @@ func (s *Store) LoadUsers(ctx context.Context) (map[string]*UserState, error) {
 		SELECT username, password, max_connections, expires_at, limit_mbps_up, limit_mbps_down,
 		       COALESCE(totp_secret, ''), COALESCE(totp_period, 60), COALESCE(totp_window, 1),
 		       COALESCE(totp_digits, 6), COALESCE(allow_static_password, FALSE),
-		       COALESCE(owner_username, '')
+		       COALESCE(use_pam, FALSE), COALESCE(owner_username, '')
 		FROM ssh_users`)
 	if err != nil {
 		return nil, err
@@ -1428,10 +1436,11 @@ func (s *Store) LoadUsers(ctx context.Context) (map[string]*UserState, error) {
 			totpWindow          int
 			totpDigits          int
 			allowStaticPassword bool
+			usePAM              bool
 			ownerUsername       string
 		)
 		if err := rows.Scan(&username, &password, &maxConnections, &expiresAt, &limitUp, &limitDown,
-			&totpSecret, &totpPeriod, &totpWindow, &totpDigits, &allowStaticPassword, &ownerUsername); err != nil {
+			&totpSecret, &totpPeriod, &totpWindow, &totpDigits, &allowStaticPassword, &usePAM, &ownerUsername); err != nil {
 			return nil, err
 		}
 		password, err = openSSHPassword(password)
@@ -1450,6 +1459,7 @@ func (s *Store) LoadUsers(ctx context.Context) (map[string]*UserState, error) {
 			TOTPWindow:          totpWindow,
 			TOTPDigits:          totpDigits,
 			AllowStaticPassword: allowStaticPassword,
+			UsePAM:              usePAM,
 			OwnerUsername:       ownerUsername,
 		}
 
@@ -1480,9 +1490,9 @@ func (s *Store) UpsertUser(ctx context.Context, u UserConfig) error {
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO ssh_users (
 			username, password, max_connections, expires_at, limit_mbps_up, limit_mbps_down,
-			totp_secret, totp_period, totp_window, totp_digits, allow_static_password, owner_username
+			totp_secret, totp_period, totp_window, totp_digits, allow_static_password, use_pam, owner_username
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		ON CONFLICT (username) DO UPDATE
 		SET password             = EXCLUDED.password,
 		    max_connections      = EXCLUDED.max_connections,
@@ -1493,10 +1503,11 @@ func (s *Store) UpsertUser(ctx context.Context, u UserConfig) error {
 		    totp_period          = EXCLUDED.totp_period,
 		    totp_window          = EXCLUDED.totp_window,
 		    totp_digits          = EXCLUDED.totp_digits,
-		    allow_static_password = EXCLUDED.allow_static_password`,
+		    allow_static_password = EXCLUDED.allow_static_password,
+		    use_pam              = EXCLUDED.use_pam`,
 		// owner_username is intentionally excluded from UPDATE — ownership is set at creation only.
 		u.Username, storedPassword, u.MaxConnections, u.ExpiresAt, u.LimitMbpsUp, u.LimitMbpsDown,
-		u.TOTPSecret, u.TOTPPeriod, u.TOTPWindow, u.TOTPDigits, u.AllowStaticPassword, u.OwnerUsername)
+		u.TOTPSecret, u.TOTPPeriod, u.TOTPWindow, u.TOTPDigits, u.AllowStaticPassword, u.UsePAM, u.OwnerUsername)
 	return err
 }
 
@@ -1713,6 +1724,7 @@ type UserDTO struct {
 	TOTPWindow          int        `json:"totp_window"`
 	TOTPDigits          int        `json:"totp_digits"`
 	AllowStaticPassword bool       `json:"allow_static_password"`
+	UsePAM              bool       `json:"use_pam"`
 	TOTPEnabled         bool       `json:"totp_enabled"`
 	OwnerUsername       string     `json:"owner_username,omitempty"`
 	ServerID            string     `json:"server_id,omitempty"`
@@ -1759,6 +1771,7 @@ func handleListUsers(w http.ResponseWriter, r *http.Request) {
 			TOTPWindow:          cfg.TOTPWindow,
 			TOTPDigits:          cfg.TOTPDigits,
 			AllowStaticPassword: cfg.AllowStaticPassword,
+			UsePAM:              cfg.UsePAM,
 			TOTPEnabled:         strings.TrimSpace(cfg.TOTPSecret) != "",
 			OwnerUsername:       cfg.OwnerUsername,
 		})
@@ -1781,6 +1794,7 @@ type UserPayload struct {
 	TOTPWindow          int     `json:"totp_window"`
 	TOTPDigits          int     `json:"totp_digits"`
 	AllowStaticPassword bool    `json:"allow_static_password"`
+	UsePAM              bool    `json:"use_pam"`
 	OwnerUsername       string  `json:"owner_username,omitempty"`
 	ServerID            string  `json:"server_id,omitempty"`
 }
@@ -1882,7 +1896,9 @@ func handleCreateUser(store *Store) http.HandlerFunc {
 			).Scan(&existing)
 
 			if err == sql.ErrNoRows {
-				if strings.TrimSpace(p.TOTPSecret) == "" {
+				// PAM users authenticate against the system account, so they
+				// need neither a panel password nor a TOTP secret.
+				if strings.TrimSpace(p.TOTPSecret) == "" && !p.UsePAM {
 					http.Error(w, "password or totp_secret required for new user", http.StatusBadRequest)
 					return
 				}
@@ -1933,6 +1949,7 @@ func handleCreateUser(store *Store) http.HandlerFunc {
 			TOTPWindow:          p.TOTPWindow,
 			TOTPDigits:          p.TOTPDigits,
 			AllowStaticPassword: p.AllowStaticPassword,
+			UsePAM:              p.UsePAM,
 			OwnerUsername:       ownerUsername,
 		}
 
@@ -2156,6 +2173,21 @@ func passwordCallback(meta ssh.ConnMetadata, pass []byte) (*ssh.Permissions, err
 		return nil, fmt.Errorf("authentication failed: %w", err)
 	}
 	supplied := string(pass)
+
+	// Legacy PAM mode: authenticate against the Linux system account via PAM's
+	// auth phase only. This bypasses the panel-managed password/TOTP entirely.
+	if u.Cfg.UsePAM {
+		if !pamAuthAvailable {
+			log.Printf("user %s is configured for PAM auth but this build has no PAM support", meta.User())
+			return nil, fmt.Errorf("authentication failed")
+		}
+		if err := authenticatePAM(meta.User(), supplied); err != nil {
+			log.Printf("PAM auth failed for user %s: %v", meta.User(), err)
+			return nil, fmt.Errorf("authentication failed")
+		}
+		return nil, nil
+	}
+
 	if strings.TrimSpace(u.Cfg.TOTPSecret) != "" {
 		if matchTOTPPassword(u, supplied, now) {
 			return nil, nil

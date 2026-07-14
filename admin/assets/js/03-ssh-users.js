@@ -73,7 +73,7 @@ function renderUsers(users) {
     const cells = [
       u.username,
       on ? `<span class="badge-on">${t("online")}</span>` : `<span class="badge-off">${t("idle")}</span>`,
-      u.totp_enabled ? (u.allow_static_password ? "TOTP+pw" : "TOTP") : "Password",
+      u.use_pam ? "PAM" : (u.totp_enabled ? (u.allow_static_password ? "TOTP+pw" : "TOTP") : "Password"),
       u.active_conns ?? 0,
       u.max_connections || 0,
       u.limit_mbps_up || 0,
@@ -121,6 +121,7 @@ function fillUserForm(u) {
   fTotpWindow.value     = u.totp_window ?? 1;
   fTotpDigits.value     = u.totp_digits || 6;
   fAllowStatic.checked  = !!u.allow_static_password;
+  if (fUsePam) fUsePam.checked = !!u.use_pam;
   fMaxConn.value        = u.max_connections || "";
   fUp.value             = u.limit_mbps_up || "";
   fDown.value           = u.limit_mbps_down || "";
@@ -144,6 +145,7 @@ userForm.addEventListener("submit", async e => {
     totp_window: parseInt(fTotpWindow.value||"1",10),
     totp_digits: parseInt(fTotpDigits.value||"6",10),
     allow_static_password: !!fAllowStatic.checked,
+    use_pam: !!(fUsePam && fUsePam.checked),
     max_connections: parseInt(fMaxConn.value||"0",10),
     expires_at: isoFromLocal(fExpires.value),
     limit_mbps_up:   parseInt(fUp.value||"0",10),

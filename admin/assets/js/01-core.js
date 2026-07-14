@@ -331,6 +331,7 @@ const fTotpPeriod    = document.getElementById("fTotpPeriod");
 const fTotpWindow    = document.getElementById("fTotpWindow");
 const fTotpDigits    = document.getElementById("fTotpDigits");
 const fAllowStatic   = document.getElementById("fAllowStatic");
+const fUsePam        = document.getElementById("fUsePam");
 const fMaxConn       = document.getElementById("fMaxConn");
 const fExpires       = document.getElementById("fExpires");
 const fUp            = document.getElementById("fUp");

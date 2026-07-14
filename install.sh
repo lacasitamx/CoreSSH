@@ -61,23 +61,24 @@ detect_pkg_manager() {
 set_package_deps() {
   case "$PKG_MANAGER" in
     apt)
-      PKG_DEPS=(curl wget git rsync build-essential postgresql ca-certificates unzip openssh-client openssl python3 tar gzip)
+      # libpam0g-dev: PAM headers for the optional PAM auth build (cgo).
+      PKG_DEPS=(curl wget git rsync build-essential libpam0g-dev postgresql ca-certificates unzip openssh-client openssl python3 tar gzip)
       PKG_OPTIONAL_DEPS=(postgresql-contrib iptables nftables)
       ;;
     dnf|yum)
-      PKG_DEPS=(curl wget git rsync gcc make postgresql-server ca-certificates unzip openssh-clients openssl python3 tar gzip)
+      PKG_DEPS=(curl wget git rsync gcc make pam-devel postgresql-server ca-certificates unzip openssh-clients openssl python3 tar gzip)
       PKG_OPTIONAL_DEPS=(postgresql-contrib iptables nftables)
       ;;
     zypper)
-      PKG_DEPS=(curl wget git rsync gcc make postgresql-server ca-certificates unzip openssh openssl python3 tar gzip)
+      PKG_DEPS=(curl wget git rsync gcc make pam-devel postgresql-server ca-certificates unzip openssh openssl python3 tar gzip)
       PKG_OPTIONAL_DEPS=(postgresql-contrib iptables nftables)
       ;;
     pacman)
-      PKG_DEPS=(curl wget git rsync base-devel postgresql ca-certificates unzip openssh openssl python tar gzip)
+      PKG_DEPS=(curl wget git rsync base-devel pam postgresql ca-certificates unzip openssh openssl python tar gzip)
       PKG_OPTIONAL_DEPS=(iptables-nft nftables)
       ;;
     apk)
-      PKG_DEPS=(curl wget git rsync build-base postgresql ca-certificates unzip openssh-client openssl python3 tar gzip)
+      PKG_DEPS=(curl wget git rsync build-base linux-pam-dev postgresql ca-certificates unzip openssh-client openssl python3 tar gzip)
       PKG_OPTIONAL_DEPS=(postgresql-contrib iptables nftables)
       ;;
   esac
