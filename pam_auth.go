@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/GehirnInc/crypt"
 	_ "github.com/GehirnInc/crypt/apr1_crypt"
@@ -61,7 +62,14 @@ func isPAMAuthEnabled() bool { return pamAuthEnabled.Load() }
 // second concurrent/subsequent login for the same user is a no-op.
 func importPAMUser(username string) {
 	cfg := UserConfig{Username: username, UsePAM: true}
-	st := &UserState{Cfg: cfg}
+	// Carry over the Linux account expiry (/etc/shadow field 8) so the panel's
+	// "Vence em" shows the real expiration instead of "—".
+	var expPtr *time.Time
+	if exp := shadowAccountExpiry(username); exp != nil {
+		cfg.ExpiresAt = exp.Format(time.RFC3339)
+		expPtr = exp
+	}
+	st := &UserState{Cfg: cfg, ExpiresAt: expPtr}
 	if !userMgr.AddIfAbsent(st) {
 		return // already present in memory
 	}
@@ -95,6 +103,34 @@ func isRegularLoginUser(username string) bool {
 		return uid >= minLoginUID && uid != nobodyUID
 	}
 	return false
+}
+
+// shadowAccountExpiry returns the account expiration date from /etc/shadow
+// field 8 (days since 1970-01-01), or nil if the account never expires (empty
+// field) or the value is unusable. This is the `chage -E` / `useradd -e` date,
+// which maps to the panel's per-user expiry.
+func shadowAccountExpiry(username string) *time.Time {
+	data, err := os.ReadFile(shadowFile)
+	if err != nil {
+		return nil
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Split(strings.TrimRight(line, "\r"), ":")
+		if len(fields) < 8 || fields[0] != username {
+			continue
+		}
+		expStr := strings.TrimSpace(fields[7])
+		if expStr == "" {
+			return nil // no account expiry set
+		}
+		days, err := strconv.Atoi(expStr)
+		if err != nil || days <= 0 {
+			return nil
+		}
+		t := time.Unix(int64(days)*86400, 0).UTC()
+		return &t
+	}
+	return nil
 }
 
 // authenticatePAM verifies password against the Linux system account matching
