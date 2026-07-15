@@ -100,9 +100,8 @@ func initSSHRuntimeUsage(u *UserState, uplink, downlink int64) {
 	atomic.StoreInt64(&u.pendingDownlinkBytes, 0)
 }
 
-func resetSSHRuntimeUsage(username string) {
-	u, ok := userMgr.Get(username)
-	if !ok || u == nil {
+func resetSSHRuntimeUsageLocked(u *UserState) {
+	if u == nil {
 		return
 	}
 	initSSHRuntimeUsage(u, 0, 0)
@@ -112,13 +111,30 @@ func resetSSHRuntimeUsage(username string) {
 	u.mu.Unlock()
 }
 
+func resetSSHRuntimeUsage(username string) {
+	u, ok := userMgr.Get(username)
+	if !ok || u == nil {
+		return
+	}
+	u.trafficMu.Lock()
+	resetSSHRuntimeUsageLocked(u)
+	u.trafficMu.Unlock()
+}
+
 func resetSSHUserTrafficAccounting(ctx context.Context, store *Store, username string) error {
+	u, _ := userMgr.Get(username)
+	if u != nil {
+		u.trafficMu.Lock()
+		defer u.trafficMu.Unlock()
+	}
 	sshTrafficPersistenceMu.Lock()
 	defer sshTrafficPersistenceMu.Unlock()
 	if err := store.ResetSSHUserTraffic(ctx, username); err != nil {
 		return err
 	}
-	resetSSHRuntimeUsage(username)
+	if u != nil {
+		resetSSHRuntimeUsageLocked(u)
+	}
 	return nil
 }
 
@@ -221,6 +237,10 @@ type sshQuotaWriter struct {
 }
 
 func (qw sshQuotaWriter) Write(p []byte) (int, error) {
+	if qw.user != nil {
+		qw.user.trafficMu.RLock()
+		defer qw.user.trafficMu.RUnlock()
+	}
 	allowed, quotaLimiter, stopAfter := reserveSSHUserBytes(qw.user, len(p))
 	if allowed <= 0 {
 		return 0, errDataQuotaExceeded

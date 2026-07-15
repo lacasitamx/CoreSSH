@@ -399,6 +399,7 @@ type UserState struct {
 	totalBytes           int64
 	pendingUplinkBytes   int64
 	pendingDownlinkBytes int64
+	trafficMu            sync.RWMutex
 	quotaLimiter         *rate.Limiter
 	quotaLimiterMbps     int
 }
@@ -1688,6 +1689,7 @@ func startAdminAPI(store *Store, addr string, adminDir string) {
 	// SSH user management (session required; role-filtered inside handlers)
 	mux.Handle("/api/users", sessionMiddleware(http.HandlerFunc(handleListUsers)))
 	mux.Handle("/api/users/create", sessionMiddleware(http.HandlerFunc(handleCreateUser(store))))
+	mux.Handle("/api/users/reset-traffic", sessionMiddleware(http.HandlerFunc(handleResetUserTraffic(store))))
 	mux.Handle("/api/users/delete", sessionMiddleware(http.HandlerFunc(handleDeleteUser(store))))
 
 	// Server stats: visible to authenticated sessions; reset remains superadmin-only.
@@ -1724,6 +1726,7 @@ func startAdminAPI(store *Store, addr string, adminDir string) {
 	mux.Handle("/api/xray/inbounds", sessionMiddleware(http.HandlerFunc(handleXrayInbounds)))
 	mux.Handle("/api/xray/clients/add", sessionMiddleware(http.HandlerFunc(handleXrayClientAdd)))
 	mux.Handle("/api/xray/clients/update", sessionMiddleware(http.HandlerFunc(handleXrayClientUpdate)))
+	mux.Handle("/api/xray/clients/reset-traffic", sessionMiddleware(http.HandlerFunc(handleXrayClientResetTraffic)))
 	mux.Handle("/api/xray/clients/remove", sessionMiddleware(http.HandlerFunc(handleXrayClientRemove)))
 
 	// Superadmin-only: TLS certificate generation
@@ -2062,6 +2065,75 @@ func handleCreateUser(store *Store) http.HandlerFunc {
 
 		reloadUsersFromDB(ctx, store)
 		w.WriteHeader(http.StatusCreated)
+	}
+}
+
+func handleResetUserTraffic(store *Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if store == nil {
+			http.Error(w, "database not configured", http.StatusServiceUnavailable)
+			return
+		}
+
+		var req struct {
+			Username string `json:"username"`
+			ServerID string `json:"server_id,omitempty"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid json", http.StatusBadRequest)
+			return
+		}
+		req.Username = strings.TrimSpace(req.Username)
+		if req.Username == "" {
+			http.Error(w, "username required", http.StatusBadRequest)
+			return
+		}
+
+		ctx := r.Context()
+		if ms, remote, err := managedServerFromID(ctx, store, req.ServerID); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		} else if remote {
+			if sess := sessionFromCtx(ctx); sess != nil && sess.Role == RoleReseller && !remoteSSHUserOwned(ctx, ms, req.Username, sess.Username) {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+			req.ServerID = ""
+			body, _ := json.Marshal(req)
+			status, data, ct, err := proxyManagedServer(ctx, ms, http.MethodPost, "/api/users/reset-traffic", body, "application/json")
+			if err != nil {
+				http.Error(w, "remote server error: "+err.Error(), http.StatusBadGateway)
+				return
+			}
+			writeProxyResponse(w, status, data, ct)
+			return
+		}
+
+		var owner string
+		if err := store.db.QueryRowContext(ctx, `SELECT owner_username FROM ssh_users WHERE username=$1`, req.Username).Scan(&owner); err != nil {
+			if err == sql.ErrNoRows {
+				http.Error(w, "user not found", http.StatusNotFound)
+			} else {
+				http.Error(w, "db error", http.StatusInternalServerError)
+			}
+			return
+		}
+		if sess := sessionFromCtx(ctx); sess != nil && sess.Role == RoleReseller && strings.TrimSpace(owner) != sess.Username {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+
+		if err := resetSSHUserTrafficAccounting(ctx, store, req.Username); err != nil {
+			log.Printf("failed to reset SSH traffic for %s: %v", req.Username, err)
+			http.Error(w, "could not reset traffic", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "username": req.Username})
 	}
 }
 

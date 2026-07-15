@@ -2719,6 +2719,70 @@ func handleXrayClientUpdate(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+func handleXrayClientResetTraffic(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		UUID     string `json:"uuid"`
+		ServerID string `json:"server_id,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	req.UUID = strings.TrimSpace(req.UUID)
+	if req.UUID == "" {
+		http.Error(w, "uuid required", http.StatusBadRequest)
+		return
+	}
+
+	ctx := r.Context()
+	if ms, remote, err := managedServerFromID(ctx, statsStore, req.ServerID); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	} else if remote {
+		if sess := sessionFromCtx(ctx); sess != nil && sess.Role == RoleReseller && !remoteXrayClientOwned(ctx, ms, req.UUID, sess.Username) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		req.ServerID = ""
+		body, _ := json.Marshal(req)
+		status, data, ct, err := proxyManagedServer(ctx, ms, http.MethodPost, "/api/xray/clients/reset-traffic", body, "application/json")
+		if err != nil {
+			http.Error(w, "remote server error: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		writeProxyResponse(w, status, data, ct)
+		return
+	}
+	if statsStore == nil {
+		http.Error(w, "storage not available", http.StatusInternalServerError)
+		return
+	}
+
+	existing, err := statsStore.GetXrayClientMeta(ctx, req.UUID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, "client not found", http.StatusNotFound)
+		} else {
+			http.Error(w, "database error", http.StatusInternalServerError)
+		}
+		return
+	}
+	if sess := sessionFromCtx(ctx); sess != nil && sess.Role == RoleReseller && existing.OwnerUsername != sess.Username {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	if err := xrayMgr.resetNativeTrafficAccounting(ctx, statsStore, req.UUID, existing.Email); err != nil {
+		http.Error(w, "usage reset failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "uuid": req.UUID})
+}
+
 func handleXrayClientRemove(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
 		w.WriteHeader(http.StatusMethodNotAllowed)

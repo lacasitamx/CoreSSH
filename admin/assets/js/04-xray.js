@@ -244,12 +244,18 @@ function renderInbounds(inbounds, options = {}) {
         editBtn.style.marginLeft = "4px";
         editBtn.textContent = t("Edit");
         editBtn.onclick = () => openEditXrayClient(ib.tag, c);
+        const resetBtn = document.createElement("button");
+        resetBtn.className = "btn btn-warn btn-sm";
+        resetBtn.style.marginLeft = "4px";
+        resetBtn.textContent = t("Reset");
+        resetBtn.title = t("Reset traffic");
+        resetBtn.onclick = () => resetXrayClientTraffic(c.id, resetBtn);
         const delBtn = document.createElement("button");
         delBtn.className = "btn btn-danger btn-sm";
         delBtn.style.marginLeft = "4px";
         delBtn.textContent = t("Del");
         delBtn.onclick = () => removeClient(ib.tag, c.id);
-        actTd.append(copyBtn, editBtn, delBtn);
+        actTd.append(copyBtn, editBtn, resetBtn, delBtn);
         tr.appendChild(actTd);
         tbody.appendChild(tr);
       });
@@ -391,6 +397,44 @@ async function submitXrayClientCreator(event) {
     return false;
   } finally {
     if (button) button.disabled = false;
+  }
+}
+
+async function resetXrayClientTraffic(uuid, button) {
+  const shortID = String(uuid || "").slice(0, 8);
+  const accepted = await panelConfirm({
+    tone:"warning", icon:"↺", title:t("Reset Xray traffic"),
+    message:t("Reset traffic for client {id}…?", {id:shortID}),
+    detail:t("Current uploaded and downloaded usage will return to zero. The account, expiry and quota remain unchanged."),
+    confirmLabel:t("Reset traffic"),
+  });
+  if (!accepted) return;
+  const previousDisabled = !!button?.disabled;
+  if (button) button.disabled = true;
+  xStatus.textContent = t("Resetting traffic for client {id}…", {id:shortID});
+  try {
+    const res = await api("/api/xray/clients/reset-traffic", {
+      method:"POST",
+      body:JSON.stringify({ uuid, server_id:selectedXrayServer() }),
+    });
+    if (!res.ok) throw new Error((await res.text()) || "reset failed");
+    xStatus.textContent = t("Xray traffic reset successfully.");
+    showPanelToast(t("Xray traffic reset successfully."), "success", t("Xray user"));
+    if (editingXrayClientId === uuid) {
+      const usage = document.getElementById("editXrayUsage");
+      if (usage) usage.value = "0 B (↑ 0 B · ↓ 0 B)";
+      const resetUsage = document.getElementById("editXrayResetUsage");
+      if (resetUsage) resetUsage.checked = false;
+    }
+    await loadInbounds({ force:true });
+  } catch (e) {
+    if (e.message === "auth") doAuthError();
+    else {
+      xStatus.textContent = t("Could not reset traffic: {error}", {error:e.message});
+      showPanelToast(t("Could not reset traffic: {error}", {error:e.message}), "error", t("Xray user"));
+    }
+  } finally {
+    if (button) button.disabled = previousDisabled;
   }
 }
 

@@ -173,12 +173,18 @@ function renderUsers(users) {
       className:"btn btn-ghost btn-sm", textContent:t("Edit"),
       onclick: () => fillUserForm(u),
     });
+    const resetBtn = Object.assign(document.createElement("button"), {
+      className:"btn btn-warn btn-sm", textContent:t("Reset"),
+      style: "margin-left:4px;",
+      title: t("Reset traffic"),
+      onclick: () => resetUserTraffic(u.username, resetBtn),
+    });
     const delBtn = Object.assign(document.createElement("button"), {
       className:"btn btn-danger btn-sm", textContent:t("Del"),
       style: "margin-left:4px;",
       onclick: () => deleteUser(u.username),
     });
-    tdA.append(editBtn, delBtn);
+    tdA.append(editBtn, resetBtn, delBtn);
     tr.appendChild(tdA);
     usersBody.appendChild(tr);
   });
@@ -259,6 +265,37 @@ userForm.addEventListener("submit", async e => {
     saveUserBtn.disabled = false;
   }
 });
+
+async function resetUserTraffic(username, button) {
+  const accepted = await panelConfirm({
+    tone:"warning", icon:"↺", title:t("Reset SSH traffic"),
+    message:t("Reset traffic for user \"{name}\"?", {name: username}),
+    detail:t("Current uploaded and downloaded usage will return to zero. The account, password, expiry and quota remain unchanged."),
+    confirmLabel:t("Reset traffic"),
+  });
+  if (!accepted) return;
+  const previousDisabled = !!button?.disabled;
+  if (button) button.disabled = true;
+  userStatus.textContent = t("Resetting traffic for {name}…", {name: username});
+  try {
+    const res = await api("/api/users/reset-traffic", {
+      method:"POST",
+      body: JSON.stringify({ username, server_id:selectedSSHServer() }),
+    });
+    if (!res.ok) throw new Error((await res.text()) || "reset failed");
+    userStatus.textContent = t("Traffic reset successfully.");
+    showPanelToast(t("Traffic reset successfully."), "success", t("SSH / SlowDNS"));
+    await loadUsers();
+  } catch (e) {
+    if (e.message === "auth") doAuthError();
+    else {
+      userStatus.textContent = t("Could not reset traffic: {error}", {error:e.message});
+      showPanelToast(t("Could not reset traffic: {error}", {error:e.message}), "error", t("SSH / SlowDNS"));
+    }
+  } finally {
+    if (button) button.disabled = previousDisabled;
+  }
+}
 
 async function deleteUser(username) {
   const accepted = await panelConfirm({

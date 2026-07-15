@@ -172,6 +172,24 @@ Object.assign(I18N_TEXT["pt-BR"], {
   "Reseller areas":"Áreas de revendedores","Reseller area":"Área de revendedores","Create reseller":"Criar revendedor","Edit reseller":"Editar revendedor","Registered resellers":"Revendedores cadastrados","Reseller list section copy":"Consulte cotas, consumo compartilhado, validade e situação de cada parceiro.","Reseller create section copy":"Defina login, limite compartilhado, validade e acesso em uma tela dedicada.","Reseller saved successfully.":"Revendedor salvo com sucesso.",
   "Configuration areas":"Áreas de configuração","Configuration area":"Área de configuração","Network and SSH":"Rede e SSH","SlowDNS / DNSTT":"SlowDNS / DNSTT","TLS forwarders":"Encaminhadores TLS","01 · Base":"01 · Base","02 · DNS tunnel":"02 · Túnel DNS","03 · UDP":"03 · UDP","04 · Security":"04 · Segurança","05 · Core":"05 · Core","Network and SSH section copy":"Configure listeners, limites padrão, tempo ocioso e o banner de conexão.","SlowDNS section copy":"Gerencie domínios, DNS local, capacidade, filas e reinício controlado.","UDP section copy":"Defina listener, capacidade, expiração de mapa e reinício do serviço.","TLS section copy":"Crie listeners TLS com certificado automático, colado ou armazenado em arquivo.","Xray core section copy":"Ative o core, escolha o runtime e aplique os ajustes nativos seguros."
 });
+Object.assign(I18N_TEXT["en-US"], {
+  "Reset":"Reset","Reset traffic":"Reset traffic","Reset SSH traffic":"Reset SSH traffic","Reset Xray traffic":"Reset Xray traffic",
+  "Reset traffic for user \"{name}\"?":"Reset traffic for user \"{name}\"?","Reset traffic for client {id}…?":"Reset traffic for client {id}…?",
+  "Current uploaded and downloaded usage will return to zero. The account, password, expiry and quota remain unchanged.":"Current uploaded and downloaded usage will return to zero. The account, password, expiry and quota remain unchanged.",
+  "Current uploaded and downloaded usage will return to zero. The account, expiry and quota remain unchanged.":"Current uploaded and downloaded usage will return to zero. The account, expiry and quota remain unchanged.",
+  "Resetting traffic for {name}…":"Resetting traffic for {name}…","Resetting traffic for client {id}…":"Resetting traffic for client {id}…",
+  "Traffic reset successfully.":"Traffic reset successfully.","Xray traffic reset successfully.":"Xray traffic reset successfully.",
+  "Could not reset traffic: {error}":"Could not reset traffic: {error}","Reset traffic counter":"Reset traffic counter"
+});
+Object.assign(I18N_TEXT["pt-BR"], {
+  "Reset":"Zerar","Reset traffic":"Zerar tráfego","Reset SSH traffic":"Zerar tráfego SSH","Reset Xray traffic":"Zerar tráfego Xray",
+  "Reset traffic for user \"{name}\"?":"Zerar o tráfego do usuário \"{name}\"?","Reset traffic for client {id}…?":"Zerar o tráfego do cliente {id}…?",
+  "Current uploaded and downloaded usage will return to zero. The account, password, expiry and quota remain unchanged.":"O consumo de upload e download voltará para zero. A conta, senha, validade e cota não serão alteradas.",
+  "Current uploaded and downloaded usage will return to zero. The account, expiry and quota remain unchanged.":"O consumo de upload e download voltará para zero. A conta, validade e cota não serão alteradas.",
+  "Resetting traffic for {name}…":"Zerando o tráfego de {name}…","Resetting traffic for client {id}…":"Zerando o tráfego do cliente {id}…",
+  "Traffic reset successfully.":"Tráfego zerado com sucesso.","Xray traffic reset successfully.":"Tráfego Xray zerado com sucesso.",
+  "Could not reset traffic: {error}":"Não foi possível zerar o tráfego: {error}","Reset traffic counter":"Zerar contador de tráfego"
+});
 const I18N_REVERSE = Object.fromEntries(SUPPORTED_LANGS.map(lang => [lang, Object.fromEntries(Object.entries(I18N_TEXT[lang] || {}).map(([k, v]) => [v, k]))]));
 let currentLang = detectInitialLanguage();
 let i18nTranslating = false;
