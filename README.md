@@ -66,6 +66,18 @@ Para configurações XHTTP antigas, carregue a configuração visual e clique em
 
 A confirmação dessa migração é exibida dentro do próprio painel. Se a gravação falhar, o inbound SSH temporário é removido do rascunho e o inbound antigo permanece intacto, permitindo tentar novamente após corrigir o erro exibido.
 
+### Cota de tráfego e proteção de recursos
+
+Contas SSH e clientes VLESS/VMess do modo nativo podem usar `data_quota_bytes` com ação `block` ou `throttle`. O botão **Reset/Zerar tráfego** limpa apenas os contadores; não renova validade, senha ou configuração da conta. O valor `max_conns` é aplicado no momento em que o usuário VLESS/VMess é autenticado e vale em conjunto para TCP, UDP, WebSocket, XHTTP e conexões Mux (uma conexão Mux autenticada conta como uma conexão, independentemente dos streams filhos).
+
+O runtime nativo também possui limites globais para impedir crescimento sem controle de sockets, goroutines e sessões HTTP:
+
+- `max_concurrent_connections`: conexões de transporte TCP/TLS/WebSocket/XHTTP; padrão `4096`;
+- `max_concurrent_xhttp_requests`: handlers XHTTP simultâneos; padrão `8192`;
+- `xhttp_max_sessions`: sessões XHTTP ativas; padrão `4096`.
+
+Esses campos ficam em **Configurações → Xray → Native Xray scale tuning**. `0` seleciona o padrão seguro e `-1` desativa o respectivo contador de admissão, o que não é recomendado em listeners públicos; conexões HTTP/2 continuam com um limite de 256 streams simultâneos por conexão. Cada transporte Mux aceita no máximo 64 sessões filhas, com limite global padrão de 8192. Sockets WebSocket incompletos têm timeout de handshake, conexões HTTP ociosas têm timeout, e parar/reiniciar o Xray nativo fecha conexões e sessões existentes. Atualizações de tráfego e de conexões ativas são agregadas e persistidas em lote a cada cinco segundos, sem criar uma goroutine ou consulta PostgreSQL por conexão. Entradas pendentes de usuários removidos são descartadas para manter os mapas de retry limitados ao conjunto atual de contas.
+
 ### Requisitos
 
 - Servidor Linux com `systemd`
@@ -594,6 +606,18 @@ The internal HTTP listener selects the most specific path, so `/ssh` reaches the
 For older XHTTP configurations, load the visual configuration and click **Enable SSH /ssh** on the existing VLESS/VMess card. The panel preserves the original inbound, clients, path, host, mode, advanced options, and TLS; it only creates the matching SSH inbound on the same port and then saves/restarts Xray. There is no need to recreate clients or the endpoint.
 
 The migration confirmation is rendered inside the panel. If saving fails, the temporary SSH inbound is removed from the draft and the old inbound remains intact, so the operation can be retried after fixing the displayed error.
+
+### Traffic quotas and resource protection
+
+SSH accounts and native-mode VLESS/VMess clients can use `data_quota_bytes` with either the `block` or `throttle` action. The **Reset traffic** action clears only usage counters; it does not renew expiry, change a password, or alter account settings. `max_conns` is enforced when a native VLESS/VMess user is authenticated and is shared across TCP, UDP, WebSocket, XHTTP, and Mux transports (one authenticated Mux transport counts as one connection, regardless of its child streams).
+
+The native runtime also has global ceilings that prevent unbounded socket, goroutine, and HTTP-session growth:
+
+- `max_concurrent_connections`: TCP/TLS/WebSocket/XHTTP transport connections; default `4096`;
+- `max_concurrent_xhttp_requests`: simultaneous XHTTP handlers; default `8192`;
+- `xhttp_max_sessions`: active XHTTP sessions; default `4096`.
+
+These fields are available under **Settings → Xray → Native Xray scale tuning**. `0` selects the safe default and `-1` disables the corresponding admission counter, which is not recommended on public listeners; HTTP/2 connections still retain a 256-stream concurrent guard. Each Mux transport accepts at most 64 child sessions, with a default global ceiling of 8192. Incomplete WebSocket handshakes time out, idle HTTP connections time out, and stopping/restarting native Xray closes existing transports and XHTTP sessions. Traffic and active-connection changes are aggregated and written in five-second batches rather than creating a PostgreSQL query or goroutine for every connection. Pending retry entries for deleted clients are removed so retry maps stay bounded by the current account set.
 
 ### Requirements
 

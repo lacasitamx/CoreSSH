@@ -25,18 +25,18 @@ const (
 // check and caused the server to block waiting for a fake second payload.
 // XUDP belongs to VLESS CommandMux and is handled separately when Mux support
 // is implemented.
-func nativeVLESSUDPTunnel(client io.ReadWriteCloser, backend net.Conn, uuid, email string, up, down *rate.Limiter) {
-	xrayMgr.recordNativeConnect(uuid, email)
-	defer xrayMgr.recordNativeDisconnect(uuid, email)
+func nativeVLESSUDPTunnel(client io.ReadWriteCloser, backend net.Conn, uuid, email string, quotaState *xrayNativeQuotaState, up, down *rate.Limiter) {
 	defer xrayRecover(fmt.Sprintf("native xray VLESS UDP tunnel user=%s", email))
 
-	upMeter := &trafficMeter{uuid: uuid, email: email, uplink: true}
-	downMeter := &trafficMeter{uuid: uuid, email: email, uplink: false}
+	upMeter := newTrafficMeter(uuid, email, true, quotaState)
+	downMeter := newTrafficMeter(uuid, email, false, quotaState)
 
 	var wg sync.WaitGroup
 	var closeOnce sync.Once
+	ctx, cancel := context.WithCancel(context.Background())
 	closeAll := func() {
 		closeOnce.Do(func() {
+			cancel()
 			_ = backend.Close()
 			_ = client.Close()
 		})
@@ -57,19 +57,18 @@ func nativeVLESSUDPTunnel(client io.ReadWriteCloser, backend net.Conn, uuid, ema
 			if len(payload) == 0 {
 				continue
 			}
-			if err := waitNativeRate(up, len(payload)); err != nil {
+			if err := waitNativeRate(ctx, up, len(payload)); err != nil {
 				return
 			}
-			quotaLimiter, err := reserveNativePacketQuota(upMeter, len(payload))
+			quotaReservation, err := reserveNativePacketQuota(upMeter, len(payload))
 			if err != nil {
 				return
 			}
-			if err := waitNativeRate(quotaLimiter, len(payload)); err != nil {
-				finishNativePacketQuota(upMeter, len(payload), 0)
+			if err := quotaReservation.wait(ctx); err != nil {
 				return
 			}
 			n, err := backend.Write(payload)
-			finishNativePacketQuota(upMeter, len(payload), n)
+			quotaReservation.finish(n)
 			if err != nil {
 				xrayLogf("native xray: VLESS UDP backend write failed: %v", err)
 				return
@@ -97,23 +96,22 @@ func nativeVLESSUDPTunnel(client io.ReadWriteCloser, backend net.Conn, uuid, ema
 			if n <= 0 {
 				continue
 			}
-			if err := waitNativeRate(down, n); err != nil {
+			if err := waitNativeRate(ctx, down, n); err != nil {
 				return
 			}
-			quotaLimiter, err := reserveNativePacketQuota(downMeter, n)
+			quotaReservation, err := reserveNativePacketQuota(downMeter, n)
 			if err != nil {
 				return
 			}
-			if err := waitNativeRate(quotaLimiter, n); err != nil {
-				finishNativePacketQuota(downMeter, n, 0)
+			if err := quotaReservation.wait(ctx); err != nil {
 				return
 			}
 			if err := writeVLESSLengthPacket(client, buf[:n]); err != nil {
-				finishNativePacketQuota(downMeter, n, 0)
+				quotaReservation.finish(0)
 				xrayLogf("native xray: VLESS UDP client write failed: %v", err)
 				return
 			}
-			finishNativePacketQuota(downMeter, n, n)
+			quotaReservation.finish(n)
 		}
 	})
 
@@ -316,18 +314,18 @@ func writeVLESSXUDPPacket(w io.Writer, payload []byte) error {
 // nativeVMessUDPTunnel maps one VMess body chunk to one UDP datagram. VMess AEAD
 // chunking already preserves packet boundaries, so no extra VLESS length prefix
 // is added inside the encrypted body.
-func nativeVMessUDPTunnel(client nativeVMessStream, backend net.Conn, uuid, email string, up, down *rate.Limiter) {
-	xrayMgr.recordNativeConnect(uuid, email)
-	defer xrayMgr.recordNativeDisconnect(uuid, email)
+func nativeVMessUDPTunnel(client nativeVMessStream, backend net.Conn, uuid, email string, quotaState *xrayNativeQuotaState, up, down *rate.Limiter) {
 	defer xrayRecover(fmt.Sprintf("native xray VMess UDP tunnel user=%s", email))
 
-	upMeter := &trafficMeter{uuid: uuid, email: email, uplink: true}
-	downMeter := &trafficMeter{uuid: uuid, email: email, uplink: false}
+	upMeter := newTrafficMeter(uuid, email, true, quotaState)
+	downMeter := newTrafficMeter(uuid, email, false, quotaState)
 
 	var wg sync.WaitGroup
 	var closeOnce sync.Once
+	ctx, cancel := context.WithCancel(context.Background())
 	closeAll := func() {
 		closeOnce.Do(func() {
+			cancel()
 			_ = backend.Close()
 			_ = client.Close()
 		})
@@ -348,19 +346,18 @@ func nativeVMessUDPTunnel(client nativeVMessStream, backend net.Conn, uuid, emai
 			if len(pkt) == 0 {
 				continue
 			}
-			if err := waitNativeRate(up, len(pkt)); err != nil {
+			if err := waitNativeRate(ctx, up, len(pkt)); err != nil {
 				return
 			}
-			quotaLimiter, err := reserveNativePacketQuota(upMeter, len(pkt))
+			quotaReservation, err := reserveNativePacketQuota(upMeter, len(pkt))
 			if err != nil {
 				return
 			}
-			if err := waitNativeRate(quotaLimiter, len(pkt)); err != nil {
-				finishNativePacketQuota(upMeter, len(pkt), 0)
+			if err := quotaReservation.wait(ctx); err != nil {
 				return
 			}
 			n, err := backend.Write(pkt)
-			finishNativePacketQuota(upMeter, len(pkt), n)
+			quotaReservation.finish(n)
 			if err != nil {
 				xrayLogf("native xray: VMess UDP backend write failed: %v", err)
 				return
@@ -388,23 +385,22 @@ func nativeVMessUDPTunnel(client nativeVMessStream, backend net.Conn, uuid, emai
 			if n <= 0 {
 				continue
 			}
-			if err := waitNativeRate(down, n); err != nil {
+			if err := waitNativeRate(ctx, down, n); err != nil {
 				return
 			}
-			quotaLimiter, err := reserveNativePacketQuota(downMeter, n)
+			quotaReservation, err := reserveNativePacketQuota(downMeter, n)
 			if err != nil {
 				return
 			}
-			if err := waitNativeRate(quotaLimiter, n); err != nil {
-				finishNativePacketQuota(downMeter, n, 0)
+			if err := quotaReservation.wait(ctx); err != nil {
 				return
 			}
 			if err := client.WritePacket(buf[:n]); err != nil {
-				finishNativePacketQuota(downMeter, n, 0)
+				quotaReservation.finish(0)
 				xrayLogf("native xray: VMess UDP client write failed: %v", err)
 				return
 			}
-			finishNativePacketQuota(downMeter, n, n)
+			quotaReservation.finish(n)
 		}
 	})
 
@@ -414,9 +410,12 @@ func nativeVMessUDPTunnel(client nativeVMessStream, backend net.Conn, uuid, emai
 	closeAll()
 }
 
-func waitNativeRate(lim *rate.Limiter, n int) error {
+func waitNativeRate(ctx context.Context, lim *rate.Limiter, n int) error {
 	if lim == nil || n <= 0 {
 		return nil
 	}
-	return lim.WaitN(context.Background(), n)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return lim.WaitN(ctx, n)
 }

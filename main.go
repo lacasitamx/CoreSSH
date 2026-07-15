@@ -578,12 +578,15 @@ var copyBufPool = sync.Pool{
 // io.Copy, which allocates a fresh 32 KiB buffer per direction per channel and
 // never pools it — at thousands of channels that churn dominated GC pressure.
 func copyWithRateLimit(dst io.Writer, src io.Reader, lim *rate.Limiter) (written int64, err error) {
+	return copyWithRateLimitContext(context.Background(), dst, src, lim)
+}
+
+func copyWithRateLimitContext(ctx context.Context, dst io.Writer, src io.Reader, lim *rate.Limiter) (written int64, err error) {
 	bufp := copyBufPool.Get().(*[]byte)
 	buf := *bufp
 	defer copyBufPool.Put(bufp)
 
-	var ctx context.Context
-	if lim != nil {
+	if ctx == nil {
 		ctx = context.Background()
 	}
 
@@ -2566,9 +2569,14 @@ func handleDirectTCPIP(newChan ssh.NewChannel, u *UserState, upLimiter, downLimi
 	// half-close that never completes), both sides are force-closed so the
 	// other direction unblocks. Close is idempotent, so calling it from both
 	// directions is safe and no separate waiter goroutine is needed.
+	ctx, cancel := context.WithCancel(context.Background())
+	var closeOnce sync.Once
 	closeAll := func() {
-		_ = backend.Close()
-		_ = ch.Close()
+		closeOnce.Do(func() {
+			cancel()
+			_ = backend.Close()
+			_ = ch.Close()
+		})
 	}
 
 	// Drain channel requests concurrently so the peer isn't left waiting.
@@ -2582,7 +2590,7 @@ func handleDirectTCPIP(newChan ssh.NewChannel, u *UserState, upLimiter, downLimi
 
 	// upstream: SSH channel -> backend, in its own goroutine.
 	go func() {
-		_, _ = copyWithRateLimit(sshQuotaWriter{w: backend, user: u, uplink: true}, ch, upLimiter)
+		_, _ = copyWithRateLimitContext(ctx, sshQuotaWriter{w: backend, user: u, uplink: true, ctx: ctx}, ch, upLimiter)
 		// Signal to the backend that we are done writing.
 		if cw, ok := backend.(interface{ CloseWrite() error }); ok {
 			_ = cw.CloseWrite()
@@ -2593,7 +2601,7 @@ func handleDirectTCPIP(newChan ssh.NewChannel, u *UserState, upLimiter, downLimi
 	// downstream: backend -> SSH channel, run in this goroutine.
 	// handleDirectTCPIP already runs as its own goroutine (see handleConn),
 	// so reusing it here avoids spawning a third goroutine per channel.
-	_, _ = copyWithRateLimit(sshQuotaWriter{w: ch, user: u, uplink: false}, backend, downLimiter)
+	_, _ = copyWithRateLimitContext(ctx, sshQuotaWriter{w: ch, user: u, uplink: false, ctx: ctx}, backend, downLimiter)
 	closeAll()
 }
 

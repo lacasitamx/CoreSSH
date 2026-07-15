@@ -261,6 +261,7 @@ type XrayManager struct {
 	nativeDBMu              sync.Mutex
 	nativeTrafficPersistMu  sync.Mutex
 	nativeTrafficPending    map[string]xrayPendingTraffic
+	nativeActivePending     map[string]xrayPendingActive
 	nativeStatsFlushStarted bool
 
 	nativeQuotaMu     sync.RWMutex
@@ -284,6 +285,14 @@ type xrayPendingTraffic struct {
 	Email    string
 	Uplink   int64
 	Downlink int64
+	State    *xrayNativeQuotaState
+}
+
+type xrayPendingActive struct {
+	Email     string
+	Delta     int
+	Connected bool
+	State     *xrayNativeQuotaState
 }
 
 var xrayMgr = &XrayManager{}
@@ -455,7 +464,7 @@ func (m *XrayManager) Restart() error {
 // recordNativeConnect marks a native client stream as online immediately. This
 // is more accurate than external Xray's Stats API polling because it knows when
 // the decoded VMess/VLESS stream is authenticated and opened.
-func (m *XrayManager) recordNativeConnect(uuid, email string) {
+func (m *XrayManager) recordNativeConnect(uuid, email string, state *xrayNativeQuotaState) {
 	uuid = strings.TrimSpace(uuid)
 	email = strings.TrimSpace(email)
 	if email == "" {
@@ -476,18 +485,10 @@ func (m *XrayManager) recordNativeConnect(uuid, email string) {
 	m.statsByEmail[email] = st
 	m.statsMu.Unlock()
 
-	if statsStore != nil && uuid != "" {
-		xrayGo("native xray stats active increment", func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancel()
-			if err := statsStore.UpdateXrayClientActive(ctx, uuid, email, 1); err != nil {
-				xrayLogf("xray native stats: active +1 for %s failed: %v", uuid, err)
-			}
-		})
-	}
+	m.queueNativeActiveDelta(uuid, email, 1, true, state)
 }
 
-func (m *XrayManager) recordNativeDisconnect(uuid, email string) {
+func (m *XrayManager) recordNativeDisconnect(uuid, email string, state *xrayNativeQuotaState) {
 	uuid = strings.TrimSpace(uuid)
 	email = strings.TrimSpace(email)
 	if email == "" {
@@ -506,21 +507,44 @@ func (m *XrayManager) recordNativeDisconnect(uuid, email string) {
 	}
 	m.statsMu.Unlock()
 
-	if statsStore != nil && uuid != "" {
-		xrayGo("native xray stats active decrement", func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancel()
-			if err := statsStore.UpdateXrayClientActive(ctx, uuid, email, -1); err != nil {
-				xrayLogf("xray native stats: active -1 for %s failed: %v", uuid, err)
-			}
-		})
+	m.queueNativeActiveDelta(uuid, email, -1, false, state)
+}
+
+func (m *XrayManager) queueNativeActiveDelta(uuid, email string, delta int, connected bool, state *xrayNativeQuotaState) {
+	if statsStore == nil || uuid == "" || delta == 0 || state == nil {
+		return
 	}
+	// Keep the policy identity stable until the delta is queued. A UUID can be
+	// deleted and later recreated; an old connection must never decrement or add
+	// traffic to the replacement account merely because the string key matches.
+	m.nativeQuotaMu.RLock()
+	if m.nativeQuotaByUUID[uuid] != state {
+		m.nativeQuotaMu.RUnlock()
+		return
+	}
+	m.nativeDBMu.Lock()
+	if m.nativeActivePending == nil {
+		m.nativeActivePending = make(map[string]xrayPendingActive)
+	}
+	p := m.nativeActivePending[uuid]
+	if p.State != nil && p.State != state {
+		p = xrayPendingActive{}
+	}
+	if p.Email == "" {
+		p.Email = email
+	}
+	p.Delta += delta
+	p.Connected = p.Connected || connected
+	p.State = state
+	m.nativeActivePending[uuid] = p
+	m.nativeDBMu.Unlock()
+	m.nativeQuotaMu.RUnlock()
 }
 
 // recordNativeTraffic accumulates in-process byte counters for a client and
 // queues DB persistence. Used by the native emulator instead of external
 // `xray api statsquery` polling.
-func (m *XrayManager) recordNativeTraffic(uuid, email string, up, down int64, generation uint64) {
+func (m *XrayManager) recordNativeTraffic(uuid, email string, up, down int64, generation uint64, state *xrayNativeQuotaState) {
 	uuid = strings.TrimSpace(uuid)
 	email = strings.TrimSpace(email)
 	if email == "" {
@@ -529,8 +553,10 @@ func (m *XrayManager) recordNativeTraffic(uuid, email string, up, down int64, ge
 	if email == "" || (up == 0 && down == 0) {
 		return
 	}
-	state := m.nativeQuotaState(uuid)
 	if state != nil {
+		// Keep generation validation and queuing in the same critical section as
+		// resetNativeTrafficAccounting. Otherwise an old meter can validate just
+		// before a reset and enqueue its bytes immediately after the DB was zeroed.
 		state.mu.Lock()
 		defer state.mu.Unlock()
 		if generation != state.generation {
@@ -538,17 +564,30 @@ func (m *XrayManager) recordNativeTraffic(uuid, email string, up, down int64, ge
 		}
 	}
 
-	if statsStore != nil && uuid != "" {
+	// Only DB-backed clients have a native policy state. Config-only clients are
+	// still shown in runtime stats, but queuing UPDATEs for rows that do not exist
+	// can make the retry map grow during a database outage.
+	if statsStore != nil && uuid != "" && state != nil {
+		m.nativeQuotaMu.RLock()
+		if m.nativeQuotaByUUID[uuid] != state {
+			m.nativeQuotaMu.RUnlock()
+			return
+		}
 		m.nativeDBMu.Lock()
 		if m.nativeTrafficPending == nil {
 			m.nativeTrafficPending = make(map[string]xrayPendingTraffic)
 		}
 		p := m.nativeTrafficPending[uuid]
+		if p.State != nil && p.State != state {
+			p = xrayPendingTraffic{}
+		}
 		p.Email = email
 		p.Uplink += up
 		p.Downlink += down
+		p.State = state
 		m.nativeTrafficPending[uuid] = p
 		m.nativeDBMu.Unlock()
+		m.nativeQuotaMu.RUnlock()
 	}
 
 	now := time.Now()
@@ -612,33 +651,104 @@ func (m *XrayManager) flushNativeStatsToDB() {
 	}
 	m.nativeTrafficPersistMu.Lock()
 	defer m.nativeTrafficPersistMu.Unlock()
+	persistent := m.nativePersistentStates()
 	m.nativeDBMu.Lock()
-	pending := m.nativeTrafficPending
+	for uuid, pending := range m.nativeTrafficPending {
+		if persistent[uuid] != pending.State {
+			delete(m.nativeTrafficPending, uuid)
+		}
+	}
+	for uuid, pending := range m.nativeActivePending {
+		if persistent[uuid] != pending.State {
+			delete(m.nativeActivePending, uuid)
+		}
+	}
+	pendingTraffic := m.nativeTrafficPending
+	pendingActive := m.nativeActivePending
 	m.nativeTrafficPending = nil
+	m.nativeActivePending = nil
 	m.nativeDBMu.Unlock()
-	if len(pending) == 0 {
+	if len(pendingTraffic) == 0 && len(pendingActive) == 0 {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := statsStore.AddXrayClientTrafficBatch(ctx, pending); err != nil {
-		xrayLogf("xray native stats: db traffic flush failed: %v", err)
-		// Put deltas back so a transient DB failure does not lose accounting.
+
+	var trafficErr error
+	if len(pendingTraffic) > 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		trafficErr = statsStore.AddXrayClientTrafficBatch(ctx, pendingTraffic)
+		cancel()
+	}
+	var activeErr error
+	if len(pendingActive) > 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		activeErr = statsStore.AddXrayClientActiveBatch(ctx, pendingActive)
+		cancel()
+	}
+
+	if trafficErr != nil {
+		xrayLogf("xray native stats: db traffic flush failed: %v", trafficErr)
+	}
+	if activeErr != nil {
+		xrayLogf("xray native stats: db active flush failed: %v", activeErr)
+	}
+	if trafficErr != nil || activeErr != nil {
+		// Put only failed batches back so a successful write is never duplicated.
+		persistent = m.nativePersistentStates()
 		m.nativeDBMu.Lock()
-		if m.nativeTrafficPending == nil {
+		if trafficErr != nil && m.nativeTrafficPending == nil {
 			m.nativeTrafficPending = make(map[string]xrayPendingTraffic)
 		}
-		for uuid, d := range pending {
-			p := m.nativeTrafficPending[uuid]
-			if p.Email == "" {
-				p.Email = d.Email
+		if trafficErr != nil {
+			for uuid, d := range pendingTraffic {
+				if persistent[uuid] != d.State {
+					continue
+				}
+				p := m.nativeTrafficPending[uuid]
+				if p.State != nil && p.State != d.State {
+					p = xrayPendingTraffic{}
+				}
+				if p.Email == "" {
+					p.Email = d.Email
+				}
+				p.Uplink += d.Uplink
+				p.Downlink += d.Downlink
+				p.State = d.State
+				m.nativeTrafficPending[uuid] = p
 			}
-			p.Uplink += d.Uplink
-			p.Downlink += d.Downlink
-			m.nativeTrafficPending[uuid] = p
+		}
+		if activeErr != nil && m.nativeActivePending == nil {
+			m.nativeActivePending = make(map[string]xrayPendingActive)
+		}
+		if activeErr != nil {
+			for uuid, d := range pendingActive {
+				if persistent[uuid] != d.State {
+					continue
+				}
+				p := m.nativeActivePending[uuid]
+				if p.State != nil && p.State != d.State {
+					p = xrayPendingActive{}
+				}
+				if p.Email == "" {
+					p.Email = d.Email
+				}
+				p.Delta += d.Delta
+				p.Connected = p.Connected || d.Connected
+				p.State = d.State
+				m.nativeActivePending[uuid] = p
+			}
 		}
 		m.nativeDBMu.Unlock()
 	}
+}
+
+func (m *XrayManager) nativePersistentStates() map[string]*xrayNativeQuotaState {
+	m.nativeQuotaMu.RLock()
+	out := make(map[string]*xrayNativeQuotaState, len(m.nativeQuotaByUUID))
+	for uuid, state := range m.nativeQuotaByUUID {
+		out[uuid] = state
+	}
+	m.nativeQuotaMu.RUnlock()
+	return out
 }
 
 // XrayStatusDTO is returned by /api/xray/status.

@@ -670,7 +670,7 @@ func (ib *nativeInbound) handleVMess(stream net.Conn, remote net.Addr) {
 	}
 	client := ib.matchVMess(authid, time.Now().Unix())
 	if client == nil {
-		log.Printf("native xray: inbound %q rejected unknown/expired VMess auth id from %s", ib.tag, remote)
+		logNativePreAuthRejection("native xray: inbound %q rejected unknown/expired VMess auth id from %s", ib.tag, remote)
 		return
 	}
 	if xrayMgr.nativeQuotaBlocked(client.uuid) {
@@ -694,6 +694,11 @@ func (ib *nativeInbound) handleVMess(stream net.Conn, remote net.Addr) {
 		log.Printf("native xray: inbound %q VMess command %d not supported yet", ib.tag, req.command)
 		return
 	}
+	releaseConnection, quotaState, ok := xrayMgr.acquireNativeClientConnection(client.uuid, client.email)
+	if !ok {
+		return
+	}
+	defer releaseConnection()
 
 	respBodyKey := sha256.Sum256(req.bodyKey[:])
 	respBodyIV := sha256.Sum256(req.bodyIV[:])
@@ -719,7 +724,7 @@ func (ib *nativeInbound) handleVMess(stream net.Conn, remote net.Addr) {
 			return
 		}
 		log.Printf("native xray: vmess/tcp user=%s src=%s -> %s (inbound %q)", client.email, backend.LocalAddr(), target, ib.tag)
-		nativeTunnel(vc, backend, client.uuid, client.email, ib.upLimiter(), ib.downLimiter())
+		nativeTunnel(vc, backend, client.uuid, client.email, quotaState, ib.upLimiter(), ib.downLimiter())
 	case vmessCmdUDP:
 		backend, target, err := ib.nativeDialUDP(req.host, req.port)
 		if err != nil {
@@ -727,6 +732,6 @@ func (ib *nativeInbound) handleVMess(stream net.Conn, remote net.Addr) {
 			return
 		}
 		log.Printf("native xray: vmess/udp user=%s src=%s -> %s (inbound %q)", client.email, backend.LocalAddr(), target, ib.tag)
-		nativeVMessUDPTunnel(vc, backend, client.uuid, client.email, ib.upLimiter(), ib.downLimiter())
+		nativeVMessUDPTunnel(vc, backend, client.uuid, client.email, quotaState, ib.upLimiter(), ib.downLimiter())
 	}
 }

@@ -40,7 +40,36 @@ type sshTrafficDelta struct {
 	Downlink int64
 }
 
-var sshTrafficPersistenceMu sync.Mutex
+var (
+	sshTrafficPersistenceMu sync.Mutex
+	sshTrafficDirtyMu       sync.Mutex
+	sshTrafficDirty         = make(map[string]*UserState)
+)
+
+func markSSHUserTrafficDirty(u *UserState) {
+	if u == nil || strings.TrimSpace(u.Cfg.Username) == "" {
+		return
+	}
+	sshTrafficDirtyMu.Lock()
+	sshTrafficDirty[u.Cfg.Username] = u
+	sshTrafficDirtyMu.Unlock()
+}
+
+func takeSSHUserTrafficDirty() map[string]*UserState {
+	sshTrafficDirtyMu.Lock()
+	dirty := sshTrafficDirty
+	sshTrafficDirty = make(map[string]*UserState)
+	sshTrafficDirtyMu.Unlock()
+	return dirty
+}
+
+func clearSSHUserTrafficDirty(username string, u *UserState) {
+	sshTrafficDirtyMu.Lock()
+	if current := sshTrafficDirty[username]; u == nil || current == u {
+		delete(sshTrafficDirty, username)
+	}
+	sshTrafficDirtyMu.Unlock()
+}
 
 func (s *Store) AddSSHUserTrafficBatch(ctx context.Context, deltas map[string]sshTrafficDelta) error {
 	if s == nil || len(deltas) == 0 {
@@ -118,6 +147,7 @@ func resetSSHRuntimeUsage(username string) {
 	}
 	u.trafficMu.Lock()
 	resetSSHRuntimeUsageLocked(u)
+	clearSSHUserTrafficDirty(username, u)
 	u.trafficMu.Unlock()
 }
 
@@ -134,6 +164,7 @@ func resetSSHUserTrafficAccounting(ctx context.Context, store *Store, username s
 	}
 	if u != nil {
 		resetSSHRuntimeUsageLocked(u)
+		clearSSHUserTrafficDirty(username, u)
 	}
 	return nil
 }
@@ -228,12 +259,14 @@ func finishSSHUserReservation(u *UserState, uplink bool, reserved, written int) 
 		atomic.AddInt64(&u.TotalDownlinkBytes, int64(written))
 		atomic.AddInt64(&u.pendingDownlinkBytes, int64(written))
 	}
+	markSSHUserTrafficDirty(u)
 }
 
 type sshQuotaWriter struct {
 	w      io.Writer
 	user   *UserState
 	uplink bool
+	ctx    context.Context
 }
 
 func (qw sshQuotaWriter) Write(p []byte) (int, error) {
@@ -246,7 +279,11 @@ func (qw sshQuotaWriter) Write(p []byte) (int, error) {
 		return 0, errDataQuotaExceeded
 	}
 	if quotaLimiter != nil {
-		if err := quotaLimiter.WaitN(context.Background(), allowed); err != nil {
+		ctx := qw.ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		if err := quotaLimiter.WaitN(ctx, allowed); err != nil {
 			finishSSHUserReservation(qw.user, qw.uplink, allowed, 0)
 			return 0, err
 		}
@@ -283,8 +320,8 @@ func flushSSHUserTraffic(store *Store) {
 	defer sshTrafficPersistenceMu.Unlock()
 	deltas := make(map[string]sshTrafficDelta)
 	states := make(map[string]*UserState)
-	for _, u := range userMgr.List() {
-		if u == nil || strings.TrimSpace(u.Cfg.Username) == "" {
+	for username, u := range takeSSHUserTrafficDirty() {
+		if u == nil || strings.TrimSpace(username) == "" {
 			continue
 		}
 		up := atomic.SwapInt64(&u.pendingUplinkBytes, 0)
@@ -292,7 +329,6 @@ func flushSSHUserTraffic(store *Store) {
 		if up == 0 && down == 0 {
 			continue
 		}
-		username := u.Cfg.Username
 		deltas[username] = sshTrafficDelta{Uplink: up, Downlink: down}
 		states[username] = u
 	}
@@ -307,6 +343,7 @@ func flushSSHUserTraffic(store *Store) {
 			if u := states[username]; u != nil {
 				atomic.AddInt64(&u.pendingUplinkBytes, d.Uplink)
 				atomic.AddInt64(&u.pendingDownlinkBytes, d.Downlink)
+				markSSHUserTrafficDirty(u)
 			}
 		}
 	}

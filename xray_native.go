@@ -138,6 +138,14 @@ func (s *nativeXrayServer) start(configFile string) error {
 	if s.running {
 		return fmt.Errorf("native xray already running")
 	}
+	beginNativeTransportAccepting()
+	started := false
+	defer func() {
+		if !started {
+			stopNativeTransportAccepting()
+			closeAllNativeTransportConnections()
+		}
+	}()
 	if configFile == "" {
 		return fmt.Errorf("native xray: no config file configured")
 	}
@@ -196,9 +204,11 @@ func (s *nativeXrayServer) start(configFile string) error {
 			}
 			return fmt.Errorf("native xray: listen %s (shared XHTTP): %w", addr, err)
 		}
-		serveLn := net.Listener(ln)
+		// Apply the global pre-authentication ceiling before net/http can spawn a
+		// goroutine or begin a TLS handshake for the accepted socket.
+		serveLn := limitNativeListener(ln)
 		if group.security == "tls" {
-			serveLn = tls.NewListener(ln, group.tlsConfig)
+			serveLn = tls.NewListener(serveLn, group.tlsConfig)
 		}
 		opened = append(opened, serveLn)
 		xrayGo(fmt.Sprintf("native xray shared xhttp listener %s", addr), func() { group.serve(serveLn) })
@@ -212,21 +222,34 @@ func (s *nativeXrayServer) start(configFile string) error {
 	s.inboundsByTag = active
 	s.running = true
 	s.startTime = time.Now()
+	started = true
 	return nil
 }
 
 func (s *nativeXrayServer) stop() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if !s.running && len(s.listeners) == 0 {
+		s.mu.Unlock()
 		return
 	}
-	for _, l := range s.listeners {
-		_ = l.Close()
+	stopNativeTransportAccepting()
+	listeners := append([]net.Listener(nil), s.listeners...)
+	inbounds := make([]*nativeInbound, 0, len(s.inboundsByTag))
+	for _, ib := range s.inboundsByTag {
+		inbounds = append(inbounds, ib)
 	}
 	s.listeners = nil
 	s.inboundsByTag = nil
 	s.running = false
+	s.mu.Unlock()
+
+	for _, l := range listeners {
+		_ = l.Close()
+	}
+	closeAllNativeTransportConnections()
+	for _, ib := range inbounds {
+		ib.closeAllXHTTPSessions()
+	}
 	xrayLogf("native xray: stopped")
 }
 
@@ -241,6 +264,12 @@ func (ib *nativeInbound) acceptLoop(ln net.Listener) {
 			xrayLogf("native xray: accept error on %s: %v", ln.Addr(), err)
 			continue
 		}
+		counted, ok := wrapTrackedNativeTransportConn(c)
+		if !ok {
+			time.Sleep(nativeOverloadBackoff)
+			continue
+		}
+		c = counted
 		xrayGo(fmt.Sprintf("native xray connection remote=%s", c.RemoteAddr()), func() { ib.serve(c) })
 	}
 }
@@ -262,7 +291,7 @@ func (ib *nativeInbound) serve(raw net.Conn) {
 		tconn := tls.Server(raw, ib.tlsConfig)
 		_ = tconn.SetDeadline(time.Now().Add(tlsHandshakeTimeout))
 		if err := tconn.Handshake(); err != nil {
-			xrayLogf("native xray: tls handshake from %s failed: %v", raw.RemoteAddr(), err)
+			logNativePreAuthRejection("native xray: tls handshake from %s failed: %v", raw.RemoteAddr(), err)
 			return
 		}
 		_ = tconn.SetDeadline(time.Time{})
@@ -275,11 +304,13 @@ func (ib *nativeInbound) serve(raw net.Conn) {
 	case "tcp", "raw", "":
 		// stream is already the protocol stream
 	case "ws", "websocket":
+		_ = conn.SetDeadline(time.Now().Add(tlsHandshakeTimeout))
 		ws, err := wsServerHandshake(conn, ib.path)
 		if err != nil {
-			xrayLogf("native xray: ws handshake from %s failed: %v", raw.RemoteAddr(), err)
+			logNativePreAuthRejection("native xray: ws handshake from %s failed: %v", raw.RemoteAddr(), err)
 			return
 		}
+		_ = conn.SetDeadline(time.Time{})
 		stream = ws
 	case "xhttp", "splithttp":
 		xrayLogf("native xray: inbound %q got raw connection for XHTTP; this transport is served by http.Server", ib.tag)
@@ -331,11 +362,7 @@ const (
 
 func (ib *nativeInbound) handleVLESS(stream net.Conn, remote net.Addr) {
 	defer xrayRecover(fmt.Sprintf("native xray VLESS inbound=%q remote=%s", ib.tag, remote))
-	if ib.isXHTTP() {
-		xrayTracef("native xray: vless handshake start inbound=%q transport=%s remote=%s", ib.tag, ib.transport, remote)
-	} else {
-		xrayLogf("native xray: vless handshake start inbound=%q transport=%s remote=%s", ib.tag, ib.transport, remote)
-	}
+	xrayTracef("native xray: vless handshake start inbound=%q transport=%s remote=%s", ib.tag, ib.transport, remote)
 	_ = stream.SetReadDeadline(time.Now().Add(30 * time.Second))
 
 	head := make([]byte, 1+16+1) // version + uuid + addonLen
@@ -349,7 +376,7 @@ func (ib *nativeInbound) handleVLESS(stream net.Conn, remote net.Addr) {
 
 	client := ib.getNativeClient(id)
 	if client == nil {
-		xrayLogf("native xray: inbound %q rejected unknown VLESS uuid from %s", ib.tag, remote)
+		logNativePreAuthRejection("native xray: inbound %q rejected unknown VLESS uuid from %s", ib.tag, remote)
 		return
 	}
 	if xrayMgr.nativeQuotaBlocked(client.uuid) {
@@ -400,6 +427,18 @@ func (ib *nativeInbound) handleVLESS(stream net.Conn, remote net.Addr) {
 	}
 	_ = stream.SetReadDeadline(time.Time{})
 
+	switch cmd[0] {
+	case vlessCmdTCP, vlessCmdUDP, vlessCmdMux:
+	default:
+		xrayLogf("native xray: inbound %q VLESS command %d not supported yet", ib.tag, cmd[0])
+		return
+	}
+	releaseConnection, quotaState, ok := xrayMgr.acquireNativeClientConnection(client.uuid, client.email)
+	if !ok {
+		return
+	}
+	defer releaseConnection()
+
 	// VLESS response header must be sent before relaying payload. CommandMux is
 	// special: official Xray does not read a target from the VLESS header for it;
 	// the following bytes are Mux.Cool/XUDP frames. Reading port/address here
@@ -417,7 +456,7 @@ func (ib *nativeInbound) handleVLESS(stream net.Conn, remote net.Addr) {
 			return
 		}
 		ib.nativeSuccessLogf("native xray: vless/tcp user=%s src=%s -> %s (inbound %q)", client.email, backend.LocalAddr(), target, ib.tag)
-		nativeTunnel(stream, backend, client.uuid, client.email, ib.upLimiter(), ib.downLimiter())
+		nativeTunnel(stream, backend, client.uuid, client.email, quotaState, ib.upLimiter(), ib.downLimiter())
 	case vlessCmdUDP:
 		backend, target, err := ib.nativeDialUDP(host, port)
 		if err != nil {
@@ -425,12 +464,10 @@ func (ib *nativeInbound) handleVLESS(stream net.Conn, remote net.Addr) {
 			return
 		}
 		ib.nativeSuccessLogf("native xray: vless/udp user=%s src=%s -> %s (inbound %q)", client.email, backend.LocalAddr(), target, ib.tag)
-		nativeVLESSUDPTunnel(stream, backend, client.uuid, client.email, ib.upLimiter(), ib.downLimiter())
+		nativeVLESSUDPTunnel(stream, backend, client.uuid, client.email, quotaState, ib.upLimiter(), ib.downLimiter())
 	case vlessCmdMux:
 		ib.nativeSuccessLogf("native xray: vless/mux user=%s remote=%s (inbound %q)", client.email, remote, ib.tag)
-		ib.nativeVLESSMuxTunnel(stream, client.uuid, client.email)
-	default:
-		xrayLogf("native xray: inbound %q VLESS command %d not supported yet", ib.tag, cmd[0])
+		ib.nativeVLESSMuxTunnel(stream, client.uuid, client.email, quotaState)
 	}
 }
 
@@ -444,7 +481,7 @@ func (ib *nativeInbound) logVLESSReadFailure(stage string, remote net.Addr, emai
 		return
 	}
 	if email == "" {
-		xrayLogf("native xray: vless %s failed inbound=%q transport=%s remote=%s: %v", stage, ib.tag, ib.transport, remote, err)
+		logNativePreAuthRejection("native xray: vless %s failed inbound=%q transport=%s remote=%s: %v", stage, ib.tag, ib.transport, remote, err)
 	} else {
 		xrayLogf("native xray: vless %s failed inbound=%q transport=%s user=%s remote=%s: %v", stage, ib.tag, ib.transport, email, remote, err)
 	}
@@ -661,18 +698,18 @@ func normalizeNativeTargetHost(raw string) string {
 // backend, applying per-direction rate limits and accounting traffic against
 // the client's email so the panel's online detection keeps working. It mirrors
 // handleDirectTCPIP in main.go.
-func nativeTunnel(client io.ReadWriteCloser, backend net.Conn, uuid, email string, up, down *rate.Limiter) {
-	xrayMgr.recordNativeConnect(uuid, email)
-	defer xrayMgr.recordNativeDisconnect(uuid, email)
+func nativeTunnel(client io.ReadWriteCloser, backend net.Conn, uuid, email string, quotaState *xrayNativeQuotaState, up, down *rate.Limiter) {
 	defer xrayRecover(fmt.Sprintf("native xray TCP tunnel user=%s", email))
 
-	upMeter := &trafficMeter{uuid: uuid, email: email, uplink: true}
-	downMeter := &trafficMeter{uuid: uuid, email: email, uplink: false}
+	upMeter := newTrafficMeter(uuid, email, true, quotaState)
+	downMeter := newTrafficMeter(uuid, email, false, quotaState)
 
 	var wg sync.WaitGroup
 	var closeOnce sync.Once
+	ctx, cancel := context.WithCancel(context.Background())
 	closeAll := func() {
 		closeOnce.Do(func() {
+			cancel()
 			_ = backend.Close()
 			_ = client.Close()
 		})
@@ -682,7 +719,7 @@ func nativeTunnel(client io.ReadWriteCloser, backend net.Conn, uuid, email strin
 	xrayGo("native xray TCP uplink", func() { // client -> backend
 		defer wg.Done()
 		defer closeAll()
-		_, _ = copyWithRateLimit(xrayQuotaMeteredWriter{w: backend, meter: upMeter}, client, up)
+		_, _ = copyWithRateLimitContext(ctx, xrayQuotaMeteredWriter{w: backend, meter: upMeter, ctx: ctx}, client, up)
 		if cw, ok := backend.(interface{ CloseWrite() error }); ok {
 			_ = cw.CloseWrite()
 		}
@@ -692,7 +729,7 @@ func nativeTunnel(client io.ReadWriteCloser, backend net.Conn, uuid, email strin
 	xrayGo("native xray TCP downlink", func() { // backend -> client
 		defer wg.Done()
 		defer closeAll()
-		_, _ = copyWithRateLimit(xrayQuotaMeteredWriter{w: client, meter: downMeter}, backend, down)
+		_, _ = copyWithRateLimitContext(ctx, xrayQuotaMeteredWriter{w: client, meter: downMeter, ctx: ctx}, backend, down)
 	})
 
 	wg.Wait()
@@ -709,9 +746,16 @@ type trafficMeter struct {
 	uplink          bool
 	n               int64
 	quotaGeneration uint64
+	state           *xrayNativeQuotaState
 }
 
 const trafficFlushThreshold = 1024 * 1024
+
+func newTrafficMeter(uuid, email string, uplink bool, state *xrayNativeQuotaState) *trafficMeter {
+	t := &trafficMeter{uuid: uuid, email: email, uplink: uplink, state: state}
+	t.syncQuotaGeneration()
+	return t
+}
 
 func (t *trafficMeter) add(n int) {
 	t.syncQuotaGeneration()
@@ -727,15 +771,20 @@ func (t *trafficMeter) flush() {
 		return
 	}
 	if t.uplink {
-		xrayMgr.recordNativeTraffic(t.uuid, t.email, t.n, 0, t.quotaGeneration)
+		xrayMgr.recordNativeTraffic(t.uuid, t.email, t.n, 0, t.quotaGeneration, t.state)
 	} else {
-		xrayMgr.recordNativeTraffic(t.uuid, t.email, 0, t.n, t.quotaGeneration)
+		xrayMgr.recordNativeTraffic(t.uuid, t.email, 0, t.n, t.quotaGeneration, t.state)
 	}
 	t.n = 0
 }
 
 func (t *trafficMeter) syncQuotaGeneration() {
-	generation := xrayMgr.nativeQuotaGeneration(t.uuid)
+	var generation uint64
+	if t.state != nil {
+		t.state.mu.Lock()
+		generation = t.state.generation
+		t.state.mu.Unlock()
+	}
 	if t.quotaGeneration == 0 {
 		t.quotaGeneration = generation
 		return

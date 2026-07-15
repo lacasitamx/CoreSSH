@@ -10,6 +10,12 @@ import (
 )
 
 type xrayNativeQuotaState struct {
+	// trafficMu establishes a clean reset boundary. Native stream and packet
+	// writers hold a read lock from quota reservation through the actual write
+	// and metering; traffic resets take the write lock. This prevents an
+	// in-flight pre-reset reservation from being accounted in the new period or
+	// subtracting from freshly reset usage.
+	trafficMu    sync.RWMutex
 	mu           sync.Mutex
 	usedBytes    int64
 	quotaBytes   int64
@@ -17,6 +23,8 @@ type xrayNativeQuotaState struct {
 	throttleMbps int
 	limiter      *rate.Limiter
 	generation   uint64
+	maxConns     int
+	activeConns  int
 }
 
 func (m *XrayManager) reloadNativeQuotaPolicies() {
@@ -51,7 +59,15 @@ func newXrayNativeQuotaState(meta *XrayClientMeta) *xrayNativeQuotaState {
 		action:       normalizeQuotaAction(meta.QuotaAction),
 		throttleMbps: quotaThrottleMbpsOrDefault(meta.QuotaThrottleMbps),
 		generation:   1,
+		maxConns:     normalizeXrayMaxConns(meta.MaxConns),
 	}
+}
+
+func normalizeXrayMaxConns(v int) int {
+	if v < 0 {
+		return 0
+	}
+	return v
 }
 
 func (m *XrayManager) setNativeQuotaPolicy(meta *XrayClientMeta) {
@@ -75,6 +91,7 @@ func (m *XrayManager) setNativeQuotaPolicy(meta *XrayClientMeta) {
 	existing.quotaBytes = meta.DataQuotaBytes
 	existing.action = normalizeQuotaAction(meta.QuotaAction)
 	existing.throttleMbps = quotaThrottleMbpsOrDefault(meta.QuotaThrottleMbps)
+	existing.maxConns = normalizeXrayMaxConns(meta.MaxConns)
 	existing.limiter = nil
 	existing.mu.Unlock()
 }
@@ -87,6 +104,13 @@ func (m *XrayManager) removeNativeQuotaPolicy(uuid string) {
 	m.nativeQuotaMu.Lock()
 	delete(m.nativeQuotaByUUID, uuid)
 	m.nativeQuotaMu.Unlock()
+
+	// Do not retain failed traffic/active deltas for a client that no longer
+	// exists. This also bounds the pending maps during a prolonged DB outage.
+	m.nativeDBMu.Lock()
+	delete(m.nativeTrafficPending, uuid)
+	delete(m.nativeActivePending, uuid)
+	m.nativeDBMu.Unlock()
 }
 
 func (m *XrayManager) resetNativeQuotaUsage(uuid string) {
@@ -97,6 +121,8 @@ func (m *XrayManager) resetNativeQuotaUsage(uuid string) {
 	if state == nil {
 		return
 	}
+	state.trafficMu.Lock()
+	defer state.trafficMu.Unlock()
 	state.mu.Lock()
 	state.usedBytes = 0
 	state.limiter = nil
@@ -107,26 +133,23 @@ func (m *XrayManager) resetNativeQuotaUsage(uuid string) {
 	state.mu.Unlock()
 }
 
-func (m *XrayManager) nativeQuotaGeneration(uuid string) uint64 {
-	state := m.nativeQuotaState(uuid)
-	if state == nil {
-		return 0
-	}
-	state.mu.Lock()
-	generation := state.generation
-	state.mu.Unlock()
-	return generation
-}
-
 func (m *XrayManager) resetNativeTrafficAccounting(ctx context.Context, store *Store, uuid, email string) error {
 	state := m.nativeQuotaState(uuid)
 	if state != nil {
+		state.trafficMu.Lock()
+		defer state.trafficMu.Unlock()
 		state.mu.Lock()
 		defer state.mu.Unlock()
 	}
 
 	m.nativeTrafficPersistMu.Lock()
 	defer m.nativeTrafficPersistMu.Unlock()
+
+	// Remove this client's queued pre-reset delta while holding only the short
+	// map mutex. The database call may take seconds during an outage; keeping
+	// nativeDBMu locked across it would stall traffic/accounting updates for
+	// every other native user and could amplify a slow database into a goroutine
+	// pile-up.
 	m.nativeDBMu.Lock()
 	key := strings.TrimSpace(uuid)
 	var pending xrayPendingTraffic
@@ -135,14 +158,27 @@ func (m *XrayManager) resetNativeTrafficAccounting(ctx context.Context, store *S
 		pending, hadPending = m.nativeTrafficPending[key]
 		delete(m.nativeTrafficPending, key)
 	}
+	m.nativeDBMu.Unlock()
+
 	err := store.ResetXrayClientTraffic(ctx, uuid)
-	if err != nil && hadPending {
+	if err != nil && hadPending && pending.State == state {
+		m.nativeDBMu.Lock()
 		if m.nativeTrafficPending == nil {
 			m.nativeTrafficPending = make(map[string]xrayPendingTraffic)
 		}
-		m.nativeTrafficPending[key] = pending
+		current := m.nativeTrafficPending[key]
+		if current.State != nil && current.State != state {
+			current = xrayPendingTraffic{}
+		}
+		if current.Email == "" {
+			current.Email = pending.Email
+		}
+		current.Uplink += pending.Uplink
+		current.Downlink += pending.Downlink
+		current.State = state
+		m.nativeTrafficPending[key] = current
+		m.nativeDBMu.Unlock()
 	}
-	m.nativeDBMu.Unlock()
 	if err != nil {
 		return err
 	}
@@ -177,8 +213,44 @@ func (m *XrayManager) nativeQuotaState(uuid string) *xrayNativeQuotaState {
 	return state
 }
 
-func (m *XrayManager) nativeQuotaBlocked(uuid string) bool {
+// acquireNativeClientConnection enforces the DB-backed max_conns policy across
+// every native inbound and transport. The returned release function is safe to
+// call more than once and keeps runtime/DB online counters in sync.
+func (m *XrayManager) acquireNativeClientConnection(uuid, email string) (func(), *xrayNativeQuotaState, bool) {
 	state := m.nativeQuotaState(uuid)
+	if state != nil {
+		state.mu.Lock()
+		if state.maxConns > 0 && state.activeConns >= state.maxConns {
+			limit := state.maxConns
+			state.mu.Unlock()
+			logNativeClientLimitRejection(email, limit)
+			return nil, state, false
+		}
+		state.activeConns++
+		state.mu.Unlock()
+	}
+
+	m.recordNativeConnect(uuid, email, state)
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			if state != nil {
+				state.mu.Lock()
+				if state.activeConns > 0 {
+					state.activeConns--
+				}
+				state.mu.Unlock()
+			}
+			m.recordNativeDisconnect(uuid, email, state)
+		})
+	}, state, true
+}
+
+func (m *XrayManager) nativeQuotaBlocked(uuid string) bool {
+	return nativeQuotaStateBlocked(m.nativeQuotaState(uuid))
+}
+
+func nativeQuotaStateBlocked(state *xrayNativeQuotaState) bool {
 	if state == nil {
 		return false
 	}
@@ -187,11 +259,10 @@ func (m *XrayManager) nativeQuotaBlocked(uuid string) bool {
 	return state.quotaBytes > 0 && normalizeQuotaAction(state.action) == quotaActionBlock && state.usedBytes >= state.quotaBytes
 }
 
-func (m *XrayManager) reserveNativeQuota(uuid string, requested int) (allowed int, limiter *rate.Limiter, stopAfter bool) {
+func (m *XrayManager) reserveNativeQuota(state *xrayNativeQuotaState, requested int) (allowed int, limiter *rate.Limiter, stopAfter bool) {
 	if requested <= 0 {
 		return 0, nil, false
 	}
-	state := m.nativeQuotaState(uuid)
 	if state == nil {
 		return requested, nil, false
 	}
@@ -232,14 +303,13 @@ func (m *XrayManager) reserveNativeQuota(uuid string, requested int) (allowed in
 	return int(take), nil, take < n
 }
 
-func (m *XrayManager) finishNativeQuotaReservation(uuid string, reserved, written int) {
+func (m *XrayManager) finishNativeQuotaReservation(state *xrayNativeQuotaState, reserved, written int) {
 	if reserved <= 0 || written >= reserved {
 		return
 	}
 	if written < 0 {
 		written = 0
 	}
-	state := m.nativeQuotaState(uuid)
 	if state == nil {
 		return
 	}
@@ -254,56 +324,107 @@ func (m *XrayManager) finishNativeQuotaReservation(uuid string, reserved, writte
 type xrayQuotaMeteredWriter struct {
 	w     io.Writer
 	meter *trafficMeter
+	ctx   context.Context
 }
 
 func (mw xrayQuotaMeteredWriter) Write(p []byte) (int, error) {
 	if mw.meter == nil {
 		return mw.w.Write(p)
 	}
-	allowed, limiter, stopAfter := xrayMgr.reserveNativeQuota(mw.meter.uuid, len(p))
+	state := mw.meter.state
+	if state != nil {
+		state.trafficMu.RLock()
+		defer state.trafficMu.RUnlock()
+	}
+	allowed, limiter, stopAfter := xrayMgr.reserveNativeQuota(state, len(p))
 	if allowed <= 0 {
 		return 0, errDataQuotaExceeded
 	}
 	if limiter != nil {
-		if err := limiter.WaitN(context.Background(), allowed); err != nil {
-			xrayMgr.finishNativeQuotaReservation(mw.meter.uuid, allowed, 0)
+		ctx := mw.ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		if err := limiter.WaitN(ctx, allowed); err != nil {
+			xrayMgr.finishNativeQuotaReservation(state, allowed, 0)
 			return 0, err
 		}
 	}
 	n, err := mw.w.Write(p[:allowed])
-	xrayMgr.finishNativeQuotaReservation(mw.meter.uuid, allowed, n)
+	xrayMgr.finishNativeQuotaReservation(state, allowed, n)
 	if n > 0 {
 		mw.meter.add(n)
 	}
 	if err != nil {
 		return n, err
 	}
-	if stopAfter || allowed < len(p) || xrayMgr.nativeQuotaBlocked(mw.meter.uuid) {
+	if stopAfter || allowed < len(p) || nativeQuotaStateBlocked(state) {
 		return n, errDataQuotaExceeded
 	}
 	return n, nil
 }
 
-func reserveNativePacketQuota(meter *trafficMeter, n int) (*rate.Limiter, error) {
-	if meter == nil || n <= 0 {
-		return nil, nil
-	}
-	allowed, limiter, stopAfter := xrayMgr.reserveNativeQuota(meter.uuid, n)
-	if allowed != n || stopAfter {
-		if allowed > 0 {
-			xrayMgr.finishNativeQuotaReservation(meter.uuid, allowed, 0)
-		}
-		return nil, errDataQuotaExceeded
-	}
-	return limiter, nil
+type nativePacketQuotaReservation struct {
+	meter    *trafficMeter
+	state    *xrayNativeQuotaState
+	limiter  *rate.Limiter
+	reserved int
+	finished bool
 }
 
-func finishNativePacketQuota(meter *trafficMeter, reserved, written int) {
-	if meter == nil || reserved <= 0 {
+func reserveNativePacketQuota(meter *trafficMeter, n int) (nativePacketQuotaReservation, error) {
+	if meter == nil || n <= 0 {
+		return nativePacketQuotaReservation{}, nil
+	}
+	state := meter.state
+	if state != nil {
+		state.trafficMu.RLock()
+	}
+	allowed, limiter, stopAfter := xrayMgr.reserveNativeQuota(state, n)
+	if allowed != n || stopAfter {
+		if allowed > 0 {
+			xrayMgr.finishNativeQuotaReservation(state, allowed, 0)
+		}
+		if state != nil {
+			state.trafficMu.RUnlock()
+		}
+		return nativePacketQuotaReservation{}, errDataQuotaExceeded
+	}
+	return nativePacketQuotaReservation{
+		meter:    meter,
+		state:    state,
+		limiter:  limiter,
+		reserved: n,
+	}, nil
+}
+
+func (r *nativePacketQuotaReservation) wait(ctx context.Context) error {
+	if r == nil || r.finished || r.limiter == nil || r.reserved <= 0 {
+		return nil
+	}
+	if err := waitNativeRate(ctx, r.limiter, r.reserved); err != nil {
+		r.finish(0)
+		return err
+	}
+	return nil
+}
+
+func (r *nativePacketQuotaReservation) finish(written int) {
+	if r == nil || r.finished {
 		return
 	}
-	xrayMgr.finishNativeQuotaReservation(meter.uuid, reserved, written)
+	r.finished = true
+	if r.meter == nil || r.reserved <= 0 {
+		if r.state != nil {
+			r.state.trafficMu.RUnlock()
+		}
+		return
+	}
+	xrayMgr.finishNativeQuotaReservation(r.state, r.reserved, written)
 	if written > 0 {
-		meter.add(written)
+		r.meter.add(written)
+	}
+	if r.state != nil {
+		r.state.trafficMu.RUnlock()
 	}
 }

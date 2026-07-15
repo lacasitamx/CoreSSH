@@ -54,7 +54,11 @@ type nativeMuxUplinkItem struct {
 	port    uint16
 }
 
-const nativeMuxUplinkQueue = 64
+const (
+	nativeMuxUplinkQueue                = 16
+	nativeMuxMaxBufferedBytesPerSession = 1 * 1024 * 1024
+	nativeMuxMaxBufferedBytesGlobal     = 128 * 1024 * 1024
+)
 
 var nativeMuxFramePool = sync.Pool{
 	New: func() any {
@@ -91,6 +95,11 @@ type nativeMuxSession struct {
 	uplink      chan nativeMuxUplinkItem
 	closed      chan struct{}
 	closeOnce   sync.Once
+	finishOnce  sync.Once
+	enqueueMu   sync.Mutex
+	enqueueWG   sync.WaitGroup
+	enqueueDone bool
+	buffered    atomic.Int64
 	ctx         context.Context
 	cancel      context.CancelFunc
 	onClose     func(*nativeMuxSession)
@@ -98,7 +107,11 @@ type nativeMuxSession struct {
 	globalID    [8]byte
 }
 
-var nativeMuxGlobalActive atomic.Int64
+var (
+	nativeMuxGlobalActive   atomic.Int64
+	nativeMuxBufferedBytes  atomic.Int64
+	nativeMuxBufferRejected atomic.Int64
+)
 
 func acquireNativeMuxGlobalSlot() (func(), bool) {
 	limit := int64(nativeMuxGlobalSessionLimit())
@@ -117,15 +130,73 @@ func acquireNativeMuxGlobalSlot() (func(), bool) {
 	}
 }
 
+func reserveNativeMuxBufferedBytes(s *nativeMuxSession, n int64) bool {
+	if s == nil || n <= 0 {
+		return true
+	}
+	for {
+		current := s.buffered.Load()
+		if current > nativeMuxMaxBufferedBytesPerSession-n {
+			logNativeLimitRejection("mux session buffered bytes", &nativeMuxBufferRejected, nativeMuxMaxBufferedBytesPerSession)
+			return false
+		}
+		if s.buffered.CompareAndSwap(current, current+n) {
+			break
+		}
+	}
+	for {
+		current := nativeMuxBufferedBytes.Load()
+		if current > nativeMuxMaxBufferedBytesGlobal-n {
+			s.buffered.Add(-n)
+			logNativeLimitRejection("mux global buffered bytes", &nativeMuxBufferRejected, nativeMuxMaxBufferedBytesGlobal)
+			return false
+		}
+		if nativeMuxBufferedBytes.CompareAndSwap(current, current+n) {
+			return true
+		}
+	}
+}
+
+func releaseNativeMuxBufferedBytes(s *nativeMuxSession, n int64) {
+	if s == nil || n <= 0 {
+		return
+	}
+	for {
+		current := s.buffered.Load()
+		release := n
+		if release > current {
+			release = current
+		}
+		if s.buffered.CompareAndSwap(current, current-release) {
+			releaseNativeAtomicBytes(&nativeMuxBufferedBytes, release)
+			return
+		}
+	}
+}
+
+func releaseNativeAtomicBytes(counter *atomic.Int64, n int64) {
+	if counter == nil || n <= 0 {
+		return
+	}
+	for {
+		current := counter.Load()
+		next := current - n
+		if next < 0 {
+			next = 0
+		}
+		if counter.CompareAndSwap(current, next) {
+			return
+		}
+	}
+}
+
 // nativeVLESSMuxTunnel implements the server side of Xray's Mux.Cool framing
 // for VLESS CommandMux. CommandMux does not carry a VLESS target address; every
 // child TCP/UDP request is described by mux frame metadata. UDP is treated as a
 // packet protocol, not as a byte stream, and XUDP-style GlobalID/endpoint
 // metadata is accepted for full-cone friendly clients.
-func (ib *nativeInbound) nativeVLESSMuxTunnel(stream io.ReadWriteCloser, uuid, email string) {
+func (ib *nativeInbound) nativeVLESSMuxTunnel(stream io.ReadWriteCloser, uuid, email string, quotaState *xrayNativeQuotaState) {
 	defer xrayRecover(fmt.Sprintf("native xray VLESS mux user=%s", email))
-	xrayMgr.recordNativeConnect(uuid, email)
-	defer xrayMgr.recordNativeDisconnect(uuid, email)
 
 	writeMu := &sync.Mutex{}
 	sessions := make(map[uint16]*nativeMuxSession)
@@ -256,7 +327,7 @@ func (ib *nativeInbound) nativeVLESSMuxTunnel(stream io.ReadWriteCloser, uuid, e
 				}
 			}
 
-			s, target, err := ib.newNativeMuxSession(meta.sessionID, meta.network, targetHost, targetPort, isXUDP, meta.globalID, stream, writeMu, uuid, email, removeSession)
+			s, target, err := ib.newNativeMuxSession(meta.sessionID, meta.network, targetHost, targetPort, isXUDP, meta.globalID, stream, writeMu, uuid, email, quotaState, removeSession)
 			if err != nil {
 				xrayLogf("native xray: VLESS mux session %s setup failed: %v", target, err)
 				writeMu.Lock()
@@ -281,8 +352,11 @@ func (ib *nativeInbound) nativeVLESSMuxTunnel(stream io.ReadWriteCloser, uuid, e
 			xrayTracef("native xray: vless/mux %s user=%s -> %s session=%d xudp=%v", nativeMuxNetworkName(meta.network), email, target, meta.sessionID, isXUDP)
 			ib2, host2, port2 := ib, targetHost, targetPort
 			xrayGo(fmt.Sprintf("native xray mux session=%d", s.id), func() { s.run(ib2, host2, port2) })
-			if len(pkt.payload) > 0 {
-				s.enqueueUplink(pkt.payload, pkt.host, pkt.port)
+			if len(pkt.payload) > 0 && !s.enqueueUplink(pkt.payload, pkt.host, pkt.port) {
+				closeSession(s.id)
+				writeMu.Lock()
+				_ = writeNativeMuxEnd(stream, meta.sessionID, true)
+				writeMu.Unlock()
 			}
 
 		case nativeMuxStatusKeep:
@@ -319,8 +393,11 @@ func (ib *nativeInbound) nativeVLESSMuxTunnel(stream io.ReadWriteCloser, uuid, e
 				pkt.host = meta.host
 				pkt.port = meta.port
 			}
-			if len(pkt.payload) > 0 {
-				s.enqueueUplink(pkt.payload, pkt.host, pkt.port)
+			if len(pkt.payload) > 0 && !s.enqueueUplink(pkt.payload, pkt.host, pkt.port) {
+				closeSession(s.id)
+				writeMu.Lock()
+				_ = writeNativeMuxEnd(stream, meta.sessionID, true)
+				writeMu.Unlock()
 			}
 
 		default:
@@ -332,7 +409,7 @@ func (ib *nativeInbound) nativeVLESSMuxTunnel(stream io.ReadWriteCloser, uuid, e
 	}
 }
 
-func (ib *nativeInbound) newNativeMuxSession(id uint16, network byte, host string, port uint16, xudp bool, globalID [8]byte, client io.Writer, writeMu *sync.Mutex, uuid, email string, onClose func(*nativeMuxSession)) (*nativeMuxSession, string, error) {
+func (ib *nativeInbound) newNativeMuxSession(id uint16, network byte, host string, port uint16, xudp bool, globalID [8]byte, client io.Writer, writeMu *sync.Mutex, uuid, email string, quotaState *xrayNativeQuotaState, onClose func(*nativeMuxSession)) (*nativeMuxSession, string, error) {
 	target := net.JoinHostPort(normalizeNativeTargetHost(host), strconv.Itoa(int(port)))
 	if invalidNativeDestination(host, port) {
 		return nil, target, fmt.Errorf("invalid destination")
@@ -351,8 +428,8 @@ func (ib *nativeInbound) newNativeMuxSession(id uint16, network byte, host strin
 		email:       email,
 		upLimiter:   ib.upLimiter(),
 		downLimiter: ib.downLimiter(),
-		upMeter:     &trafficMeter{uuid: uuid, email: email, uplink: true},
-		downMeter:   &trafficMeter{uuid: uuid, email: email, uplink: false},
+		upMeter:     newTrafficMeter(uuid, email, true, quotaState),
+		downMeter:   newTrafficMeter(uuid, email, false, quotaState),
 		uplink:      make(chan nativeMuxUplinkItem, nativeMuxUplinkQueue),
 		closed:      make(chan struct{}),
 		onClose:     onClose,
@@ -365,6 +442,7 @@ func (ib *nativeInbound) newNativeMuxSession(id uint16, network byte, host strin
 
 func (s *nativeMuxSession) run(ib *nativeInbound, host string, port uint16) {
 	defer xrayRecover(fmt.Sprintf("native xray mux run session=%d", s.id))
+	defer s.finish()
 
 	select {
 	case <-s.closed:
@@ -410,22 +488,59 @@ func (s *nativeMuxSession) failInit(notifyClient bool) {
 		_ = writeNativeMuxEnd(s.client, s.id, true)
 		s.writeMu.Unlock()
 	}
-	if s.onClose != nil {
-		s.onClose(s)
-	}
-	s.closeBackend()
+	s.finish()
 }
 
-func (s *nativeMuxSession) enqueueUplink(payload []byte, host string, port uint16) {
+// finish is the single lifecycle exit for a mux child. The backend reader,
+// uplink loop, parent mux stream, and initialization path can all detect the
+// terminal condition concurrently, so both cleanup and map removal must be
+// exactly-once operations.
+func (s *nativeMuxSession) finish() {
+	s.finishOnce.Do(func() {
+		s.closeBackend()
+		if s.onClose != nil {
+			s.onClose(s)
+		}
+	})
+}
+
+func (s *nativeMuxSession) beginEnqueue() bool {
+	s.enqueueMu.Lock()
+	defer s.enqueueMu.Unlock()
+	if s.enqueueDone {
+		return false
+	}
+	s.enqueueWG.Add(1)
+	return true
+}
+
+func (s *nativeMuxSession) enqueueUplink(payload []byte, host string, port uint16) bool {
 	if len(payload) == 0 {
-		return
+		return true
+	}
+	if !s.beginEnqueue() {
+		return false
+	}
+	defer s.enqueueWG.Done()
+
+	bytes := int64(len(payload))
+	if !reserveNativeMuxBufferedBytes(s, bytes) {
+		return false
 	}
 	cp := make([]byte, len(payload))
 	copy(cp, payload)
 	select {
 	case s.uplink <- nativeMuxUplinkItem{payload: cp, host: host, port: port}:
+		return true
 	case <-s.closed:
+		releaseNativeMuxBufferedBytes(s, bytes)
+		return false
 	}
+}
+
+func (s *nativeMuxSession) processUplinkItem(item nativeMuxUplinkItem) bool {
+	defer releaseNativeMuxBufferedBytes(s, int64(len(item.payload)))
+	return s.writeBackendItem(item)
 }
 
 func (s *nativeMuxSession) uplinkLoop() {
@@ -435,7 +550,7 @@ func (s *nativeMuxSession) uplinkLoop() {
 		case <-s.closed:
 			return
 		case item := <-s.uplink:
-			if !s.writeBackendItem(item) {
+			if !s.processUplinkItem(item) {
 				s.closeBackend()
 				return
 			}
@@ -481,15 +596,12 @@ func (s *nativeMuxSession) writeBackendItem(item nativeMuxUplinkItem) bool {
 			return false
 		}
 	}
-	quotaLimiter, quotaErr := reserveNativePacketQuota(s.upMeter, len(payload))
+	quotaReservation, quotaErr := reserveNativePacketQuota(s.upMeter, len(payload))
 	if quotaErr != nil {
 		return false
 	}
-	if quotaLimiter != nil {
-		if err := quotaLimiter.WaitN(s.ctx, len(payload)); err != nil {
-			finishNativePacketQuota(s.upMeter, len(payload), 0)
-			return false
-		}
+	if err := quotaReservation.wait(s.ctx); err != nil {
+		return false
 	}
 
 	var n int
@@ -502,7 +614,7 @@ func (s *nativeMuxSession) writeBackendItem(item nativeMuxUplinkItem) bool {
 			if isNativeDNSSinkTarget(item.host) || invalidNativeDestination(item.host, item.port) {
 				// AdGuard/blocked endpoints must be ignored at the cheapest possible
 				// point. Do not resolve, dial, log loudly, or keep the mux child busy.
-				finishNativePacketQuota(s.upMeter, len(payload), 0)
+				quotaReservation.finish(0)
 				xrayTracef("native xray: VLESS mux UDP fast-ignored override sink session=%d target=%s:%d", s.id, item.host, item.port)
 				return true
 			}
@@ -514,7 +626,7 @@ func (s *nativeMuxSession) writeBackendItem(item nativeMuxUplinkItem) bool {
 				s.lastUDPPort = item.port
 				s.lastUDPAddr = addr
 			} else {
-				finishNativePacketQuota(s.upMeter, len(payload), 0)
+				quotaReservation.finish(0)
 				xrayTracef("native xray: VLESS mux UDP override resolve failed session=%d target=%s:%d: %v", s.id, item.host, item.port, rerr)
 				return true
 			}
@@ -524,7 +636,7 @@ func (s *nativeMuxSession) writeBackendItem(item nativeMuxUplinkItem) bool {
 	if s.network == nativeMuxNetworkUDP && err == nil {
 		_ = s.udp.SetReadDeadline(time.Now().Add(nativeMuxUDPIdleTimeout()))
 	}
-	finishNativePacketQuota(s.upMeter, len(payload), n)
+	quotaReservation.finish(n)
 	if err != nil {
 		xrayLogf("native xray: VLESS mux backend write failed session=%d: %v", s.id, err)
 		return false
@@ -542,10 +654,7 @@ func (s *nativeMuxSession) readBackendLoop() {
 			_ = writeNativeMuxEnd(s.client, s.id, false)
 			s.writeMu.Unlock()
 		}
-		if s.onClose != nil {
-			s.onClose(s)
-		}
-		s.closeBackend()
+		s.finish()
 	}()
 
 	if s.network == nativeMuxNetworkTCP {
@@ -581,25 +690,22 @@ func (s *nativeMuxSession) readTCPBackendLoop() {
 		if err := s.waitDownRate(n); err != nil {
 			return
 		}
-		quotaLimiter, quotaErr := reserveNativePacketQuota(s.downMeter, n)
+		quotaReservation, quotaErr := reserveNativePacketQuota(s.downMeter, n)
 		if quotaErr != nil {
 			return
 		}
-		if quotaLimiter != nil {
-			if err := quotaLimiter.WaitN(s.ctx, n); err != nil {
-				finishNativePacketQuota(s.downMeter, n, 0)
-				return
-			}
+		if err := quotaReservation.wait(s.ctx); err != nil {
+			return
 		}
 		s.writeMu.Lock()
 		werr := writeNativeMuxData(s.client, s.id, nativeMuxStatusKeep, buf[:n])
 		s.writeMu.Unlock()
 		if werr != nil {
-			finishNativePacketQuota(s.downMeter, n, 0)
+			quotaReservation.finish(0)
 			xrayLogf("native xray: VLESS mux TCP client write failed session=%d: %v", s.id, werr)
 			return
 		}
-		finishNativePacketQuota(s.downMeter, n, n)
+		quotaReservation.finish(n)
 	}
 }
 
@@ -623,15 +729,12 @@ func (s *nativeMuxSession) readUDPBackendLoop() bool {
 		if err := s.waitDownRate(n); err != nil {
 			return true
 		}
-		quotaLimiter, quotaErr := reserveNativePacketQuota(s.downMeter, n)
+		quotaReservation, quotaErr := reserveNativePacketQuota(s.downMeter, n)
 		if quotaErr != nil {
 			return true
 		}
-		if quotaLimiter != nil {
-			if err := quotaLimiter.WaitN(s.ctx, n); err != nil {
-				finishNativePacketQuota(s.downMeter, n, 0)
-				return true
-			}
+		if err := quotaReservation.wait(s.ctx); err != nil {
+			return true
 		}
 		s.writeMu.Lock()
 		// Include the UDP source endpoint on XUDP responses so clients that rely on
@@ -640,28 +743,45 @@ func (s *nativeMuxSession) readUDPBackendLoop() bool {
 		werr := writeNativeMuxPacketData(s.client, s.id, nativeMuxStatusKeep, buf[:n], addr, s.xudp)
 		s.writeMu.Unlock()
 		if werr != nil {
-			finishNativePacketQuota(s.downMeter, n, 0)
+			quotaReservation.finish(0)
 			xrayLogf("native xray: VLESS mux UDP client write failed session=%d: %v", s.id, werr)
 			return true
 		}
-		finishNativePacketQuota(s.downMeter, n, n)
+		quotaReservation.finish(n)
 	}
 }
 
 func (s *nativeMuxSession) closeBackend() {
 	s.closeOnce.Do(func() {
+		s.enqueueMu.Lock()
+		s.enqueueDone = true
 		close(s.closed)
+		s.enqueueMu.Unlock()
 		if s.cancel != nil {
 			s.cancel()
-		}
-		if s.releaseSlot != nil {
-			s.releaseSlot()
 		}
 		if s.tcp != nil {
 			_ = s.tcp.Close()
 		}
 		if s.udp != nil {
 			_ = s.udp.Close()
+		}
+
+		// Wait for producers that passed beginEnqueue before the close flag, then
+		// discard any payloads the consumer did not take. This returns every byte
+		// reservation even when shutdown races a full queue.
+		s.enqueueWG.Wait()
+		for {
+			select {
+			case item := <-s.uplink:
+				releaseNativeMuxBufferedBytes(s, int64(len(item.payload)))
+				item.payload = nil
+			default:
+				if s.releaseSlot != nil {
+					s.releaseSlot()
+				}
+				return
+			}
 		}
 	})
 }

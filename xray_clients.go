@@ -112,6 +112,11 @@ func (s *Store) GetXrayClientMeta(ctx context.Context, uuid string) (*XrayClient
 }
 
 func (s *Store) DeleteXrayClientMeta(ctx context.Context, uuid string) error {
+	// Serialize deletion with the native stats flusher. Otherwise a batch that
+	// was swapped out just before DELETE could finish afterward and, if the same
+	// UUID is recreated quickly, apply stale traffic/active deltas to the new row.
+	xrayMgr.nativeTrafficPersistMu.Lock()
+	defer xrayMgr.nativeTrafficPersistMu.Unlock()
 	_, err := s.db.ExecContext(ctx, `DELETE FROM xray_clients WHERE uuid = $1`, uuid)
 	if err == nil {
 		xrayMgr.removeNativeQuotaPolicy(uuid)
@@ -228,19 +233,38 @@ func (s *Store) AddXrayClientTrafficBatch(ctx context.Context, deltas map[string
 	return tx.Commit()
 }
 
-// UpdateXrayClientActive adjusts the native online connection counter.
-func (s *Store) UpdateXrayClientActive(ctx context.Context, uuid, email string, delta int) error {
-	if uuid == "" || delta == 0 {
+// AddXrayClientActiveBatch persists native online-counter deltas without
+// launching a database goroutine/query for every connect and disconnect.
+func (s *Store) AddXrayClientActiveBatch(ctx context.Context, deltas map[string]xrayPendingActive) error {
+	if len(deltas) == 0 {
 		return nil
 	}
-	_, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	stmt, err := tx.PrepareContext(ctx, `
 		UPDATE xray_clients SET
 			email              = CASE WHEN email = '' AND $2 <> '' THEN $2 ELSE email END,
 			name               = CASE WHEN name = '' AND $2 <> '' THEN $2 ELSE name END,
-			last_active        = CASE WHEN $3::INT > 0 THEN NOW() ELSE last_active END,
+			last_active        = CASE WHEN $4::BOOLEAN THEN NOW() ELSE last_active END,
 			active_connections = GREATEST(active_connections + $3::INT, 0)
-		WHERE uuid = $1`, uuid, email, delta)
-	return err
+		WHERE uuid = $1`)
+	if err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	defer stmt.Close()
+	for uuid, d := range deltas {
+		if uuid == "" || (d.Delta == 0 && !d.Connected) {
+			continue
+		}
+		if _, err := stmt.ExecContext(ctx, uuid, d.Email, d.Delta, d.Connected); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func countOwnedXrayClients(ctx context.Context, store *Store, ownerUsername string) int {
