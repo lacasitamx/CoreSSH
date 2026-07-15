@@ -128,6 +128,18 @@ function setUserSort(key) {
   updateSortIndicators();
 })();
 
+function sshTrafficHTML(u) {
+  const up = Number(u.total_uplink_bytes || 0);
+  const down = Number(u.total_downlink_bytes || 0);
+  const total = Number(u.total_bytes || (up + down) || 0);
+  const quota = Number(u.data_quota_bytes || 0);
+  const quotaLabel = quota > 0 ? formatBytes(quota) : "∞";
+  const state = u.quota_exceeded
+    ? (u.quota_action === "throttle" ? ` · ${t("throttled")}` : ` · ${t("blocked")}`)
+    : "";
+  return `${escapeHTML(formatBytes(total))} / ${escapeHTML(quotaLabel)}${escapeHTML(state)}<div class="hint">↑ ${escapeHTML(formatBytes(up))} · ↓ ${escapeHTML(formatBytes(down))}</div>`;
+}
+
 function renderUsers(users) {
   // Cache the raw list so a header click can re-sort without refetching, and
   // order by the active column so rows don't shuffle on each live poll.
@@ -144,12 +156,6 @@ function renderUsers(users) {
     const on = (u.active_conns || 0) > 0;
     if (on) online++;
     if (isExpiredDate(u.expires_at)) expiredCount++;
-    const totalBytes = Number(u.total_bytes || ((u.total_uplink_bytes || 0) + (u.total_downlink_bytes || 0)) || 0);
-    const quotaBytes = Number(u.data_quota_bytes || 0);
-    const quotaLabel = quotaBytes > 0 ? formatBytes(quotaBytes) : "∞";
-    const quotaState = u.quota_exceeded
-      ? (u.quota_action === "throttle" ? ` · ${t("throttled")}` : ` · ${t("blocked")}`)
-      : "";
     const tr = document.createElement("tr");
     const cells = [
       u.username,
@@ -159,13 +165,14 @@ function renderUsers(users) {
       u.max_connections || 0,
       u.limit_mbps_up || 0,
       u.limit_mbps_down || 0,
-      `${formatBytes(totalBytes)} / ${quotaLabel}${quotaState}`,
+      sshTrafficHTML(u),
       u.expires_at ? fmtDate(u.expires_at) : "—",
     ];
     if (isSA) cells.push(u.owner_username || "—");
     cells.forEach((c, i) => {
       const td = document.createElement("td");
-      if (i === 1) td.innerHTML = c; else td.textContent = c;
+      if (i === 1 || i === 7) td.innerHTML = c; else td.textContent = c;
+      if (i === 7) td.style.fontSize = ".7rem";
       tr.appendChild(td);
     });
     const tdA = document.createElement("td");
