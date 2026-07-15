@@ -6,6 +6,11 @@ function openEditXrayClient(tag, client) {
   document.getElementById("editXrayEmail").value   = client.email || "";
   document.getElementById("editXrayExpiry").value  = client.expires_at ? localFromISO(client.expires_at) : "";
   document.getElementById("editXrayMaxConns").value = client.max_conns || 0;
+  document.getElementById("editXrayQuotaGB").value = client.data_quota_bytes ? (Number(client.data_quota_bytes) / (1024 ** 3)).toFixed(2).replace(/\.00$/, "") : "0";
+  document.getElementById("editXrayQuotaAction").value = client.quota_action === "throttle" ? "throttle" : "block";
+  document.getElementById("editXrayQuotaThrottle").value = client.quota_throttle_mbps || 1;
+  document.getElementById("editXrayUsage").value = `${formatBytes(client.total_bytes || 0)} (↑ ${formatBytes(client.uplink_bytes || 0)} · ↓ ${formatBytes(client.downlink_bytes || 0)})`;
+  document.getElementById("editXrayResetUsage").checked = false;
   document.getElementById("editXrayClientStatus").textContent = "";
   document.getElementById("editXrayClientPanel").classList.remove("hidden");
   document.getElementById("editXrayClientPanel").scrollIntoView({ behavior:"smooth", block:"nearest" });
@@ -26,6 +31,10 @@ async function saveEditXrayClient() {
     email:           document.getElementById("editXrayEmail").value.trim(),
     expires_at:      isoFromLocal(document.getElementById("editXrayExpiry").value),
     max_connections: parseInt(document.getElementById("editXrayMaxConns").value || "0", 10),
+    data_quota_bytes: Math.round((parseFloat(document.getElementById("editXrayQuotaGB").value || "0") || 0) * (1024 ** 3)),
+    quota_action: document.getElementById("editXrayQuotaAction").value === "throttle" ? "throttle" : "block",
+    quota_throttle_mbps: parseInt(document.getElementById("editXrayQuotaThrottle").value || "1", 10) || 1,
+    reset_usage: !!document.getElementById("editXrayResetUsage").checked,
     server_id: selectedXrayServer(),
   };
   try {

@@ -18,6 +18,9 @@ type XrayClientMeta struct {
 	OwnerUsername      string
 	ExpiresAt          *time.Time
 	MaxConns           int
+	DataQuotaBytes     int64
+	QuotaAction        string
+	QuotaThrottleMbps  int
 	CreatedAt          time.Time
 	TotalUplinkBytes   int64
 	TotalDownlinkBytes int64
@@ -35,6 +38,9 @@ func (s *Store) EnsureXrayClientsSchema(ctx context.Context) error {
 			owner_username        TEXT NOT NULL DEFAULT '',
 			expires_at            TIMESTAMPTZ,
 			max_conns             INT NOT NULL DEFAULT 0,
+			data_quota_bytes      BIGINT NOT NULL DEFAULT 0,
+			quota_action          TEXT NOT NULL DEFAULT 'block',
+			quota_throttle_mbps   INT NOT NULL DEFAULT 1,
 			created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			total_uplink_bytes    BIGINT NOT NULL DEFAULT 0,
 			total_downlink_bytes  BIGINT NOT NULL DEFAULT 0,
@@ -42,6 +48,9 @@ func (s *Store) EnsureXrayClientsSchema(ctx context.Context) error {
 			active_connections    INT NOT NULL DEFAULT 0
 		)`,
 		`ALTER TABLE xray_clients ADD COLUMN IF NOT EXISTS owner_username TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE xray_clients ADD COLUMN IF NOT EXISTS data_quota_bytes BIGINT NOT NULL DEFAULT 0`,
+		`ALTER TABLE xray_clients ADD COLUMN IF NOT EXISTS quota_action TEXT NOT NULL DEFAULT 'block'`,
+		`ALTER TABLE xray_clients ADD COLUMN IF NOT EXISTS quota_throttle_mbps INT NOT NULL DEFAULT 1`,
 		`ALTER TABLE xray_clients ADD COLUMN IF NOT EXISTS total_uplink_bytes BIGINT NOT NULL DEFAULT 0`,
 		`ALTER TABLE xray_clients ADD COLUMN IF NOT EXISTS total_downlink_bytes BIGINT NOT NULL DEFAULT 0`,
 		`ALTER TABLE xray_clients ADD COLUMN IF NOT EXISTS last_active TIMESTAMPTZ`,
@@ -61,16 +70,20 @@ func (s *Store) UpsertXrayClientMeta(ctx context.Context, m XrayClientMeta) erro
 		expiresAt = *m.ExpiresAt
 	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO xray_clients (uuid, name, email, inbound_tag, owner_username, expires_at, max_conns)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		INSERT INTO xray_clients (uuid, name, email, inbound_tag, owner_username, expires_at, max_conns, data_quota_bytes, quota_action, quota_throttle_mbps)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT (uuid) DO UPDATE SET
 			name           = EXCLUDED.name,
 			email          = EXCLUDED.email,
 			inbound_tag    = CASE WHEN EXCLUDED.inbound_tag <> '' THEN EXCLUDED.inbound_tag ELSE xray_clients.inbound_tag END,
 			owner_username = CASE WHEN EXCLUDED.owner_username <> '' THEN EXCLUDED.owner_username ELSE xray_clients.owner_username END,
-			expires_at     = EXCLUDED.expires_at,
-			max_conns      = EXCLUDED.max_conns`,
-		m.UUID, m.Name, m.Email, m.InboundTag, m.OwnerUsername, expiresAt, m.MaxConns)
+			expires_at          = EXCLUDED.expires_at,
+			max_conns           = EXCLUDED.max_conns,
+			data_quota_bytes    = EXCLUDED.data_quota_bytes,
+			quota_action        = EXCLUDED.quota_action,
+			quota_throttle_mbps = EXCLUDED.quota_throttle_mbps`,
+		m.UUID, m.Name, m.Email, m.InboundTag, m.OwnerUsername, expiresAt, m.MaxConns,
+		m.DataQuotaBytes, normalizeQuotaAction(m.QuotaAction), quotaThrottleMbpsOrDefault(m.QuotaThrottleMbps))
 	return err
 }
 
@@ -79,10 +92,13 @@ func (s *Store) GetXrayClientMeta(ctx context.Context, uuid string) (*XrayClient
 	var expiresAt sql.NullTime
 	var lastActive sql.NullTime
 	err := s.db.QueryRowContext(ctx, `
-		SELECT uuid, name, email, inbound_tag, COALESCE(owner_username, ''), expires_at, max_conns, created_at,
+		SELECT uuid, name, email, inbound_tag, COALESCE(owner_username, ''), expires_at, max_conns,
+		       COALESCE(data_quota_bytes, 0), COALESCE(quota_action, 'block'), COALESCE(quota_throttle_mbps, 1), created_at,
 		       COALESCE(total_uplink_bytes, 0), COALESCE(total_downlink_bytes, 0), last_active, COALESCE(active_connections, 0)
 		FROM xray_clients WHERE uuid = $1`, uuid).
-		Scan(&m.UUID, &m.Name, &m.Email, &m.InboundTag, &m.OwnerUsername, &expiresAt, &m.MaxConns, &m.CreatedAt, &m.TotalUplinkBytes, &m.TotalDownlinkBytes, &lastActive, &m.ActiveConnections)
+		Scan(&m.UUID, &m.Name, &m.Email, &m.InboundTag, &m.OwnerUsername, &expiresAt, &m.MaxConns,
+			&m.DataQuotaBytes, &m.QuotaAction, &m.QuotaThrottleMbps, &m.CreatedAt,
+			&m.TotalUplinkBytes, &m.TotalDownlinkBytes, &lastActive, &m.ActiveConnections)
 	if err != nil {
 		return nil, err
 	}
@@ -97,12 +113,16 @@ func (s *Store) GetXrayClientMeta(ctx context.Context, uuid string) (*XrayClient
 
 func (s *Store) DeleteXrayClientMeta(ctx context.Context, uuid string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM xray_clients WHERE uuid = $1`, uuid)
+	if err == nil {
+		xrayMgr.removeNativeQuotaPolicy(uuid)
+	}
 	return err
 }
 
 func (s *Store) ListAllXrayClients(ctx context.Context) ([]*XrayClientMeta, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT uuid, name, email, inbound_tag, COALESCE(owner_username, ''), expires_at, max_conns, created_at,
+		SELECT uuid, name, email, inbound_tag, COALESCE(owner_username, ''), expires_at, max_conns,
+		       COALESCE(data_quota_bytes, 0), COALESCE(quota_action, 'block'), COALESCE(quota_throttle_mbps, 1), created_at,
 		       COALESCE(total_uplink_bytes, 0), COALESCE(total_downlink_bytes, 0), last_active, COALESCE(active_connections, 0)
 		FROM xray_clients ORDER BY created_at DESC`)
 	if err != nil {
@@ -114,7 +134,8 @@ func (s *Store) ListAllXrayClients(ctx context.Context) ([]*XrayClientMeta, erro
 
 func (s *Store) ListXrayClientsByOwner(ctx context.Context, ownerUsername string) ([]*XrayClientMeta, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT uuid, name, email, inbound_tag, COALESCE(owner_username, ''), expires_at, max_conns, created_at,
+		SELECT uuid, name, email, inbound_tag, COALESCE(owner_username, ''), expires_at, max_conns,
+		       COALESCE(data_quota_bytes, 0), COALESCE(quota_action, 'block'), COALESCE(quota_throttle_mbps, 1), created_at,
 		       COALESCE(total_uplink_bytes, 0), COALESCE(total_downlink_bytes, 0), last_active, COALESCE(active_connections, 0)
 		FROM xray_clients WHERE owner_username = $1 ORDER BY created_at DESC`, ownerUsername)
 	if err != nil {
@@ -132,7 +153,8 @@ func (s *Store) CountXrayClientsByOwner(ctx context.Context, ownerUsername strin
 
 func (s *Store) ListExpiredXrayClients(ctx context.Context) ([]*XrayClientMeta, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT uuid, name, email, inbound_tag, COALESCE(owner_username, ''), expires_at, max_conns, created_at,
+		SELECT uuid, name, email, inbound_tag, COALESCE(owner_username, ''), expires_at, max_conns,
+		       COALESCE(data_quota_bytes, 0), COALESCE(quota_action, 'block'), COALESCE(quota_throttle_mbps, 1), created_at,
 		       COALESCE(total_uplink_bytes, 0), COALESCE(total_downlink_bytes, 0), last_active, COALESCE(active_connections, 0)
 		FROM xray_clients WHERE expires_at IS NOT NULL AND expires_at <= NOW()`)
 	if err != nil {
@@ -148,7 +170,9 @@ func scanXrayClientMetaRows(rows *sql.Rows) ([]*XrayClientMeta, error) {
 		m := &XrayClientMeta{}
 		var expiresAt sql.NullTime
 		var lastActive sql.NullTime
-		if err := rows.Scan(&m.UUID, &m.Name, &m.Email, &m.InboundTag, &m.OwnerUsername, &expiresAt, &m.MaxConns, &m.CreatedAt, &m.TotalUplinkBytes, &m.TotalDownlinkBytes, &lastActive, &m.ActiveConnections); err != nil {
+		if err := rows.Scan(&m.UUID, &m.Name, &m.Email, &m.InboundTag, &m.OwnerUsername, &expiresAt, &m.MaxConns,
+			&m.DataQuotaBytes, &m.QuotaAction, &m.QuotaThrottleMbps, &m.CreatedAt,
+			&m.TotalUplinkBytes, &m.TotalDownlinkBytes, &lastActive, &m.ActiveConnections); err != nil {
 			return nil, err
 		}
 		if expiresAt.Valid {
@@ -303,4 +327,19 @@ func startXrayClientExpiryChecker(store *Store) {
 			}
 		}
 	}()
+}
+
+// ResetXrayClientTraffic clears a client's persistent usage without removing
+// the account or changing its expiry/quota policy.
+func (s *Store) ResetXrayClientTraffic(ctx context.Context, uuid string) error {
+	if s == nil || uuid == "" {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE xray_clients SET
+			total_uplink_bytes = 0,
+			total_downlink_bytes = 0,
+			last_active = NULL
+		WHERE uuid = $1`, uuid)
+	return err
 }

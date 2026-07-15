@@ -259,8 +259,12 @@ type XrayManager struct {
 	pollStarted   bool
 
 	nativeDBMu              sync.Mutex
+	nativeTrafficPersistMu  sync.Mutex
 	nativeTrafficPending    map[string]xrayPendingTraffic
 	nativeStatsFlushStarted bool
+
+	nativeQuotaMu     sync.RWMutex
+	nativeQuotaByUUID map[string]*xrayNativeQuotaState
 }
 
 type xrayTrafficCounters struct {
@@ -295,6 +299,8 @@ func initXrayManager(cfg *XrayConfig) {
 		xrayLogf("xray: database config bootstrap failed: %v", err)
 	}
 	xrayMgr.mu.Unlock()
+
+	xrayMgr.reloadNativeQuotaPolicies()
 
 	// In native mode the in-process emulator records traffic directly, so the
 	// external `xray api statsquery` poller is not started (it would overwrite
@@ -514,7 +520,7 @@ func (m *XrayManager) recordNativeDisconnect(uuid, email string) {
 // recordNativeTraffic accumulates in-process byte counters for a client and
 // queues DB persistence. Used by the native emulator instead of external
 // `xray api statsquery` polling.
-func (m *XrayManager) recordNativeTraffic(uuid, email string, up, down int64) {
+func (m *XrayManager) recordNativeTraffic(uuid, email string, up, down int64, generation uint64) {
 	uuid = strings.TrimSpace(uuid)
 	email = strings.TrimSpace(email)
 	if email == "" {
@@ -523,18 +529,14 @@ func (m *XrayManager) recordNativeTraffic(uuid, email string, up, down int64) {
 	if email == "" || (up == 0 && down == 0) {
 		return
 	}
-	now := time.Now()
-	m.statsMu.Lock()
-	if m.statsByEmail == nil {
-		m.statsByEmail = make(map[string]xrayRuntimeStat)
+	state := m.nativeQuotaState(uuid)
+	if state != nil {
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		if generation != state.generation {
+			return
+		}
 	}
-	st := m.statsByEmail[email]
-	st.Email = email
-	st.Uplink += up
-	st.Downlink += down
-	st.LastActive = now
-	m.statsByEmail[email] = st
-	m.statsMu.Unlock()
 
 	if statsStore != nil && uuid != "" {
 		m.nativeDBMu.Lock()
@@ -548,6 +550,20 @@ func (m *XrayManager) recordNativeTraffic(uuid, email string, up, down int64) {
 		m.nativeTrafficPending[uuid] = p
 		m.nativeDBMu.Unlock()
 	}
+
+	now := time.Now()
+	m.statsMu.Lock()
+	if m.statsByEmail == nil {
+		m.statsByEmail = make(map[string]xrayRuntimeStat)
+	}
+	st := m.statsByEmail[email]
+	st.Email = email
+	st.Uplink += up
+	st.Downlink += down
+	st.LastActive = now
+	m.statsByEmail[email] = st
+	m.statsMu.Unlock()
+
 }
 
 func (m *XrayManager) startNativeStatsFlusher() {
@@ -594,6 +610,8 @@ func (m *XrayManager) flushNativeStatsToDB() {
 	if statsStore == nil {
 		return
 	}
+	m.nativeTrafficPersistMu.Lock()
+	defer m.nativeTrafficPersistMu.Unlock()
 	m.nativeDBMu.Lock()
 	pending := m.nativeTrafficPending
 	m.nativeTrafficPending = nil
@@ -2027,12 +2045,16 @@ type XrayClientInfo struct {
 	TotalBytes        int64      `json:"total_bytes,omitempty"`
 	ActiveConnections int        `json:"active_connections,omitempty"`
 	// Metadata from PostgreSQL (enriched by handleXrayInbounds)
-	Name           string     `json:"name,omitempty"`
-	ExpiresAt      *time.Time `json:"expires_at,omitempty"`
-	ExpirationDays int        `json:"expiration_days"`
-	MaxConns       int        `json:"max_conns"`
-	OwnerUsername  string     `json:"owner_username,omitempty"`
-	Expired        bool       `json:"expired,omitempty"`
+	Name              string     `json:"name,omitempty"`
+	ExpiresAt         *time.Time `json:"expires_at,omitempty"`
+	ExpirationDays    int        `json:"expiration_days"`
+	MaxConns          int        `json:"max_conns"`
+	DataQuotaBytes    int64      `json:"data_quota_bytes"`
+	QuotaAction       string     `json:"quota_action"`
+	QuotaThrottleMbps int        `json:"quota_throttle_mbps"`
+	QuotaExceeded     bool       `json:"quota_exceeded,omitempty"`
+	OwnerUsername     string     `json:"owner_username,omitempty"`
+	Expired           bool       `json:"expired,omitempty"`
 }
 
 // XrayInboundInfo is returned by /api/xray/inbounds.
@@ -2338,6 +2360,10 @@ func handleXrayInbounds(w http.ResponseWriter, r *http.Request) {
 						Name:              m.Name,
 						ExpiresAt:         m.ExpiresAt,
 						MaxConns:          m.MaxConns,
+						DataQuotaBytes:    m.DataQuotaBytes,
+						QuotaAction:       normalizeQuotaAction(m.QuotaAction),
+						QuotaThrottleMbps: quotaThrottleMbpsOrDefault(m.QuotaThrottleMbps),
+						QuotaExceeded:     m.DataQuotaBytes > 0 && m.TotalUplinkBytes+m.TotalDownlinkBytes >= m.DataQuotaBytes,
 						OwnerUsername:     m.OwnerUsername,
 						UplinkBytes:       m.TotalUplinkBytes,
 						DownlinkBytes:     m.TotalDownlinkBytes,
@@ -2421,6 +2447,7 @@ func applyXrayRuntimeStats(c *XrayClientInfo) {
 		c.DownlinkBytes = st.Downlink
 	}
 	c.TotalBytes = c.UplinkBytes + c.DownlinkBytes
+	c.QuotaExceeded = c.DataQuotaBytes > 0 && c.TotalBytes >= c.DataQuotaBytes
 	if st.ActiveConnections > c.ActiveConnections {
 		c.ActiveConnections = st.ActiveConnections
 	}
@@ -2437,14 +2464,17 @@ func handleXrayClientAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		InboundTag     string `json:"inbound_tag"`
-		UUID           string `json:"uuid"`
-		Email          string `json:"email"`
-		Name           string `json:"name"`
-		ExpiresAt      string `json:"expires_at"` // RFC3339 or YYYY-MM-DD or empty
-		MaxConnections int    `json:"max_connections"`
-		OwnerUsername  string `json:"owner_username,omitempty"`
-		ServerID       string `json:"server_id,omitempty"`
+		InboundTag        string `json:"inbound_tag"`
+		UUID              string `json:"uuid"`
+		Email             string `json:"email"`
+		Name              string `json:"name"`
+		ExpiresAt         string `json:"expires_at"` // RFC3339 or YYYY-MM-DD or empty
+		MaxConnections    int    `json:"max_connections"`
+		DataQuotaBytes    int64  `json:"data_quota_bytes"`
+		QuotaAction       string `json:"quota_action"`
+		QuotaThrottleMbps int    `json:"quota_throttle_mbps"`
+		OwnerUsername     string `json:"owner_username,omitempty"`
+		ServerID          string `json:"server_id,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
@@ -2452,6 +2482,10 @@ func handleXrayClientAdd(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.InboundTag == "" || req.UUID == "" {
 		http.Error(w, "inbound_tag and uuid required", http.StatusBadRequest)
+		return
+	}
+	if err := validateQuotaConfig(req.DataQuotaBytes, req.QuotaAction, req.QuotaThrottleMbps); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if ms, remote, err := managedServerFromID(r.Context(), statsStore, req.ServerID); err != nil {
@@ -2543,12 +2577,15 @@ func handleXrayClientAdd(w http.ResponseWriter, r *http.Request) {
 	}
 	if statsStore != nil {
 		meta := XrayClientMeta{
-			UUID:          req.UUID,
-			Name:          req.Name,
-			Email:         req.Email,
-			InboundTag:    req.InboundTag,
-			OwnerUsername: ownerUsername,
-			MaxConns:      req.MaxConnections,
+			UUID:              req.UUID,
+			Name:              req.Name,
+			Email:             req.Email,
+			InboundTag:        req.InboundTag,
+			OwnerUsername:     ownerUsername,
+			MaxConns:          req.MaxConnections,
+			DataQuotaBytes:    req.DataQuotaBytes,
+			QuotaAction:       normalizeQuotaAction(req.QuotaAction),
+			QuotaThrottleMbps: quotaThrottleMbpsOrDefault(req.QuotaThrottleMbps),
 		}
 		if req.ExpiresAt != "" {
 			var t time.Time
@@ -2565,6 +2602,8 @@ func handleXrayClientAdd(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := statsStore.UpsertXrayClientMeta(r.Context(), meta); err != nil {
 			xrayLogf("xray: save meta for %s: %v", req.UUID, err)
+		} else {
+			xrayMgr.setNativeQuotaPolicy(&meta)
 		}
 	}
 	xrayMgr.restartIfExternalRunning()
@@ -2579,12 +2618,16 @@ func handleXrayClientUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		UUID           string `json:"uuid"`
-		Name           string `json:"name"`
-		Email          string `json:"email"`
-		ExpiresAt      string `json:"expires_at"`
-		MaxConnections int    `json:"max_connections"`
-		ServerID       string `json:"server_id,omitempty"`
+		UUID              string `json:"uuid"`
+		Name              string `json:"name"`
+		Email             string `json:"email"`
+		ExpiresAt         string `json:"expires_at"`
+		MaxConnections    int    `json:"max_connections"`
+		DataQuotaBytes    int64  `json:"data_quota_bytes"`
+		QuotaAction       string `json:"quota_action"`
+		QuotaThrottleMbps int    `json:"quota_throttle_mbps"`
+		ResetUsage        bool   `json:"reset_usage,omitempty"`
+		ServerID          string `json:"server_id,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
@@ -2592,6 +2635,10 @@ func handleXrayClientUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.UUID == "" {
 		http.Error(w, "uuid required", http.StatusBadRequest)
+		return
+	}
+	if err := validateQuotaConfig(req.DataQuotaBytes, req.QuotaAction, req.QuotaThrottleMbps); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if ms, remote, err := managedServerFromID(r.Context(), statsStore, req.ServerID); err != nil {
@@ -2629,12 +2676,17 @@ func handleXrayClientUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	meta := XrayClientMeta{
-		UUID:          req.UUID,
-		Name:          req.Name,
-		Email:         req.Email,
-		InboundTag:    existing.InboundTag,
-		OwnerUsername: existing.OwnerUsername,
-		MaxConns:      req.MaxConnections,
+		UUID:               req.UUID,
+		Name:               req.Name,
+		Email:              req.Email,
+		InboundTag:         existing.InboundTag,
+		OwnerUsername:      existing.OwnerUsername,
+		MaxConns:           req.MaxConnections,
+		DataQuotaBytes:     req.DataQuotaBytes,
+		QuotaAction:        normalizeQuotaAction(req.QuotaAction),
+		QuotaThrottleMbps:  quotaThrottleMbpsOrDefault(req.QuotaThrottleMbps),
+		TotalUplinkBytes:   existing.TotalUplinkBytes,
+		TotalDownlinkBytes: existing.TotalDownlinkBytes,
 	}
 	if req.ExpiresAt != "" {
 		for _, layout := range []string{time.RFC3339, "2006-01-02T15:04", "2006-01-02"} {
@@ -2648,6 +2700,15 @@ func handleXrayClientUpdate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "update failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if req.ResetUsage {
+		if err := xrayMgr.resetNativeTrafficAccounting(r.Context(), statsStore, req.UUID, existing.Email); err != nil {
+			http.Error(w, "usage reset failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		meta.TotalUplinkBytes = 0
+		meta.TotalDownlinkBytes = 0
+	}
+	xrayMgr.setNativeQuotaPolicy(&meta)
 	if req.Email != "" {
 		if err := xrayMgr.UpdateXrayClientEmail(req.UUID, req.Email); err != nil {
 			xrayLogf("xray: update config email for %s: %v", req.UUID, err)

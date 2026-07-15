@@ -325,6 +325,12 @@ function prepareXrayClientCreator(preferredTag = "") {
   if (uuid) uuid.value = genUUID();
   const maxConns = document.getElementById("xCreateMaxConns");
   if (maxConns) maxConns.value = "0";
+  const quotaGB = document.getElementById("xCreateQuotaGB");
+  if (quotaGB) quotaGB.value = "0";
+  const quotaAction = document.getElementById("xCreateQuotaAction");
+  if (quotaAction) quotaAction.value = "block";
+  const quotaThrottle = document.getElementById("xCreateQuotaThrottle");
+  if (quotaThrottle) quotaThrottle.value = "1";
   const status = document.getElementById("xCreateClientStatus");
   if (status) status.textContent = xrayCreatorInbounds.length ? t("Ready to create a new Xray client.") : t("Waiting for a compatible inbound.");
   updateXrayCreatorInboundLabel();
@@ -351,6 +357,9 @@ async function submitXrayClientCreator(event) {
     name: (document.getElementById("xCreateName")?.value || "").trim(),
     expires_at: isoFromLocal(document.getElementById("xCreateExpiry")?.value || ""),
     max_connections: parseInt(document.getElementById("xCreateMaxConns")?.value || "0", 10) || 0,
+    data_quota_bytes: Math.round((parseFloat(document.getElementById("xCreateQuotaGB")?.value || "0") || 0) * (1024 ** 3)),
+    quota_action: document.getElementById("xCreateQuotaAction")?.value === "throttle" ? "throttle" : "block",
+    quota_throttle_mbps: parseInt(document.getElementById("xCreateQuotaThrottle")?.value || "1", 10) || 1,
     server_id: selectedXrayServer(),
   };
   if (button) button.disabled = true;

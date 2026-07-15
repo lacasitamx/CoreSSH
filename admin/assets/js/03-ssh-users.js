@@ -9,6 +9,10 @@ cancelUserBtn.addEventListener("click", () => {
 function prepareNewSSHUser() {
   userForm.reset();
   fTotpPeriod.value = 60; fTotpWindow.value = 1; fTotpDigits.value = 6;
+  fQuotaAction.value = "block";
+  fQuotaThrottle.value = 1;
+  fUsageDisplay.value = "0 B";
+  fResetUsage.checked = false;
   const heading = document.getElementById("userFormHeading");
   const title = document.getElementById("userFormTitle");
   if (heading) heading.textContent = t("Create user");
@@ -68,11 +72,12 @@ const USER_SORT_EXTRACT = {
   max:      u => u.max_connections || 0,
   up:       u => u.limit_mbps_up || 0,
   down:     u => u.limit_mbps_down || 0,
+  usage:    u => Number(u.total_bytes || ((u.total_uplink_bytes || 0) + (u.total_downlink_bytes || 0)) || 0),
   expires:  u => u.expires_at ? new Date(u.expires_at).getTime() : Infinity,
   owner:    u => String(u.owner_username || "").toLowerCase(),
 };
 // Columns that default to descending on first click (most/online first).
-const USER_SORT_DEFAULT_DESC = new Set(["status", "conn", "max", "up", "down"]);
+const USER_SORT_DEFAULT_DESC = new Set(["status", "conn", "max", "up", "down", "usage"]);
 
 let userSort = { key: "username", dir: "asc" };
 let lastUsersData = [];
@@ -139,6 +144,12 @@ function renderUsers(users) {
     const on = (u.active_conns || 0) > 0;
     if (on) online++;
     if (isExpiredDate(u.expires_at)) expiredCount++;
+    const totalBytes = Number(u.total_bytes || ((u.total_uplink_bytes || 0) + (u.total_downlink_bytes || 0)) || 0);
+    const quotaBytes = Number(u.data_quota_bytes || 0);
+    const quotaLabel = quotaBytes > 0 ? formatBytes(quotaBytes) : "∞";
+    const quotaState = u.quota_exceeded
+      ? (u.quota_action === "throttle" ? ` · ${t("throttled")}` : ` · ${t("blocked")}`)
+      : "";
     const tr = document.createElement("tr");
     const cells = [
       u.username,
@@ -148,6 +159,7 @@ function renderUsers(users) {
       u.max_connections || 0,
       u.limit_mbps_up || 0,
       u.limit_mbps_down || 0,
+      `${formatBytes(totalBytes)} / ${quotaLabel}${quotaState}`,
       u.expires_at ? fmtDate(u.expires_at) : "—",
     ];
     if (isSA) cells.push(u.owner_username || "—");
@@ -194,6 +206,12 @@ function fillUserForm(u) {
   fMaxConn.value        = u.max_connections || "";
   fUp.value             = u.limit_mbps_up || "";
   fDown.value           = u.limit_mbps_down || "";
+  fQuotaGB.value        = u.data_quota_bytes ? (Number(u.data_quota_bytes) / (1024 ** 3)).toFixed(2).replace(/\.00$/, "") : "0";
+  fQuotaAction.value    = u.quota_action === "throttle" ? "throttle" : "block";
+  fQuotaThrottle.value  = u.quota_throttle_mbps || 1;
+  const totalBytes      = Number(u.total_bytes || ((u.total_uplink_bytes || 0) + (u.total_downlink_bytes || 0)) || 0);
+  fUsageDisplay.value   = `${formatBytes(totalBytes)} (↑ ${formatBytes(u.total_uplink_bytes || 0)} · ↓ ${formatBytes(u.total_downlink_bytes || 0)})`;
+  fResetUsage.checked   = false;
   fExpires.value        = u.expires_at ? localFromISO(u.expires_at) : "";
   const heading = document.getElementById("userFormHeading");
   const title = document.getElementById("userFormTitle");
@@ -218,6 +236,10 @@ userForm.addEventListener("submit", async e => {
     expires_at: isoFromLocal(fExpires.value),
     limit_mbps_up:   parseInt(fUp.value||"0",10),
     limit_mbps_down: parseInt(fDown.value||"0",10),
+    data_quota_bytes: Math.round((parseFloat(fQuotaGB.value || "0") || 0) * (1024 ** 3)),
+    quota_action: fQuotaAction.value === "throttle" ? "throttle" : "block",
+    quota_throttle_mbps: parseInt(fQuotaThrottle.value || "1", 10) || 1,
+    reset_usage: !!fResetUsage.checked,
     server_id: selectedSSHServer(),
   };
   try {
@@ -225,6 +247,7 @@ userForm.addEventListener("submit", async e => {
     if (!res.ok) throw new Error(await res.text());
     userStatus.textContent = t("Saved.");
     fPassword.value = "";
+    fResetUsage.checked = false;
     loadUsers();
     if (currentRole === "reseller") loadMe();
     showPanelToast(t("SSH user saved successfully."), "success", t("SSH / SlowDNS"));

@@ -371,6 +371,13 @@ type UserConfig struct {
 	LimitMbpsUp   int `json:"limit_mbps_up"`   // Mbps upstream
 	LimitMbpsDown int `json:"limit_mbps_down"` // Mbps downstream
 
+	// Persistent data quota. Zero means unlimited. When the total uploaded +
+	// downloaded bytes reaches the quota, QuotaAction either blocks traffic or
+	// throttles the account to QuotaThrottleMbps.
+	DataQuotaBytes    int64  `json:"data_quota_bytes"`
+	QuotaAction       string `json:"quota_action"`
+	QuotaThrottleMbps int    `json:"quota_throttle_mbps"`
+
 	// OwnerUsername is the reseller who created this SSH user.  Empty = superadmin-owned.
 	OwnerUsername string `json:"owner_username,omitempty"`
 }
@@ -383,6 +390,17 @@ type UserState struct {
 	mu          sync.Mutex
 	ActiveConns int
 	conns       map[*ssh.ServerConn]struct{} // active SSH connections for this user
+
+	// Persistent per-user tunnel traffic. totalBytes includes reservations made
+	// by concurrent copy loops, while directional totals only include bytes that
+	// were actually written. The pending counters are flushed to PostgreSQL.
+	TotalUplinkBytes     int64
+	TotalDownlinkBytes   int64
+	totalBytes           int64
+	pendingUplinkBytes   int64
+	pendingDownlinkBytes int64
+	quotaLimiter         *rate.Limiter
+	quotaLimiterMbps     int
 }
 
 type UserManager struct {
@@ -1373,6 +1391,11 @@ func (s *Store) EnsureUsersSchema(ctx context.Context) error {
 			expires_at TEXT,
 			limit_mbps_up INT NOT NULL DEFAULT 0,
 			limit_mbps_down INT NOT NULL DEFAULT 0,
+			data_quota_bytes BIGINT NOT NULL DEFAULT 0,
+			quota_action TEXT NOT NULL DEFAULT 'block',
+			quota_throttle_mbps INT NOT NULL DEFAULT 1,
+			total_uplink_bytes BIGINT NOT NULL DEFAULT 0,
+			total_downlink_bytes BIGINT NOT NULL DEFAULT 0,
 			totp_secret TEXT NOT NULL DEFAULT '',
 			totp_period INT NOT NULL DEFAULT 60,
 			totp_window INT NOT NULL DEFAULT 1,
@@ -1386,6 +1409,11 @@ func (s *Store) EnsureUsersSchema(ctx context.Context) error {
 		`ALTER TABLE ssh_users ADD COLUMN IF NOT EXISTS totp_digits INT NOT NULL DEFAULT 6`,
 		`ALTER TABLE ssh_users ADD COLUMN IF NOT EXISTS allow_static_password BOOLEAN NOT NULL DEFAULT FALSE`,
 		`ALTER TABLE ssh_users ADD COLUMN IF NOT EXISTS use_pam BOOLEAN NOT NULL DEFAULT FALSE`,
+		`ALTER TABLE ssh_users ADD COLUMN IF NOT EXISTS data_quota_bytes BIGINT NOT NULL DEFAULT 0`,
+		`ALTER TABLE ssh_users ADD COLUMN IF NOT EXISTS quota_action TEXT NOT NULL DEFAULT 'block'`,
+		`ALTER TABLE ssh_users ADD COLUMN IF NOT EXISTS quota_throttle_mbps INT NOT NULL DEFAULT 1`,
+		`ALTER TABLE ssh_users ADD COLUMN IF NOT EXISTS total_uplink_bytes BIGINT NOT NULL DEFAULT 0`,
+		`ALTER TABLE ssh_users ADD COLUMN IF NOT EXISTS total_downlink_bytes BIGINT NOT NULL DEFAULT 0`,
 		`ALTER TABLE ssh_users ALTER COLUMN password SET DEFAULT ''`,
 	}
 	for _, stmt := range stmts {
@@ -1433,6 +1461,8 @@ func (s *Store) migrateSSHPasswords(ctx context.Context) error {
 func (s *Store) LoadUsers(ctx context.Context) (map[string]*UserState, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT username, password, max_connections, expires_at, limit_mbps_up, limit_mbps_down,
+		       COALESCE(data_quota_bytes, 0), COALESCE(quota_action, 'block'), COALESCE(quota_throttle_mbps, 1),
+		       COALESCE(total_uplink_bytes, 0), COALESCE(total_downlink_bytes, 0),
 		       COALESCE(totp_secret, ''), COALESCE(totp_period, 60), COALESCE(totp_window, 1),
 		       COALESCE(totp_digits, 6), COALESCE(allow_static_password, FALSE),
 		       COALESCE(use_pam, FALSE), COALESCE(owner_username, '')
@@ -1451,6 +1481,11 @@ func (s *Store) LoadUsers(ctx context.Context) (map[string]*UserState, error) {
 			expiresAt           sql.NullString
 			limitUp             int
 			limitDown           int
+			dataQuotaBytes      int64
+			quotaAction         string
+			quotaThrottleMbps   int
+			totalUplinkBytes    int64
+			totalDownlinkBytes  int64
 			totpSecret          string
 			totpPeriod          int
 			totpWindow          int
@@ -1460,6 +1495,7 @@ func (s *Store) LoadUsers(ctx context.Context) (map[string]*UserState, error) {
 			ownerUsername       string
 		)
 		if err := rows.Scan(&username, &password, &maxConnections, &expiresAt, &limitUp, &limitDown,
+			&dataQuotaBytes, &quotaAction, &quotaThrottleMbps, &totalUplinkBytes, &totalDownlinkBytes,
 			&totpSecret, &totpPeriod, &totpWindow, &totpDigits, &allowStaticPassword, &usePAM, &ownerUsername); err != nil {
 			return nil, err
 		}
@@ -1474,6 +1510,9 @@ func (s *Store) LoadUsers(ctx context.Context) (map[string]*UserState, error) {
 			MaxConnections:      maxConnections,
 			LimitMbpsUp:         limitUp,
 			LimitMbpsDown:       limitDown,
+			DataQuotaBytes:      dataQuotaBytes,
+			QuotaAction:         normalizeQuotaAction(quotaAction),
+			QuotaThrottleMbps:   quotaThrottleMbps,
 			TOTPSecret:          totpSecret,
 			TOTPPeriod:          totpPeriod,
 			TOTPWindow:          totpWindow,
@@ -1484,6 +1523,7 @@ func (s *Store) LoadUsers(ctx context.Context) (map[string]*UserState, error) {
 		}
 
 		st := &UserState{Cfg: cfg}
+		initSSHRuntimeUsage(st, totalUplinkBytes, totalDownlinkBytes)
 		if expiresAt.Valid && expiresAt.String != "" {
 			t, err := time.Parse(time.RFC3339, expiresAt.String)
 			if err != nil {
@@ -1510,15 +1550,19 @@ func (s *Store) UpsertUser(ctx context.Context, u UserConfig) error {
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO ssh_users (
 			username, password, max_connections, expires_at, limit_mbps_up, limit_mbps_down,
+			data_quota_bytes, quota_action, quota_throttle_mbps,
 			totp_secret, totp_period, totp_window, totp_digits, allow_static_password, use_pam, owner_username
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 		ON CONFLICT (username) DO UPDATE
 		SET password             = EXCLUDED.password,
 		    max_connections      = EXCLUDED.max_connections,
 		    expires_at           = EXCLUDED.expires_at,
 		    limit_mbps_up        = EXCLUDED.limit_mbps_up,
 		    limit_mbps_down      = EXCLUDED.limit_mbps_down,
+		    data_quota_bytes     = EXCLUDED.data_quota_bytes,
+		    quota_action         = EXCLUDED.quota_action,
+		    quota_throttle_mbps  = EXCLUDED.quota_throttle_mbps,
 		    totp_secret          = EXCLUDED.totp_secret,
 		    totp_period          = EXCLUDED.totp_period,
 		    totp_window          = EXCLUDED.totp_window,
@@ -1527,6 +1571,7 @@ func (s *Store) UpsertUser(ctx context.Context, u UserConfig) error {
 		    use_pam              = EXCLUDED.use_pam`,
 		// owner_username is intentionally excluded from UPDATE — ownership is set at creation only.
 		u.Username, storedPassword, u.MaxConnections, u.ExpiresAt, u.LimitMbpsUp, u.LimitMbpsDown,
+		u.DataQuotaBytes, normalizeQuotaAction(u.QuotaAction), quotaThrottleMbpsOrDefault(u.QuotaThrottleMbps),
 		u.TOTPSecret, u.TOTPPeriod, u.TOTPWindow, u.TOTPDigits, u.AllowStaticPassword, u.UsePAM, u.OwnerUsername)
 	return err
 }
@@ -1739,6 +1784,13 @@ type UserDTO struct {
 	ExpiresAt           *time.Time `json:"expires_at,omitempty"`
 	LimitUpMbps         int        `json:"limit_mbps_up"`
 	LimitDownMbps       int        `json:"limit_mbps_down"`
+	DataQuotaBytes      int64      `json:"data_quota_bytes"`
+	QuotaAction         string     `json:"quota_action"`
+	QuotaThrottleMbps   int        `json:"quota_throttle_mbps"`
+	TotalUplinkBytes    int64      `json:"total_uplink_bytes"`
+	TotalDownlinkBytes  int64      `json:"total_downlink_bytes"`
+	TotalBytes          int64      `json:"total_bytes"`
+	QuotaExceeded       bool       `json:"quota_exceeded"`
 	TOTPSecret          string     `json:"totp_secret,omitempty"`
 	TOTPPeriod          int        `json:"totp_period"`
 	TOTPWindow          int        `json:"totp_window"`
@@ -1773,6 +1825,9 @@ func handleListUsers(w http.ResponseWriter, r *http.Request) {
 		cfg := u.Cfg
 		expires := u.ExpiresAt
 		u.mu.Unlock()
+		totalUp := atomic.LoadInt64(&u.TotalUplinkBytes)
+		totalDown := atomic.LoadInt64(&u.TotalDownlinkBytes)
+		totalBytes := atomic.LoadInt64(&u.totalBytes)
 
 		// Resellers only see their own users
 		if sess != nil && sess.Role == RoleReseller && cfg.OwnerUsername != sess.Username {
@@ -1786,6 +1841,13 @@ func handleListUsers(w http.ResponseWriter, r *http.Request) {
 			ExpiresAt:           expires,
 			LimitUpMbps:         cfg.LimitMbpsUp,
 			LimitDownMbps:       cfg.LimitMbpsDown,
+			DataQuotaBytes:      cfg.DataQuotaBytes,
+			QuotaAction:         normalizeQuotaAction(cfg.QuotaAction),
+			QuotaThrottleMbps:   quotaThrottleMbpsOrDefault(cfg.QuotaThrottleMbps),
+			TotalUplinkBytes:    totalUp,
+			TotalDownlinkBytes:  totalDown,
+			TotalBytes:          totalBytes,
+			QuotaExceeded:       cfg.DataQuotaBytes > 0 && totalBytes >= cfg.DataQuotaBytes,
 			TOTPSecret:          cfg.TOTPSecret,
 			TOTPPeriod:          cfg.TOTPPeriod,
 			TOTPWindow:          cfg.TOTPWindow,
@@ -1809,6 +1871,10 @@ type UserPayload struct {
 	ExpiresAt           string  `json:"expires_at"`
 	LimitUpMbps         int     `json:"limit_mbps_up"`
 	LimitDownMbps       int     `json:"limit_mbps_down"`
+	DataQuotaBytes      int64   `json:"data_quota_bytes"`
+	QuotaAction         string  `json:"quota_action"`
+	QuotaThrottleMbps   int     `json:"quota_throttle_mbps"`
+	ResetUsage          bool    `json:"reset_usage,omitempty"`
 	TOTPSecret          string  `json:"totp_secret"`
 	TOTPPeriod          int     `json:"totp_period"`
 	TOTPWindow          int     `json:"totp_window"`
@@ -1837,6 +1903,10 @@ func handleCreateUser(store *Store) http.HandlerFunc {
 		}
 		if p.Username == "" {
 			http.Error(w, "username required", http.StatusBadRequest)
+			return
+		}
+		if err := validateQuotaConfig(p.DataQuotaBytes, p.QuotaAction, p.QuotaThrottleMbps); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 
@@ -1964,6 +2034,9 @@ func handleCreateUser(store *Store) http.HandlerFunc {
 			ExpiresAt:           p.ExpiresAt,
 			LimitMbpsUp:         p.LimitUpMbps,
 			LimitMbpsDown:       p.LimitDownMbps,
+			DataQuotaBytes:      p.DataQuotaBytes,
+			QuotaAction:         normalizeQuotaAction(p.QuotaAction),
+			QuotaThrottleMbps:   quotaThrottleMbpsOrDefault(p.QuotaThrottleMbps),
 			TOTPSecret:          strings.TrimSpace(p.TOTPSecret),
 			TOTPPeriod:          p.TOTPPeriod,
 			TOTPWindow:          p.TOTPWindow,
@@ -1978,9 +2051,14 @@ func handleCreateUser(store *Store) http.HandlerFunc {
 			http.Error(w, "db error", http.StatusInternalServerError)
 			return
 		}
-
 		// Force-disconnect all active sessions for this user so new config applies.
 		userMgr.DisconnectUser(p.Username)
+		if p.ResetUsage {
+			if err := resetSSHUserTrafficAccounting(ctx, store, p.Username); err != nil {
+				http.Error(w, "could not reset usage", http.StatusInternalServerError)
+				return
+			}
+		}
 
 		reloadUsersFromDB(ctx, store)
 		w.WriteHeader(http.StatusCreated)
@@ -2191,6 +2269,10 @@ func passwordCallback(meta ssh.ConnMetadata, pass []byte) (*ssh.Permissions, err
 			log.Printf("user %s tried to connect but account is expired", meta.User())
 			return nil, fmt.Errorf("account expired")
 		}
+		if sshUserQuotaBlocked(u) {
+			log.Printf("user %s tried to connect after reaching the data quota", meta.User())
+			return nil, errDataQuotaExceeded
+		}
 		if err := ownerIsActive(u.Cfg.OwnerUsername); err != nil {
 			return nil, fmt.Errorf("authentication failed: %w", err)
 		}
@@ -2245,6 +2327,9 @@ func publicKeyCallback(meta ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissio
 	if u.ExpiresAt != nil && time.Now().After(*u.ExpiresAt) {
 		log.Printf("user %s tried to connect but account is expired", meta.User())
 		return nil, fmt.Errorf("account expired")
+	}
+	if sshUserQuotaBlocked(u) {
+		return nil, errDataQuotaExceeded
 	}
 	if err := ownerIsActive(u.Cfg.OwnerUsername); err != nil {
 		return nil, fmt.Errorf("authentication failed: %w", err)
@@ -2377,6 +2462,10 @@ type directTCPIPReq struct {
 }
 
 func handleDirectTCPIP(newChan ssh.NewChannel, u *UserState, upLimiter, downLimiter *rate.Limiter) {
+	if sshUserQuotaBlocked(u) {
+		newChan.Reject(ssh.Prohibited, "data quota exceeded")
+		return
+	}
 	var req directTCPIPReq
 	if err := ssh.Unmarshal(newChan.ExtraData(), &req); err != nil {
 		newChan.Reject(ssh.Prohibited, "bad direct-tcpip request")
@@ -2421,7 +2510,7 @@ func handleDirectTCPIP(newChan ssh.NewChannel, u *UserState, upLimiter, downLimi
 
 	// upstream: SSH channel -> backend, in its own goroutine.
 	go func() {
-		_, _ = copyWithRateLimit(backend, ch, upLimiter)
+		_, _ = copyWithRateLimit(sshQuotaWriter{w: backend, user: u, uplink: true}, ch, upLimiter)
 		// Signal to the backend that we are done writing.
 		if cw, ok := backend.(interface{ CloseWrite() error }); ok {
 			_ = cw.CloseWrite()
@@ -2432,7 +2521,7 @@ func handleDirectTCPIP(newChan ssh.NewChannel, u *UserState, upLimiter, downLimi
 	// downstream: backend -> SSH channel, run in this goroutine.
 	// handleDirectTCPIP already runs as its own goroutine (see handleConn),
 	// so reusing it here avoids spawning a third goroutine per channel.
-	_, _ = copyWithRateLimit(ch, backend, downLimiter)
+	_, _ = copyWithRateLimit(sshQuotaWriter{w: ch, user: u, uplink: false}, backend, downLimiter)
 	closeAll()
 }
 
@@ -3074,6 +3163,7 @@ func main() {
 	// Optional: initialize interface totals persistence (best-effort).
 	if store != nil {
 		statsStore = store
+		startSSHUserTrafficFlusher(store)
 		ctx := context.Background()
 		if err := store.EnsureXrayClientsSchema(ctx); err != nil {
 			log.Printf("xray clients table: %v", err)

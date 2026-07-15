@@ -481,6 +481,16 @@ func (s *nativeMuxSession) writeBackendItem(item nativeMuxUplinkItem) bool {
 			return false
 		}
 	}
+	quotaLimiter, quotaErr := reserveNativePacketQuota(s.upMeter, len(payload))
+	if quotaErr != nil {
+		return false
+	}
+	if quotaLimiter != nil {
+		if err := quotaLimiter.WaitN(s.ctx, len(payload)); err != nil {
+			finishNativePacketQuota(s.upMeter, len(payload), 0)
+			return false
+		}
+	}
 
 	var n int
 	var err error
@@ -492,6 +502,7 @@ func (s *nativeMuxSession) writeBackendItem(item nativeMuxUplinkItem) bool {
 			if isNativeDNSSinkTarget(item.host) || invalidNativeDestination(item.host, item.port) {
 				// AdGuard/blocked endpoints must be ignored at the cheapest possible
 				// point. Do not resolve, dial, log loudly, or keep the mux child busy.
+				finishNativePacketQuota(s.upMeter, len(payload), 0)
 				xrayTracef("native xray: VLESS mux UDP fast-ignored override sink session=%d target=%s:%d", s.id, item.host, item.port)
 				return true
 			}
@@ -503,6 +514,7 @@ func (s *nativeMuxSession) writeBackendItem(item nativeMuxUplinkItem) bool {
 				s.lastUDPPort = item.port
 				s.lastUDPAddr = addr
 			} else {
+				finishNativePacketQuota(s.upMeter, len(payload), 0)
 				xrayTracef("native xray: VLESS mux UDP override resolve failed session=%d target=%s:%d: %v", s.id, item.host, item.port, rerr)
 				return true
 			}
@@ -512,9 +524,7 @@ func (s *nativeMuxSession) writeBackendItem(item nativeMuxUplinkItem) bool {
 	if s.network == nativeMuxNetworkUDP && err == nil {
 		_ = s.udp.SetReadDeadline(time.Now().Add(nativeMuxUDPIdleTimeout()))
 	}
-	if n > 0 {
-		s.upMeter.add(n)
-	}
+	finishNativePacketQuota(s.upMeter, len(payload), n)
 	if err != nil {
 		xrayLogf("native xray: VLESS mux backend write failed session=%d: %v", s.id, err)
 		return false
@@ -571,14 +581,25 @@ func (s *nativeMuxSession) readTCPBackendLoop() {
 		if err := s.waitDownRate(n); err != nil {
 			return
 		}
-		s.downMeter.add(n)
+		quotaLimiter, quotaErr := reserveNativePacketQuota(s.downMeter, n)
+		if quotaErr != nil {
+			return
+		}
+		if quotaLimiter != nil {
+			if err := quotaLimiter.WaitN(s.ctx, n); err != nil {
+				finishNativePacketQuota(s.downMeter, n, 0)
+				return
+			}
+		}
 		s.writeMu.Lock()
 		werr := writeNativeMuxData(s.client, s.id, nativeMuxStatusKeep, buf[:n])
 		s.writeMu.Unlock()
 		if werr != nil {
+			finishNativePacketQuota(s.downMeter, n, 0)
 			xrayLogf("native xray: VLESS mux TCP client write failed session=%d: %v", s.id, werr)
 			return
 		}
+		finishNativePacketQuota(s.downMeter, n, n)
 	}
 }
 
@@ -602,7 +623,16 @@ func (s *nativeMuxSession) readUDPBackendLoop() bool {
 		if err := s.waitDownRate(n); err != nil {
 			return true
 		}
-		s.downMeter.add(n)
+		quotaLimiter, quotaErr := reserveNativePacketQuota(s.downMeter, n)
+		if quotaErr != nil {
+			return true
+		}
+		if quotaLimiter != nil {
+			if err := quotaLimiter.WaitN(s.ctx, n); err != nil {
+				finishNativePacketQuota(s.downMeter, n, 0)
+				return true
+			}
+		}
 		s.writeMu.Lock()
 		// Include the UDP source endpoint on XUDP responses so clients that rely on
 		// full-cone packet addressing can associate the datagram with the correct
@@ -610,9 +640,11 @@ func (s *nativeMuxSession) readUDPBackendLoop() bool {
 		werr := writeNativeMuxPacketData(s.client, s.id, nativeMuxStatusKeep, buf[:n], addr, s.xudp)
 		s.writeMu.Unlock()
 		if werr != nil {
+			finishNativePacketQuota(s.downMeter, n, 0)
 			xrayLogf("native xray: VLESS mux UDP client write failed session=%d: %v", s.id, werr)
 			return true
 		}
+		finishNativePacketQuota(s.downMeter, n, n)
 	}
 }
 

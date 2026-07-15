@@ -60,10 +60,16 @@ func nativeVLESSUDPTunnel(client io.ReadWriteCloser, backend net.Conn, uuid, ema
 			if err := waitNativeRate(up, len(payload)); err != nil {
 				return
 			}
-			n, err := backend.Write(payload)
-			if n > 0 {
-				upMeter.add(n)
+			quotaLimiter, err := reserveNativePacketQuota(upMeter, len(payload))
+			if err != nil {
+				return
 			}
+			if err := waitNativeRate(quotaLimiter, len(payload)); err != nil {
+				finishNativePacketQuota(upMeter, len(payload), 0)
+				return
+			}
+			n, err := backend.Write(payload)
+			finishNativePacketQuota(upMeter, len(payload), n)
 			if err != nil {
 				xrayLogf("native xray: VLESS UDP backend write failed: %v", err)
 				return
@@ -94,11 +100,20 @@ func nativeVLESSUDPTunnel(client io.ReadWriteCloser, backend net.Conn, uuid, ema
 			if err := waitNativeRate(down, n); err != nil {
 				return
 			}
+			quotaLimiter, err := reserveNativePacketQuota(downMeter, n)
+			if err != nil {
+				return
+			}
+			if err := waitNativeRate(quotaLimiter, n); err != nil {
+				finishNativePacketQuota(downMeter, n, 0)
+				return
+			}
 			if err := writeVLESSLengthPacket(client, buf[:n]); err != nil {
+				finishNativePacketQuota(downMeter, n, 0)
 				xrayLogf("native xray: VLESS UDP client write failed: %v", err)
 				return
 			}
-			downMeter.add(n)
+			finishNativePacketQuota(downMeter, n, n)
 		}
 	})
 
@@ -336,10 +351,16 @@ func nativeVMessUDPTunnel(client nativeVMessStream, backend net.Conn, uuid, emai
 			if err := waitNativeRate(up, len(pkt)); err != nil {
 				return
 			}
-			n, err := backend.Write(pkt)
-			if n > 0 {
-				upMeter.add(n)
+			quotaLimiter, err := reserveNativePacketQuota(upMeter, len(pkt))
+			if err != nil {
+				return
 			}
+			if err := waitNativeRate(quotaLimiter, len(pkt)); err != nil {
+				finishNativePacketQuota(upMeter, len(pkt), 0)
+				return
+			}
+			n, err := backend.Write(pkt)
+			finishNativePacketQuota(upMeter, len(pkt), n)
 			if err != nil {
 				xrayLogf("native xray: VMess UDP backend write failed: %v", err)
 				return
@@ -370,11 +391,20 @@ func nativeVMessUDPTunnel(client nativeVMessStream, backend net.Conn, uuid, emai
 			if err := waitNativeRate(down, n); err != nil {
 				return
 			}
+			quotaLimiter, err := reserveNativePacketQuota(downMeter, n)
+			if err != nil {
+				return
+			}
+			if err := waitNativeRate(quotaLimiter, n); err != nil {
+				finishNativePacketQuota(downMeter, n, 0)
+				return
+			}
 			if err := client.WritePacket(buf[:n]); err != nil {
+				finishNativePacketQuota(downMeter, n, 0)
 				xrayLogf("native xray: VMess UDP client write failed: %v", err)
 				return
 			}
-			downMeter.add(n)
+			finishNativePacketQuota(downMeter, n, n)
 		}
 	})
 

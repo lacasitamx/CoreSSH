@@ -683,7 +683,12 @@ function clientTrafficHTML(c) {
   const up = Number(c.uplink_bytes || 0);
   const down = Number(c.downlink_bytes || 0);
   const total = Number(c.total_bytes || (up + down) || 0);
-  return `${escapeHTML(formatBytes(total))}<div class="hint">↑ ${escapeHTML(formatBytes(up))} · ↓ ${escapeHTML(formatBytes(down))}</div>`;
+  const quota = Number(c.data_quota_bytes || 0);
+  const quotaLabel = quota > 0 ? formatBytes(quota) : "∞";
+  const state = c.quota_exceeded
+    ? (c.quota_action === "throttle" ? ` · ${t("throttled")}` : ` · ${t("blocked")}`)
+    : "";
+  return `${escapeHTML(formatBytes(total))} / ${escapeHTML(quotaLabel)}${escapeHTML(state)}<div class="hint">↑ ${escapeHTML(formatBytes(up))} · ↓ ${escapeHTML(formatBytes(down))}</div>`;
 }
 
 function updateCell(row, name, html) {

@@ -273,7 +273,7 @@
           <table>
             <thead><tr>
               <th data-sort-key="username">User</th><th data-sort-key="status">Status</th><th data-sort-key="auth">Auth</th>
-              <th data-sort-key="conn">Conn</th><th data-sort-key="max">Max</th><th data-sort-key="up">Up</th><th data-sort-key="down">Dn</th><th data-sort-key="expires">Expires</th>
+              <th data-sort-key="conn">Conn</th><th data-sort-key="max">Max</th><th data-sort-key="up">Up</th><th data-sort-key="down">Dn</th><th data-sort-key="usage">Usage / Quota</th><th data-sort-key="expires">Expires</th>
               <th id="ownerColHead" data-sort-key="owner" class="superadmin-only hidden">Owner</th>
               <th>Actions</th>
             </tr></thead>
@@ -310,6 +310,11 @@
               <div class="field"><label>Expires at</label><input id="fExpires" type="datetime-local"/></div>
               <div class="field"><label>Max Upload (Mb/s)</label><input id="fUp" type="number" min="0" placeholder="0 = default"/></div>
               <div class="field"><label>Max Download (Mb/s)</label><input id="fDown" type="number" min="0" placeholder="0 = default"/></div>
+              <div class="field"><label>Data quota (GB) <span class="hint">0 = unlimited · 1024 = 1 TB</span></label><input id="fQuotaGB" type="number" min="0" step="0.01" placeholder="0"/></div>
+              <div class="field"><label>When quota is reached</label><select id="fQuotaAction"><option value="block">Block user</option><option value="throttle">Reduce speed</option></select></div>
+              <div class="field"><label>Post-quota speed (Mb/s)</label><input id="fQuotaThrottle" type="number" min="1" value="1"/></div>
+              <div class="field"><label>Current usage</label><input id="fUsageDisplay" readonly value="0 B"/></div>
+              <div class="field"><label>Reset traffic counter</label><input id="fResetUsage" type="checkbox" style="width:16px;height:16px;margin-top:10px;"/></div>
             </div>
             <div class="form-actions">
               <button class="btn" type="submit" id="saveUserBtn">Save user</button>
@@ -372,6 +377,11 @@
         <div class="field"><label>Email / Label</label><input id="editXrayEmail" autocomplete="off"/></div>
         <div class="field"><label>Expiry Date</label><input type="datetime-local" id="editXrayExpiry" style="color-scheme:dark;"/></div>
         <div class="field"><label>Max Connections <span class="hint">(0 = unlimited)</span></label><input type="number" min="0" id="editXrayMaxConns"/></div>
+        <div class="field"><label>Data quota (GB) <span class="hint">0 = unlimited · 1024 = 1 TB</span></label><input type="number" min="0" step="0.01" id="editXrayQuotaGB"/></div>
+        <div class="field"><label>When quota is reached</label><select id="editXrayQuotaAction"><option value="block">Block user</option><option value="throttle">Reduce speed</option></select></div>
+        <div class="field"><label>Post-quota speed (Mb/s)</label><input type="number" min="1" id="editXrayQuotaThrottle" value="1"/></div>
+        <div class="field"><label>Current usage</label><input id="editXrayUsage" readonly value="0 B"/></div>
+        <div class="field"><label>Reset traffic counter</label><input id="editXrayResetUsage" type="checkbox" style="width:16px;height:16px;margin-top:10px;"/></div>
       </div>
       <div class="form-actions" style="margin-top:8px;">
         <button class="btn btn-sm" onclick="saveEditXrayClient()">Save Changes</button>
@@ -428,6 +438,9 @@
             <div class="field"><label>Email / identificação</label><input id="xCreateEmail" autocomplete="off" placeholder="cliente@example"/></div>
             <div class="field"><label>Expira em</label><input id="xCreateExpiry" type="datetime-local"/></div>
             <div class="field"><label>Máximo de conexões <span class="hint">0 = ilimitado</span></label><input id="xCreateMaxConns" type="number" min="0" value="0"/></div>
+            <div class="field"><label>Cota de dados (GB) <span class="hint">0 = ilimitado · 1024 = 1 TB</span></label><input id="xCreateQuotaGB" type="number" min="0" step="0.01" value="0"/></div>
+            <div class="field"><label>Ao atingir a cota</label><select id="xCreateQuotaAction"><option value="block">Bloquear usuário</option><option value="throttle">Reduzir velocidade</option></select></div>
+            <div class="field"><label>Velocidade após a cota (Mb/s)</label><input id="xCreateQuotaThrottle" type="number" min="1" value="1"/></div>
           </div>
           <div class="form-actions"><button class="btn" id="xCreateClientBtn" type="submit">Criar usuário</button><button class="btn btn-ghost" id="xCreateCancelBtn" type="button">Voltar aos usuários</button></div>
           <div class="statusbar"><span id="xCreateClientStatus">Preencha os dados do novo cliente.</span></div>
@@ -1542,15 +1555,15 @@
 <!-- app.js was split into ordered modules for maintainability. They are plain
      classic scripts sharing one global scope; `defer` preserves execution order,
      so behavior is identical to the old single file. Keep this load order. -->
-<script defer src="assets/js/01-core.js?v=20260714pamfix1"></script>
+<script defer src="assets/js/01-core.js?v=20260714quota1"></script>
 <script defer src="assets/js/02-shell.js?v=20260714pamfix1"></script>
-<script defer src="assets/js/03-ssh-users.js?v=20260714pamfix1"></script>
-<script defer src="assets/js/04-xray.js?v=20260714pamfix1"></script>
+<script defer src="assets/js/03-ssh-users.js?v=20260714quota1"></script>
+<script defer src="assets/js/04-xray.js?v=20260714quota1"></script>
 <script defer src="assets/js/05-resellers.js?v=20260714pamfix1"></script>
 <script defer src="assets/js/06-servers.js?v=20260714pamfix1"></script>
 <script defer src="assets/js/07-stats-logs.js?v=20260714pamfix1"></script>
 <script defer src="assets/js/08-server-config.js?v=20260714pamfix1"></script>
-<script defer src="assets/js/09-xray-wizard.js?v=20260714pamfix1"></script>
+<script defer src="assets/js/09-xray-wizard.js?v=20260714quota1"></script>
 <script defer src="assets/js/11-update-status.js?v=20260714pamfix1"></script>
 <script defer src="assets/js/12-bot.js?v=20260714pamfix1"></script>
 <script defer src="assets/js/10-boot.js?v=20260714pamfix1"></script>

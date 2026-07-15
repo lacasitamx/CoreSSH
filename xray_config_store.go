@@ -64,7 +64,8 @@ func (s *Store) UpsertXrayConfig(ctx context.Context, configKey string, data []b
 
 func (s *Store) ListXrayClientsByInbound(ctx context.Context, inboundTag string) ([]*XrayClientMeta, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT uuid, name, email, inbound_tag, COALESCE(owner_username, ''), expires_at, max_conns, created_at,
+		SELECT uuid, name, email, inbound_tag, COALESCE(owner_username, ''), expires_at, max_conns,
+		       COALESCE(data_quota_bytes, 0), COALESCE(quota_action, 'block'), COALESCE(quota_throttle_mbps, 1), created_at,
 		       COALESCE(total_uplink_bytes, 0), COALESCE(total_downlink_bytes, 0), last_active, COALESCE(active_connections, 0)
 		FROM xray_clients WHERE inbound_tag = $1 ORDER BY created_at DESC`, inboundTag)
 	if err != nil {

@@ -352,6 +352,10 @@ func (ib *nativeInbound) handleVLESS(stream net.Conn, remote net.Addr) {
 		xrayLogf("native xray: inbound %q rejected unknown VLESS uuid from %s", ib.tag, remote)
 		return
 	}
+	if xrayMgr.nativeQuotaBlocked(client.uuid) {
+		xrayLogf("native xray: inbound %q rejected VLESS user %s after data quota", ib.tag, client.email)
+		return
+	}
 
 	if addonLen := int(head[17]); addonLen > 0 {
 		if _, err := io.CopyN(io.Discard, stream, int64(addonLen)); err != nil {
@@ -678,7 +682,7 @@ func nativeTunnel(client io.ReadWriteCloser, backend net.Conn, uuid, email strin
 	xrayGo("native xray TCP uplink", func() { // client -> backend
 		defer wg.Done()
 		defer closeAll()
-		_, _ = copyWithRateLimit(meteredWriter{w: backend, meter: upMeter}, client, up)
+		_, _ = copyWithRateLimit(xrayQuotaMeteredWriter{w: backend, meter: upMeter}, client, up)
 		if cw, ok := backend.(interface{ CloseWrite() error }); ok {
 			_ = cw.CloseWrite()
 		}
@@ -688,7 +692,7 @@ func nativeTunnel(client io.ReadWriteCloser, backend net.Conn, uuid, email strin
 	xrayGo("native xray TCP downlink", func() { // backend -> client
 		defer wg.Done()
 		defer closeAll()
-		_, _ = copyWithRateLimit(meteredWriter{w: client, meter: downMeter}, backend, down)
+		_, _ = copyWithRateLimit(xrayQuotaMeteredWriter{w: client, meter: downMeter}, backend, down)
 	})
 
 	wg.Wait()
@@ -700,15 +704,17 @@ func nativeTunnel(client io.ReadWriteCloser, backend net.Conn, uuid, email strin
 // trafficMeter accumulates bytes for one direction and flushes them to the
 // stats manager in batches to avoid locking on every write.
 type trafficMeter struct {
-	uuid   string
-	email  string
-	uplink bool
-	n      int64
+	uuid            string
+	email           string
+	uplink          bool
+	n               int64
+	quotaGeneration uint64
 }
 
 const trafficFlushThreshold = 1024 * 1024
 
 func (t *trafficMeter) add(n int) {
+	t.syncQuotaGeneration()
 	t.n += int64(n)
 	if t.n >= trafficFlushThreshold {
 		t.flush()
@@ -716,29 +722,28 @@ func (t *trafficMeter) add(n int) {
 }
 
 func (t *trafficMeter) flush() {
+	t.syncQuotaGeneration()
 	if t.n == 0 || t.email == "" {
 		return
 	}
 	if t.uplink {
-		xrayMgr.recordNativeTraffic(t.uuid, t.email, t.n, 0)
+		xrayMgr.recordNativeTraffic(t.uuid, t.email, t.n, 0, t.quotaGeneration)
 	} else {
-		xrayMgr.recordNativeTraffic(t.uuid, t.email, 0, t.n)
+		xrayMgr.recordNativeTraffic(t.uuid, t.email, 0, t.n, t.quotaGeneration)
 	}
 	t.n = 0
 }
 
-// meteredWriter counts bytes as they are written through to the wrapped writer.
-type meteredWriter struct {
-	w     io.Writer
-	meter *trafficMeter
-}
-
-func (mw meteredWriter) Write(p []byte) (int, error) {
-	n, err := mw.w.Write(p)
-	if n > 0 {
-		mw.meter.add(n)
+func (t *trafficMeter) syncQuotaGeneration() {
+	generation := xrayMgr.nativeQuotaGeneration(t.uuid)
+	if t.quotaGeneration == 0 {
+		t.quotaGeneration = generation
+		return
 	}
-	return n, err
+	if generation != t.quotaGeneration {
+		t.n = 0
+		t.quotaGeneration = generation
+	}
 }
 
 func (ib *nativeInbound) upLimiter() *rate.Limiter   { return newByteLimiter(ib.upBytesPerSec) }
