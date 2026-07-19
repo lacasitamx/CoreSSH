@@ -264,7 +264,7 @@ func (ib *nativeInbound) acceptLoop(ln net.Listener) {
 			xrayLogf("native xray: accept error on %s: %v", ln.Addr(), err)
 			continue
 		}
-		counted, ok := wrapTrackedNativeTransportConn(c)
+		counted, ok := waitWrapTrackedNativeTransportConn(c)
 		if !ok {
 			time.Sleep(nativeOverloadBackoff)
 			continue
