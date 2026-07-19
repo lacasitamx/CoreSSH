@@ -189,7 +189,14 @@ func wrapTrackedNativeTransportConn(c net.Conn) (net.Conn, bool) {
 		_ = c.Close()
 		return nil, false
 	}
+	return registerTrackedNativeTransportConn(c, release)
+}
 
+// registerTrackedNativeTransportConn finishes registration when the caller has
+// already reserved a transport slot. Keeping reservation and Accept separate is
+// what lets the production listener apply kernel/socket backpressure instead of
+// accepting and immediately resetting connections at capacity.
+func registerTrackedNativeTransportConn(c net.Conn, release func()) (net.Conn, bool) {
 	counted := &nativeCountedConn{Conn: c, release: release}
 	counted.onClose = func() {
 		nativeTransportRegistry.Lock()
@@ -206,6 +213,25 @@ func wrapTrackedNativeTransportConn(c net.Conn) (net.Conn, bool) {
 	nativeTransportRegistry.conns[counted] = struct{}{}
 	nativeTransportRegistry.Unlock()
 	return counted, true
+}
+
+// waitWrapTrackedNativeTransportConn is used by raw native accept loops. It
+// holds at most one already-accepted socket while capacity is busy, leaving the
+// rest in the kernel backlog instead of creating origin-side resets/502s.
+func waitWrapTrackedNativeTransportConn(c net.Conn) (net.Conn, bool) {
+	if c == nil {
+		return nil, false
+	}
+	configureNativeTransportSocket(c)
+	for nativeTransportAccepting.Load() {
+		release, ok := acquireNativeTransportConnection()
+		if ok {
+			return registerTrackedNativeTransportConn(c, release)
+		}
+		time.Sleep(nativeOverloadBackoff)
+	}
+	_ = c.Close()
+	return nil, false
 }
 
 func beginNativeTransportAccepting() {
@@ -229,23 +255,33 @@ func closeAllNativeTransportConnections() {
 }
 
 // nativeLimitedListener applies the same pre-authentication ceiling to XHTTP
-// listeners. net/http receives only sockets that own a slot; rejected sockets
-// are closed before it can allocate a per-connection goroutine or perform TLS.
+// listeners. net/http receives only sockets that own a slot; when capacity is
+// busy, new sockets remain in the kernel backlog until a slot becomes available.
 type nativeLimitedListener struct {
 	net.Listener
 }
 
 func (l nativeLimitedListener) Accept() (net.Conn, error) {
 	for {
+		// Reserve before accepting. When the transport is at capacity, connections
+		// remain queued by the kernel rather than being accepted and reset, which is
+		// the behavior CDNs commonly report as an origin 502.
+		release, ok := acquireNativeTransportConnection()
+		if !ok {
+			time.Sleep(nativeOverloadBackoff)
+			continue
+		}
 		c, err := l.Listener.Accept()
 		if err != nil {
+			release()
 			return nil, err
 		}
-		if counted, ok := wrapTrackedNativeTransportConn(c); ok {
+		configureNativeTransportSocket(c)
+		if counted, ok := registerTrackedNativeTransportConn(c, release); ok {
 			return counted, nil
 		}
-		// At the ceiling, a hot accept/close loop can itself consume a CPU core.
-		// A short fixed backoff also lets the kernel backlog absorb brief spikes.
+		// Shutdown may race Accept. Registration closes the socket and releases the
+		// slot; the next Accept observes the listener close.
 		time.Sleep(nativeOverloadBackoff)
 	}
 }

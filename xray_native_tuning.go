@@ -17,17 +17,20 @@ type XrayNativeTuning struct {
 
 const (
 	defaultNativeRuntimeGOMAXPROCS = 0
-	defaultNativeMuxGlobalSessions = 8192
-	defaultNativeMaxConnections    = 4096
-	defaultNativeMaxXHTTPRequests  = 8192
+	defaultNativeMuxGlobalSessions = 32768
+	defaultNativeMaxConnections    = 32768
+	// XHTTP packet handlers are governed by HTTP/2 flow control and bounded byte
+	// queues, not a website-style request ceiling. A negative configured value is
+	// normalized to the internal unlimited representation.
+	defaultNativeMaxXHTTPRequests = -1
 
 	fixedNativeMuxMaxSessions    = 64
 	fixedNativeMuxUDPIdleMS      = 120000
 	fixedNativeMuxUDPReadBuffer  = 256 * 1024
 	fixedNativeMuxUDPWriteBuffer = 256 * 1024
 
-	defaultNativeXHTTPMaxSessions = 4096
-	defaultNativeHTTP2MaxStreams  = 256
+	defaultNativeXHTTPMaxSessions = 32768
+	defaultNativeHTTP2MaxStreams  = 1024
 	// Packet-up posts are also protected by byte budgets in xray_xhttp.go. Keep
 	// the default reorder queue modest so thousands of unauthenticated sessions
 	// cannot consume large amounts of memory merely by allocating empty channel
@@ -60,6 +63,18 @@ func normalizeNativeXrayTuning(t *XrayNativeTuning) XrayNativeTuning {
 		t = &XrayNativeTuning{}
 	}
 	out := *t
+	// Migrate the two profiles written by older panel builds. Those defaults were
+	// sized like a web service (4K/8K sessions and a global request cap) and cause
+	// valid high-volume XHTTP VPN traffic to be rejected after an upgrade unless
+	// the persisted values are translated here.
+	legacySafe := out.MaxConcurrentConnections == 4096 && out.MaxConcurrentXHTTPRequests == 8192 && out.XHTTPMaxSessions == 4096
+	legacy2K := out.MaxConcurrentConnections == 8192 && out.MaxConcurrentXHTTPRequests == 16384 && out.XHTTPMaxSessions == 8192
+	if legacySafe || legacy2K {
+		out.MuxGlobalSessions = defaultNativeMuxGlobalSessions
+		out.MaxConcurrentConnections = defaultNativeMaxConnections
+		out.MaxConcurrentXHTTPRequests = defaultNativeMaxXHTTPRequests
+		out.XHTTPMaxSessions = defaultNativeXHTTPMaxSessions
+	}
 	if out.RuntimeGOMAXPROCS < 0 {
 		out.RuntimeGOMAXPROCS = defaultNativeRuntimeGOMAXPROCS
 	}
