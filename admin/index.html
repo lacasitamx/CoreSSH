@@ -16,7 +16,7 @@
   setTimeout(function(){document.documentElement.classList.remove("i18n-pending");},2500);
 })();
 </script>
-  <link rel="stylesheet" href="assets/app.css?v=20260720xraylist1"/>
+  <link rel="stylesheet" href="assets/app.css?v=20260720sshfilters1"/>
 </head>
 <body>
 <div class="app">
@@ -269,6 +269,17 @@
             <button class="btn btn-ghost btn-sm" id="reloadUsersBtn">Reload</button>
           </div>
         </div>
+        <div class="user-list-controls" id="sshListControls" aria-label="SSH user list controls">
+          <div class="user-list-control-group">
+            <span class="user-list-control-label" id="sshSortLabel"></span>
+            <div class="user-list-buttons" id="sshSortButtons"></div>
+          </div>
+          <div class="user-list-control-group">
+            <span class="user-list-control-label" id="sshFilterLabel"></span>
+            <div class="user-list-buttons" id="sshFilterButtons"></div>
+          </div>
+          <span class="chip user-list-count" id="sshListCount"></span>
+        </div>
         <div class="tbl-wrap">
           <table>
             <thead><tr>
@@ -420,16 +431,16 @@
         <div class="card-title">Inbounds &amp; Clients</div>
         <div class="card-actions"><button class="btn btn-ghost btn-sm" id="xLoadInboundsBtn">Reload</button></div>
       </div>
-      <div class="xray-list-controls" id="xrayListControls" aria-label="Xray user list controls">
-        <div class="xray-list-control-group">
-          <span class="xray-list-control-label" id="xraySortLabel"></span>
-          <div class="xray-list-buttons" id="xraySortButtons"></div>
+      <div class="user-list-controls" id="xrayListControls" aria-label="Xray user list controls">
+        <div class="user-list-control-group">
+          <span class="user-list-control-label" id="xraySortLabel"></span>
+          <div class="user-list-buttons" id="xraySortButtons"></div>
         </div>
-        <div class="xray-list-control-group">
-          <span class="xray-list-control-label" id="xrayFilterLabel"></span>
-          <div class="xray-list-buttons" id="xrayFilterButtons"></div>
+        <div class="user-list-control-group">
+          <span class="user-list-control-label" id="xrayFilterLabel"></span>
+          <div class="user-list-buttons" id="xrayFilterButtons"></div>
         </div>
-        <span class="chip xray-list-count" id="xrayListCount"></span>
+        <span class="chip user-list-count" id="xrayListCount"></span>
       </div>
       <div id="inboundsContainer">
         <div class="hint" style="padding:8px 0;">Loading inbounds…</div>
@@ -1569,10 +1580,10 @@
 <!-- app.js was split into ordered modules for maintainability. They are plain
      classic scripts sharing one global scope; `defer` preserves execution order,
      so behavior is identical to the old single file. Keep this load order. -->
-<script defer src="assets/js/01-core.js?v=20260720xraylist1"></script>
+<script defer src="assets/js/01-core.js?v=20260720sshfilters1"></script>
 <script defer src="assets/js/02-shell.js?v=20260714pamfix1"></script>
-<script defer src="assets/js/03-ssh-users.js?v=20260719quotaaudit1"></script>
-<script defer src="assets/js/04-xray.js?v=20260720xraylist1"></script>
+<script defer src="assets/js/03-ssh-users.js?v=20260720sshfilters1"></script>
+<script defer src="assets/js/04-xray.js?v=20260720sshfilters1"></script>
 <script defer src="assets/js/05-resellers.js?v=20260714pamfix1"></script>
 <script defer src="assets/js/06-servers.js?v=20260714pamfix1"></script>
 <script defer src="assets/js/07-stats-logs.js?v=20260714pamfix1"></script>

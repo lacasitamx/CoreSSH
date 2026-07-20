@@ -91,7 +91,7 @@ function renderXrayListControls() {
     sortButtons.replaceChildren(...XRAY_CLIENT_SORT_OPTIONS.map(([key, label]) => {
       const button = document.createElement("button");
       button.type = "button";
-      button.className = "xray-list-filter-btn" + (xrayClientSort.key === key ? " active" : "");
+      button.className = "user-list-filter-btn" + (xrayClientSort.key === key ? " active" : "");
       button.textContent = t(label);
       button.setAttribute("aria-pressed", xrayClientSort.key === key ? "true" : "false");
       if (xrayClientSort.key === key) button.dataset.direction = xrayClientSort.dir;
@@ -103,7 +103,7 @@ function renderXrayListControls() {
     filterButtons.replaceChildren(...XRAY_CLIENT_FILTER_OPTIONS.map(([key, label]) => {
       const button = document.createElement("button");
       button.type = "button";
-      button.className = "xray-list-filter-btn" + (xrayClientFilter === key ? " active" : "");
+      button.className = "user-list-filter-btn" + (xrayClientFilter === key ? " active" : "");
       button.textContent = t(label);
       button.setAttribute("aria-pressed", xrayClientFilter === key ? "true" : "false");
       button.addEventListener("click", () => setXrayClientFilter(key));

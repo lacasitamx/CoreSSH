@@ -81,9 +81,32 @@ const USER_SORT_EXTRACT = {
 };
 // Columns that default to descending on first click (most/online first).
 const USER_SORT_DEFAULT_DESC = new Set(["status", "conn", "max", "up", "down", "usage"]);
+const USER_SORT_OPTIONS = [
+  ["username", "User"], ["status", "Status"], ["auth", "Auth"], ["conn", "Connections"],
+  ["usage", "Usage"], ["expires", "Expiry"], ["max", "Max"], ["up", "Up"], ["down", "Dn"],
+  ["owner", "Owner"],
+];
+const USER_FILTER_OPTIONS = [
+  ["all", "All"], ["online", "Online"], ["offline", "Offline"],
+  ["active", "Active"], ["expired", "Expired"], ["quota", "Quota reached"],
+];
 
 let userSort = { key: "username", dir: "asc" };
+let userFilter = "all";
 let lastUsersData = [];
+
+function userMatchesFilter(user) {
+  const online = Number(user.active_conns || 0) > 0;
+  const expired = isExpiredDate(user.expires_at);
+  switch (userFilter) {
+    case "online": return online;
+    case "offline": return !online;
+    case "active": return !expired;
+    case "expired": return expired;
+    case "quota": return !!user.quota_exceeded;
+    default: return true;
+  }
+}
 
 function sortUsers(list) {
   const ext = USER_SORT_EXTRACT[userSort.key] || USER_SORT_EXTRACT.username;
@@ -110,6 +133,44 @@ function updateSortIndicators() {
   });
 }
 
+function renderSSHListControls() {
+  const sortLabel = document.getElementById("sshSortLabel");
+  const filterLabel = document.getElementById("sshFilterLabel");
+  const sortButtons = document.getElementById("sshSortButtons");
+  const filterButtons = document.getElementById("sshFilterButtons");
+  const count = document.getElementById("sshListCount");
+  if (sortLabel) sortLabel.textContent = t("Sort by");
+  if (filterLabel) filterLabel.textContent = t("Show");
+  if (sortButtons) {
+    const options = USER_SORT_OPTIONS.filter(([key]) => key !== "owner" || currentRole === "superadmin");
+    sortButtons.replaceChildren(...options.map(([key, label]) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "user-list-filter-btn" + (userSort.key === key ? " active" : "");
+      button.textContent = t(label);
+      button.setAttribute("aria-pressed", userSort.key === key ? "true" : "false");
+      if (userSort.key === key) button.dataset.direction = userSort.dir;
+      button.addEventListener("click", () => setUserSort(key));
+      return button;
+    }));
+  }
+  if (filterButtons) {
+    filterButtons.replaceChildren(...USER_FILTER_OPTIONS.map(([key, label]) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "user-list-filter-btn" + (userFilter === key ? " active" : "");
+      button.textContent = t(label);
+      button.setAttribute("aria-pressed", userFilter === key ? "true" : "false");
+      button.addEventListener("click", () => setUserFilter(key));
+      return button;
+    }));
+  }
+  if (count) {
+    const visible = lastUsersData.filter(userMatchesFilter).length;
+    count.textContent = t("{visible} of {total} users", {visible, total:lastUsersData.length});
+  }
+}
+
 function setUserSort(key) {
   if (!USER_SORT_EXTRACT[key]) return;
   if (userSort.key === key) {
@@ -118,7 +179,12 @@ function setUserSort(key) {
     userSort.key = key;
     userSort.dir = USER_SORT_DEFAULT_DESC.has(key) ? "desc" : "asc";
   }
-  updateSortIndicators();
+  renderUsers(lastUsersData);
+}
+
+function setUserFilter(filter) {
+  if (!USER_FILTER_OPTIONS.some(([key]) => key === filter)) return;
+  userFilter = filter;
   renderUsers(lastUsersData);
 }
 
@@ -130,6 +196,8 @@ function setUserSort(key) {
   });
   updateSortIndicators();
 })();
+
+renderSSHListControls();
 
 function sshTrafficHTML(u) {
   const up = Number(u.total_uplink_bytes || 0);
@@ -146,19 +214,18 @@ function sshTrafficHTML(u) {
 function renderUsers(users) {
   // Cache the raw list so a header click can re-sort without refetching, and
   // order by the active column so rows don't shuffle on each live poll.
-  lastUsersData = users || [];
-  users = sortUsers(lastUsersData);
-  updateDashboardFromUsers(users);
+  lastUsersData = Array.isArray(users) ? users : [];
+  users = sortUsers(lastUsersData.filter(userMatchesFilter));
+  updateDashboardFromUsers(lastUsersData);
+  renderSSHListControls();
+  updateSortIndicators();
   const isSA = currentRole === "superadmin";
-  userCountChip.textContent = users.length;
-  if (isSA) ownerColHead.classList.remove("hidden");
+  ownerColHead.classList.toggle("hidden", !isSA);
   usersBody.innerHTML = "";
-  let online = 0;
-  let expiredCount = 0;
+  const online = lastUsersData.filter(u => Number(u.active_conns || 0) > 0).length;
+  const expiredCount = lastUsersData.filter(u => isExpiredDate(u.expires_at)).length;
   users.forEach(u => {
     const on = (u.active_conns || 0) > 0;
-    if (on) online++;
-    if (isExpiredDate(u.expires_at)) expiredCount++;
     const tr = document.createElement("tr");
     const cells = [
       u.username,
@@ -198,9 +265,19 @@ function renderUsers(users) {
     tr.appendChild(tdA);
     usersBody.appendChild(tr);
   });
-  const activeCount = Math.max(0, users.length - expiredCount);
-  userCountChip.textContent = t("{count} total · {active} active · {online} online", {count: users.length, active: activeCount, online});
-  if (sshMetricTotal) sshMetricTotal.textContent = String(users.length);
+  if (!users.length) {
+    const row = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.colSpan = isSA ? 11 : 10;
+    cell.className = "hint";
+    cell.style.cssText = "padding:24px;text-align:center;";
+    cell.textContent = t("No SSH users match this filter.");
+    row.appendChild(cell);
+    usersBody.appendChild(row);
+  }
+  const activeCount = Math.max(0, lastUsersData.length - expiredCount);
+  userCountChip.textContent = t("{count} total · {active} active · {online} online", {count:lastUsersData.length, active:activeCount, online});
+  if (sshMetricTotal) sshMetricTotal.textContent = String(lastUsersData.length);
   if (sshMetricActive) sshMetricActive.textContent = String(activeCount);
   if (sshMetricOnline) sshMetricOnline.textContent = String(online);
   if (sshMetricState) sshMetricState.textContent = t("Online");

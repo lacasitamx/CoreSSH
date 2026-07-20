@@ -277,6 +277,7 @@ function applyLanguage(lang, options = {}) {
   if (languageSelect) languageSelect.value = currentLang;
   updatePageHeading();
   translateStatic(document.body);
+  if (typeof window.renderSSHListControls === "function") window.renderSSHListControls();
   if (typeof window.renderXrayListControls === "function") window.renderXrayListControls();
   document.documentElement.classList.remove("i18n-pending");
 }
@@ -756,7 +757,7 @@ function patchRenderedInbounds(inbounds) {
 // Native XHTTP/VPN tuning labels introduced by the high-traffic backpressure
 // update. Keep this block close to the UI code so both languages stay complete.
 Object.assign(I18N_TEXT["en-US"], {
-  "Sort by":"Sort by","Show":"Show","All":"All","Offline":"Offline","Connections":"Connections","Usage":"Usage","Quota reached":"Quota reached","{visible} of {total} users":"{visible} of {total} users","No Xray users match this filter.":"No Xray users match this filter.",
+  "Sort by":"Sort by","Show":"Show","All":"All","Offline":"Offline","Connections":"Connections","Usage":"Usage","Quota reached":"Quota reached","{visible} of {total} users":"{visible} of {total} users","No Xray users match this filter.":"No Xray users match this filter.","No SSH users match this filter.":"No SSH users match this filter.",
   "Native Xray scale tuning":"Native Xray scale tuning",
   "Go CPU threads (GOMAXPROCS)":"Go CPU threads (GOMAXPROCS)",
   "Global mux backend sessions":"Global mux backend sessions",
@@ -771,7 +772,7 @@ Object.assign(I18N_TEXT["en-US"], {
   "XHTTP is handled as VPN tunnel traffic: packet requests use bounded backpressure and are never rejected by an HTTP request-rate ceiling. At the transport ceiling, new sockets wait in the kernel backlog instead of being reset. Keep the safe defaults unless the server is sized and load-tested for the high-traffic profile. HTTP/2 retains a 1024-stream flow-control guard per connection, while upload memory stays globally bounded. Saved in the panel config and applied live on restart/reload.":"XHTTP is handled as VPN tunnel traffic: packet requests use bounded backpressure and are never rejected by an HTTP request-rate ceiling. At the transport ceiling, new sockets wait in the kernel backlog instead of being reset. Keep the safe defaults unless the server is sized and load-tested for the high-traffic profile. HTTP/2 retains a 1024-stream flow-control guard per connection, while upload memory stays globally bounded. Saved in the panel config and applied live on restart/reload."
 });
 Object.assign(I18N_TEXT["pt-BR"], {
-  "Sort by":"Ordenar por","Show":"Mostrar","All":"Todos","Offline":"Offline","Connections":"Conexões","Usage":"Uso","Quota reached":"Cota atingida","{visible} of {total} users":"{visible} de {total} usuários","No Xray users match this filter.":"Nenhum usuário Xray corresponde a este filtro.",
+  "Sort by":"Ordenar por","Show":"Mostrar","All":"Todos","Offline":"Offline","Connections":"Conexões","Usage":"Uso","Quota reached":"Cota atingida","{visible} of {total} users":"{visible} de {total} usuários","No Xray users match this filter.":"Nenhum usuário Xray corresponde a este filtro.","No SSH users match this filter.":"Nenhum usuário SSH corresponde a este filtro.",
   "Native Xray scale tuning":"Ajustes de escala do Xray nativo",
   "Go CPU threads (GOMAXPROCS)":"Threads de CPU do Go (GOMAXPROCS)",
   "Global mux backend sessions":"Sessões globais de backend Mux",
