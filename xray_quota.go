@@ -5,6 +5,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/time/rate"
 )
@@ -25,6 +26,10 @@ type xrayNativeQuotaState struct {
 	generation   uint64
 	maxConns     int
 	activeConns  int
+	owner        string
+	expiresAt    time.Time
+	hasExpiry    bool
+	connections  map[io.Closer]struct{}
 }
 
 func (m *XrayManager) reloadNativeQuotaPolicies() {
@@ -60,7 +65,17 @@ func newXrayNativeQuotaState(meta *XrayClientMeta) *xrayNativeQuotaState {
 		throttleMbps: quotaThrottleMbpsOrDefault(meta.QuotaThrottleMbps),
 		generation:   1,
 		maxConns:     normalizeXrayMaxConns(meta.MaxConns),
+		owner:        strings.TrimSpace(meta.OwnerUsername),
+		hasExpiry:    meta.ExpiresAt != nil,
+		expiresAt:    xrayExpiryValue(meta.ExpiresAt),
 	}
+}
+
+func xrayExpiryValue(expiry *time.Time) time.Time {
+	if expiry == nil {
+		return time.Time{}
+	}
+	return *expiry
 }
 
 func normalizeXrayMaxConns(v int) int {
@@ -92,6 +107,9 @@ func (m *XrayManager) setNativeQuotaPolicy(meta *XrayClientMeta) {
 	existing.action = normalizeQuotaAction(meta.QuotaAction)
 	existing.throttleMbps = quotaThrottleMbpsOrDefault(meta.QuotaThrottleMbps)
 	existing.maxConns = normalizeXrayMaxConns(meta.MaxConns)
+	existing.owner = strings.TrimSpace(meta.OwnerUsername)
+	existing.hasExpiry = meta.ExpiresAt != nil
+	existing.expiresAt = xrayExpiryValue(meta.ExpiresAt)
 	existing.limiter = nil
 	existing.mu.Unlock()
 }
@@ -102,8 +120,10 @@ func (m *XrayManager) removeNativeQuotaPolicy(uuid string) {
 		return
 	}
 	m.nativeQuotaMu.Lock()
+	state := m.nativeQuotaByUUID[uuid]
 	delete(m.nativeQuotaByUUID, uuid)
 	m.nativeQuotaMu.Unlock()
+	closeNativeClientConnections(state)
 
 	// Do not retain failed traffic/active deltas for a client that no longer
 	// exists. This also bounds the pending maps during a prolonged DB outage.
@@ -216,10 +236,19 @@ func (m *XrayManager) nativeQuotaState(uuid string) *xrayNativeQuotaState {
 // acquireNativeClientConnection enforces the DB-backed max_conns policy across
 // every native inbound and transport. The returned release function is safe to
 // call more than once and keeps runtime/DB online counters in sync.
-func (m *XrayManager) acquireNativeClientConnection(uuid, email string) (func(), *xrayNativeQuotaState, bool) {
+func (m *XrayManager) acquireNativeClientConnection(uuid, email string, closers ...io.Closer) (func(), *xrayNativeQuotaState, bool) {
 	state := m.nativeQuotaState(uuid)
+	var closer io.Closer
+	if len(closers) > 0 {
+		closer = closers[0]
+	}
 	if state != nil {
 		state.mu.Lock()
+		if reason := nativeClientAccessDeniedLocked(state); reason != "" {
+			state.mu.Unlock()
+			xrayLogf("native xray: rejected user %s: %s", email, reason)
+			return nil, state, false
+		}
 		if state.maxConns > 0 && state.activeConns >= state.maxConns {
 			limit := state.maxConns
 			state.mu.Unlock()
@@ -227,6 +256,12 @@ func (m *XrayManager) acquireNativeClientConnection(uuid, email string) (func(),
 			return nil, state, false
 		}
 		state.activeConns++
+		if closer != nil {
+			if state.connections == nil {
+				state.connections = make(map[io.Closer]struct{})
+			}
+			state.connections[closer] = struct{}{}
+		}
 		state.mu.Unlock()
 	}
 
@@ -236,6 +271,9 @@ func (m *XrayManager) acquireNativeClientConnection(uuid, email string) (func(),
 		once.Do(func() {
 			if state != nil {
 				state.mu.Lock()
+				if closer != nil {
+					delete(state.connections, closer)
+				}
 				if state.activeConns > 0 {
 					state.activeConns--
 				}
@@ -244,6 +282,51 @@ func (m *XrayManager) acquireNativeClientConnection(uuid, email string) (func(),
 			m.recordNativeDisconnect(uuid, email, state)
 		})
 	}, state, true
+}
+
+func closeNativeClientConnections(state *xrayNativeQuotaState) {
+	if state == nil {
+		return
+	}
+	state.mu.Lock()
+	closers := make([]io.Closer, 0, len(state.connections))
+	for closer := range state.connections {
+		closers = append(closers, closer)
+	}
+	state.mu.Unlock()
+	for _, closer := range closers {
+		_ = closer.Close()
+	}
+}
+
+func (m *XrayManager) disconnectNativeClient(uuid string) {
+	closeNativeClientConnections(m.nativeQuotaState(uuid))
+}
+
+func (m *XrayManager) nativeClientAccessDenied(uuid string) string {
+	state := m.nativeQuotaState(uuid)
+	if state == nil {
+		return ""
+	}
+	state.mu.Lock()
+	reason := nativeClientAccessDeniedLocked(state)
+	state.mu.Unlock()
+	return reason
+}
+
+func nativeClientAccessDeniedLocked(state *xrayNativeQuotaState) string {
+	if state.hasExpiry && !state.expiresAt.After(time.Now()) {
+		return "expired"
+	}
+	if state.owner != "" {
+		if err := ownerIsActive(state.owner); err != nil {
+			return "owner suspended or expired"
+		}
+	}
+	if state.quotaBytes > 0 && normalizeQuotaAction(state.action) == quotaActionBlock && state.usedBytes >= state.quotaBytes {
+		return "data quota exceeded"
+	}
+	return ""
 }
 
 func (m *XrayManager) nativeQuotaBlocked(uuid string) bool {

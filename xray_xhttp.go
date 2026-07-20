@@ -37,6 +37,10 @@ var (
 	nativeXHTTPBufferedBytes       atomic.Int64
 	nativeXHTTPBufferRejected      atomic.Int64
 	errNativeXHTTPUploadBufferFull = errors.New("xhttp upload buffer limit reached")
+	nativeXHTTPMemoryWait          = struct {
+		sync.Mutex
+		changed chan struct{}
+	}{changed: make(chan struct{})}
 )
 
 const (
@@ -295,13 +299,12 @@ func (ib *nativeInbound) xhttpServerMaxHeaderBytes() int {
 // byte stream to the VLESS/VMess handlers as a net.Conn.
 func (ib *nativeInbound) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer xrayRecover(fmt.Sprintf("native xray XHTTP request inbound=%q method=%s path=%q remote=%s", ib.tag, r.Method, r.URL.RequestURI(), r.RemoteAddr))
-	releaseRequest, ok := acquireNativeXHTTPRequest()
-	if !ok {
-		w.Header().Set("Retry-After", "1")
-		http.Error(w, "native XHTTP request limit reached", http.StatusTooManyRequests)
-		return
-	}
-	defer releaseRequest()
+	// XHTTP is a VPN transport, not a web API. A single connected user keeps a
+	// long-lived download handler and can generate many short packet-up handlers.
+	// Rejecting handlers at an application request ceiling turns normal tunnel
+	// bursts into 429s and, through CDNs/reverse proxies, intermittent 502s.
+	// HTTP/2 flow control plus the bounded, cancelable upload queues below provide
+	// backpressure without applying website rate-limit semantics to tunnel traffic.
 	if !ib.isXHTTP() {
 		logNativePreAuthRejection("native xray: xhttp reject inbound=%q reason=not-xhttp method=%s path=%q host=%q remote=%s", ib.tag, r.Method, r.URL.RequestURI(), r.Host, r.RemoteAddr)
 		xhttpBadRequest(w)
@@ -558,15 +561,13 @@ func (ib *nativeInbound) upsertXHTTPSession(w http.ResponseWriter, id string) *n
 		return s
 	}
 	if max := ib.xhttpMaxActiveSessions(); max > 0 && len(ib.xhttpSessions) >= max {
-		w.Header().Set("Retry-After", "1")
-		http.Error(w, "native XHTTP session limit reached", http.StatusTooManyRequests)
+		http.Error(w, "native XHTTP session capacity reached", http.StatusServiceUnavailable)
 		logNativePreAuthRejection("native xray: xhttp session rejected inbound=%q active=%d limit=%d", ib.tag, len(ib.xhttpSessions), max)
 		return nil
 	}
 	releaseSlot, ok := acquireNativeXHTTPSession()
 	if !ok {
-		w.Header().Set("Retry-After", "1")
-		http.Error(w, "native XHTTP global session limit reached", http.StatusTooManyRequests)
+		http.Error(w, "native XHTTP global session capacity reached", http.StatusServiceUnavailable)
 		return nil
 	}
 	s := &nativeXHTTPSession{
@@ -662,10 +663,14 @@ func (ib *nativeInbound) handleXHTTPPacketUpload(w http.ResponseWriter, r *http.
 		http.Error(w, "bad xhttp sequence", http.StatusBadRequest)
 		return
 	}
-	memory, ok := acquireNativeXHTTPMemory(ib.xhttpMaxPostBytes())
-	if !ok {
-		w.Header().Set("Retry-After", "1")
-		http.Error(w, errNativeXHTTPUploadBufferFull.Error(), http.StatusTooManyRequests)
+	// Reserve the expected payload rather than the configured maximum. Normal
+	// XHTTP body uploads have a Content-Length, so small packets no longer each
+	// consume a full 1 MB reservation. Unknown/chunked or metadata-carried uploads
+	// still reserve the maximum before decoding to preserve the hard memory bound.
+	memory, err := acquireNativeXHTTPMemoryContext(r.Context(), ib.xhttpUploadReservationBytes(r))
+	if err != nil {
+		// If the client/CDN canceled while waiting for backpressure, there is no
+		// useful HTTP error to send. Returning also releases every reservation.
 		return
 	}
 	defer memory.release()
@@ -680,9 +685,14 @@ func (ib *nativeInbound) handleXHTTPPacketUpload(w http.ResponseWriter, r *http.
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return
 		}
+		if errors.Is(err, io.ErrClosedPipe) {
+			// A packet can race the stream-down request closing. Acknowledge the late
+			// upload instead of leaking an origin 500/502 into the reconnect path.
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 		if errors.Is(err, errNativeXHTTPUploadBufferFull) {
-			w.Header().Set("Retry-After", "1")
-			http.Error(w, err.Error(), http.StatusTooManyRequests)
+			http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
 			return
 		}
 		xrayTracef("native xray: xhttp packet-up push failed inbound=%q session=%q seq=%d: %v", ib.tag, sess.id, seq, err)
@@ -795,6 +805,22 @@ func (ib *nativeInbound) xhttpMaxPostBytes() int64 {
 		return ib.xhttpMaxEachPostBytes
 	}
 	return 1_000_000
+}
+
+// xhttpUploadReservationBytes returns a safe pre-read reservation. Body-mode
+// clients normally send Content-Length, which lets thousands of small packets
+// share the global budget. Header/cookie/auto and chunked bodies reserve the
+// configured maximum because their decoded size is not known until parsed.
+func (ib *nativeInbound) xhttpUploadReservationBytes(r *http.Request) int64 {
+	maxBytes := ib.xhttpMaxPostBytes()
+	placement := firstNonEmpty(ib.xhttpUplinkDataPlacement, xhttpPlacementBody)
+	if placement == xhttpPlacementBody && r.ContentLength >= 0 {
+		if r.ContentLength > maxBytes {
+			return maxBytes
+		}
+		return r.ContentLength
+	}
+	return maxBytes
 }
 
 func (ib *nativeInbound) handleXHTTPStreamOne(w http.ResponseWriter, r *http.Request) {
@@ -1081,6 +1107,40 @@ func acquireNativeXHTTPMemory(n int64) (*nativeXHTTPMemoryLease, bool) {
 	}
 }
 
+// acquireNativeXHTTPMemoryContext applies process-wide memory backpressure.
+// Unlike the old fail-fast admission path, a legitimate tunnel burst waits for
+// queued bytes to be consumed and remains cancelable if its HTTP request ends.
+func acquireNativeXHTTPMemoryContext(ctx context.Context, n int64) (*nativeXHTTPMemoryLease, error) {
+	if n <= 0 {
+		return &nativeXHTTPMemoryLease{}, nil
+	}
+	if n > nativeXHTTPMaxBufferedGlobalBytes {
+		return nil, errNativeXHTTPUploadBufferFull
+	}
+	for {
+		current := nativeXHTTPBufferedBytes.Load()
+		if current <= nativeXHTTPMaxBufferedGlobalBytes-n && nativeXHTTPBufferedBytes.CompareAndSwap(current, current+n) {
+			return &nativeXHTTPMemoryLease{bytes: n}, nil
+		}
+
+		nativeXHTTPMemoryWait.Lock()
+		// Recheck while holding the generation lock so a release cannot happen
+		// between the failed check and subscribing to the notification channel.
+		current = nativeXHTTPBufferedBytes.Load()
+		if current <= nativeXHTTPMaxBufferedGlobalBytes-n {
+			nativeXHTTPMemoryWait.Unlock()
+			continue
+		}
+		changed := nativeXHTTPMemoryWait.changed
+		nativeXHTTPMemoryWait.Unlock()
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+}
+
 func releaseNativeXHTTPMemory(n int64) {
 	if n <= 0 {
 		return
@@ -1092,6 +1152,10 @@ func releaseNativeXHTTPMemory(n int64) {
 			next = 0
 		}
 		if nativeXHTTPBufferedBytes.CompareAndSwap(current, next) {
+			nativeXHTTPMemoryWait.Lock()
+			close(nativeXHTTPMemoryWait.changed)
+			nativeXHTTPMemoryWait.changed = make(chan struct{})
+			nativeXHTTPMemoryWait.Unlock()
 			return
 		}
 	}
@@ -1145,6 +1209,7 @@ type nativeXHTTPUploadQueue struct {
 	readDeadline  time.Time
 	bufferedBytes int64
 	closedFlag    bool
+	spaceChanged  chan struct{}
 
 	closed    chan struct{}
 	closeOnce sync.Once
@@ -1165,6 +1230,7 @@ func newNativeXHTTPUploadQueue(maxPackets int, maxBytes int64) *nativeXHTTPUploa
 		maxPackets:    maxPackets,
 		maxBytes:      maxBytes,
 		closed:        make(chan struct{}),
+		spaceChanged:  make(chan struct{}),
 	}
 }
 
@@ -1178,21 +1244,38 @@ func (q *nativeXHTTPUploadQueue) beginPush() bool {
 	return true
 }
 
-func (q *nativeXHTTPUploadQueue) adoptPayloadMemory(memory *nativeXHTTPMemoryLease, n int64) bool {
+func (q *nativeXHTTPUploadQueue) adoptPayloadMemory(ctx context.Context, memory *nativeXHTTPMemoryLease, n int64) error {
 	if n <= 0 {
-		return true
+		return nil
 	}
 	if memory == nil || memory.bytes != n {
-		return false
+		return errNativeXHTTPUploadBufferFull
 	}
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	if q.closedFlag || q.bufferedBytes > q.maxBytes-n {
-		return false
+	if n > q.maxBytes {
+		return errNativeXHTTPUploadBufferFull
 	}
-	q.bufferedBytes += n
-	memory.bytes = 0
-	return true
+	for {
+		q.mu.Lock()
+		if q.closedFlag {
+			q.mu.Unlock()
+			return io.ErrClosedPipe
+		}
+		if q.bufferedBytes <= q.maxBytes-n {
+			q.bufferedBytes += n
+			memory.bytes = 0
+			q.mu.Unlock()
+			return nil
+		}
+		changed := q.spaceChanged
+		q.mu.Unlock()
+		select {
+		case <-changed:
+		case <-q.closed:
+			return io.ErrClosedPipe
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }
 
 func (q *nativeXHTTPUploadQueue) releasePayloadMemory(n int64) {
@@ -1205,6 +1288,8 @@ func (q *nativeXHTTPUploadQueue) releasePayloadMemory(n int64) {
 		release = q.bufferedBytes
 	}
 	q.bufferedBytes -= release
+	close(q.spaceChanged)
+	q.spaceChanged = make(chan struct{})
 	q.mu.Unlock()
 	releaseNativeXHTTPMemory(release)
 }
@@ -1234,8 +1319,8 @@ func (q *nativeXHTTPUploadQueue) push(ctx context.Context, p nativeXHTTPPacket, 
 		}()
 	}
 	payloadBytes := int64(len(p.Payload))
-	if !q.adoptPayloadMemory(memory, payloadBytes) {
-		return errNativeXHTTPUploadBufferFull
+	if err := q.adoptPayloadMemory(ctx, memory, payloadBytes); err != nil {
+		return err
 	}
 	transferred := payloadBytes > 0
 	if transferred {

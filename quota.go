@@ -106,9 +106,9 @@ func (s *Store) ResetSSHUserTraffic(ctx context.Context, username string) error 
 		return nil
 	}
 	_, err := s.db.ExecContext(ctx, `
-        UPDATE ssh_users
-        SET total_uplink_bytes = 0, total_downlink_bytes = 0
-        WHERE username = $1`, username)
+		UPDATE ssh_users
+		SET total_uplink_bytes = 0, total_downlink_bytes = 0
+		WHERE username = $1`, username)
 	return err
 }
 
@@ -353,9 +353,15 @@ func validateQuotaConfig(quotaBytes int64, action string, throttleMbps int) erro
 	if quotaBytes < 0 {
 		return fmt.Errorf("data_quota_bytes must be non-negative")
 	}
-	action = normalizeQuotaAction(action)
-	if quotaBytes > 0 && action == quotaActionThrottle && throttleMbps < 0 {
+	rawAction := strings.ToLower(strings.TrimSpace(action))
+	if rawAction != "" && rawAction != quotaActionBlock && rawAction != quotaActionThrottle {
+		return fmt.Errorf("quota_action must be block or throttle")
+	}
+	if throttleMbps < 0 {
 		return fmt.Errorf("quota_throttle_mbps must be non-negative")
+	}
+	if throttleMbps > 1000000 {
+		return fmt.Errorf("quota_throttle_mbps must not exceed 1000000")
 	}
 	return nil
 }

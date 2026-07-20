@@ -264,7 +264,7 @@ func (ib *nativeInbound) acceptLoop(ln net.Listener) {
 			xrayLogf("native xray: accept error on %s: %v", ln.Addr(), err)
 			continue
 		}
-		counted, ok := wrapTrackedNativeTransportConn(c)
+		counted, ok := waitWrapTrackedNativeTransportConn(c)
 		if !ok {
 			time.Sleep(nativeOverloadBackoff)
 			continue
@@ -379,8 +379,8 @@ func (ib *nativeInbound) handleVLESS(stream net.Conn, remote net.Addr) {
 		logNativePreAuthRejection("native xray: inbound %q rejected unknown VLESS uuid from %s", ib.tag, remote)
 		return
 	}
-	if xrayMgr.nativeQuotaBlocked(client.uuid) {
-		xrayLogf("native xray: inbound %q rejected VLESS user %s after data quota", ib.tag, client.email)
+	if reason := xrayMgr.nativeClientAccessDenied(client.uuid); reason != "" {
+		xrayLogf("native xray: inbound %q rejected VLESS user %s: %s", ib.tag, client.email, reason)
 		return
 	}
 
@@ -433,7 +433,7 @@ func (ib *nativeInbound) handleVLESS(stream net.Conn, remote net.Addr) {
 		xrayLogf("native xray: inbound %q VLESS command %d not supported yet", ib.tag, cmd[0])
 		return
 	}
-	releaseConnection, quotaState, ok := xrayMgr.acquireNativeClientConnection(client.uuid, client.email)
+	releaseConnection, quotaState, ok := xrayMgr.acquireNativeClientConnection(client.uuid, client.email, stream)
 	if !ok {
 		return
 	}

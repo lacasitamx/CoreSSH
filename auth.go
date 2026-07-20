@@ -586,7 +586,7 @@ func startResellerExpiryChecker(store *Store) {
 				u.IsActive = false
 				adminUsers.set(u)
 				disconnectOwnerUsers(u.Username)
-				removeOwnerXrayClients(ctx, store, u.Username)
+				suspendOwnerXrayClients(ctx, store, u.Username)
 			}
 
 			// Reactivate resellers that have been renewed (inactive but expiry now in future/nil)
@@ -602,6 +602,7 @@ func startResellerExpiryChecker(store *Store) {
 				}
 				u.IsActive = true
 				adminUsers.set(u)
+				restoreOwnerXrayClients(ctx, store, u.Username)
 			}
 
 			sessions.cleanup()
@@ -862,7 +863,9 @@ func handleCreateReseller(store *Store) http.HandlerFunc {
 		if u.Role == RoleReseller {
 			if !u.IsActive || (u.ExpiresAt != nil && time.Now().After(*u.ExpiresAt)) {
 				disconnectOwnerUsers(u.Username)
-				removeOwnerXrayClients(ctx, store, u.Username)
+				suspendOwnerXrayClients(ctx, store, u.Username)
+			} else {
+				restoreOwnerXrayClients(ctx, store, u.Username)
 			}
 		}
 

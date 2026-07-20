@@ -311,7 +311,7 @@
               <div class="field"><label>Max Upload (Mb/s)</label><input id="fUp" type="number" min="0" placeholder="0 = default"/></div>
               <div class="field"><label>Max Download (Mb/s)</label><input id="fDown" type="number" min="0" placeholder="0 = default"/></div>
               <div class="field"><label>Data quota (GB) <span class="hint">0 = unlimited · 1024 = 1 TB</span></label><input id="fQuotaGB" type="number" min="0" step="0.01" placeholder="0"/></div>
-              <div class="field"><label>When quota is reached</label><select id="fQuotaAction"><option value="block">Block user</option><option value="throttle">Reduce speed</option></select></div>
+              <div class="field"><label>When quota is reached</label><select id="fQuotaAction"><option value="block">Block user</option><option value="throttle" selected>Reduce speed</option></select></div>
               <div class="field"><label>Post-quota speed (Mb/s)</label><input id="fQuotaThrottle" type="number" min="1" value="1"/></div>
               <div class="field"><label>Current usage</label><input id="fUsageDisplay" readonly value="0 B"/></div>
               <div class="field"><label>Reset traffic counter</label><input id="fResetUsage" type="checkbox" style="width:16px;height:16px;margin-top:10px;"/></div>
@@ -1509,16 +1509,16 @@
             <summary style="cursor:pointer;font-size:.76rem;font-weight:700;color:var(--text);">Native Xray scale tuning</summary>
             <div class="grid2" style="margin-top:10px;gap:8px;">
               <div class="field"><label>Go CPU threads (GOMAXPROCS)</label><input type="number" min="0" id="cfgXrayRuntimeGomaxprocs" placeholder="0 = all CPU cores"/></div>
-              <div class="field"><label>Global mux backend sessions</label><input type="number" min="1" id="cfgXrayMuxGlobalSessions" placeholder="8192"/></div>
-              <div class="field"><label>Global transport connections <span class="hint">0=4096, -1=unlimited</span></label><input type="number" min="-1" id="cfgXrayMaxConnections" placeholder="4096"/></div>
-              <div class="field"><label>Concurrent XHTTP requests <span class="hint">0=8192, -1=unlimited</span></label><input type="number" min="-1" id="cfgXrayMaxXHTTPRequests" placeholder="8192"/></div>
-              <div class="field"><label>Active XHTTP sessions <span class="hint">0=4096, -1=unlimited</span></label><input type="number" min="-1" id="cfgXrayMaxXHTTPSessions" placeholder="4096"/></div>
+              <div class="field"><label>Global mux backend sessions</label><input type="number" min="1" id="cfgXrayMuxGlobalSessions" placeholder="32768"/></div>
+              <div class="field"><label>Global transport connections <span class="hint">0=32768, -1=unlimited</span></label><input type="number" min="-1" id="cfgXrayMaxConnections" placeholder="32768"/></div>
+              <div class="field"><label>XHTTP web request cap <span class="hint">disabled for VPN traffic</span></label><input type="number" min="-1" id="cfgXrayMaxXHTTPRequests" value="-1" readonly/></div>
+              <div class="field"><label>Active XHTTP sessions <span class="hint">0=32768, -1=unlimited</span></label><input type="number" min="-1" id="cfgXrayMaxXHTTPSessions" placeholder="32768"/></div>
               <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;grid-column:1/-1"><input type="checkbox" id="cfgXrayTracePackets"/> Trace every XHTTP/mux packet <span class="hint">debug only, slows QUIC</span></label>
               <div class="card-actions" style="grid-column:1/-1;">
-                <button class="btn btn-ghost btn-sm" type="button" onclick="setXrayNativeTuningDefaults('2k')">Apply 2K defaults</button>
+                <button class="btn btn-ghost btn-sm" type="button" onclick="setXrayNativeTuningDefaults('high')">Apply high-traffic VPN defaults</button>
                 <button class="btn btn-ghost btn-sm" type="button" onclick="setXrayNativeTuningDefaults('safe')">Apply safe defaults</button>
               </div>
-              <div class="hint" style="grid-column:1/-1;margin-top:-4px;">The transport ceiling rejects sockets before native protocol/TLS work starts; the XHTTP ceilings bound concurrent handlers and session state. Keep the safe defaults unless load testing proves the VPS can sustain more; -1 disables an application ceiling and is not recommended on public listeners. HTTP/2 still keeps a 256-stream guard per connection. Transport buffers remain fixed to safe defaults. Saved in the panel config and applied live on restart/reload.</div>
+              <div class="hint" style="grid-column:1/-1;margin-top:-4px;">XHTTP is handled as VPN tunnel traffic: packet requests use bounded backpressure and are never rejected by an HTTP request-rate ceiling. At the transport ceiling, new sockets wait in the kernel backlog instead of being reset. Keep the safe defaults unless the server is sized and load-tested for the high-traffic profile. HTTP/2 retains a 1024-stream flow-control guard per connection, while upload memory stays globally bounded. Saved in the panel config and applied live on restart/reload.</div>
             </div>
           </details>
         </div>
@@ -1558,14 +1558,14 @@
 <!-- app.js was split into ordered modules for maintainability. They are plain
      classic scripts sharing one global scope; `defer` preserves execution order,
      so behavior is identical to the old single file. Keep this load order. -->
-<script defer src="assets/js/01-core.js?v=20260715quotareset1"></script>
+<script defer src="assets/js/01-core.js?v=20260719xhttp502fix1"></script>
 <script defer src="assets/js/02-shell.js?v=20260714pamfix1"></script>
-<script defer src="assets/js/03-ssh-users.js?v=20260715sshtraffic1"></script>
+<script defer src="assets/js/03-ssh-users.js?v=20260719quotaaudit1"></script>
 <script defer src="assets/js/04-xray.js?v=20260715quotareset1"></script>
 <script defer src="assets/js/05-resellers.js?v=20260714pamfix1"></script>
 <script defer src="assets/js/06-servers.js?v=20260714pamfix1"></script>
 <script defer src="assets/js/07-stats-logs.js?v=20260714pamfix1"></script>
-<script defer src="assets/js/08-server-config.js?v=20260715hardening1"></script>
+<script defer src="assets/js/08-server-config.js?v=20260719xhttp502fix1"></script>
 <script defer src="assets/js/09-xray-wizard.js?v=20260714quota1"></script>
 <script defer src="assets/js/11-update-status.js?v=20260714pamfix1"></script>
 <script defer src="assets/js/12-bot.js?v=20260714pamfix1"></script>

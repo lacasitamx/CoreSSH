@@ -750,3 +750,34 @@ function patchRenderedInbounds(inbounds) {
   }
   return true;
 }
+
+// Native XHTTP/VPN tuning labels introduced by the high-traffic backpressure
+// update. Keep this block close to the UI code so both languages stay complete.
+Object.assign(I18N_TEXT["en-US"], {
+  "Native Xray scale tuning":"Native Xray scale tuning",
+  "Go CPU threads (GOMAXPROCS)":"Go CPU threads (GOMAXPROCS)",
+  "Global mux backend sessions":"Global mux backend sessions",
+  "Global transport connections":"Global transport connections",
+  "XHTTP web request cap":"XHTTP web request cap",
+  "disabled for VPN traffic":"disabled for VPN traffic",
+  "Active XHTTP sessions":"Active XHTTP sessions",
+  "Trace every XHTTP/mux packet":"Trace every XHTTP/mux packet",
+  "debug only, slows QUIC":"debug only, slows QUIC",
+  "Apply high-traffic VPN defaults":"Apply high-traffic VPN defaults",
+  "Apply safe defaults":"Apply safe defaults",
+  "XHTTP is handled as VPN tunnel traffic: packet requests use bounded backpressure and are never rejected by an HTTP request-rate ceiling. At the transport ceiling, new sockets wait in the kernel backlog instead of being reset. Keep the safe defaults unless the server is sized and load-tested for the high-traffic profile. HTTP/2 retains a 1024-stream flow-control guard per connection, while upload memory stays globally bounded. Saved in the panel config and applied live on restart/reload.":"XHTTP is handled as VPN tunnel traffic: packet requests use bounded backpressure and are never rejected by an HTTP request-rate ceiling. At the transport ceiling, new sockets wait in the kernel backlog instead of being reset. Keep the safe defaults unless the server is sized and load-tested for the high-traffic profile. HTTP/2 retains a 1024-stream flow-control guard per connection, while upload memory stays globally bounded. Saved in the panel config and applied live on restart/reload."
+});
+Object.assign(I18N_TEXT["pt-BR"], {
+  "Native Xray scale tuning":"Ajustes de escala do Xray nativo",
+  "Go CPU threads (GOMAXPROCS)":"Threads de CPU do Go (GOMAXPROCS)",
+  "Global mux backend sessions":"Sessões globais de backend Mux",
+  "Global transport connections":"Conexões globais de transporte",
+  "XHTTP web request cap":"Limite web de requisições XHTTP",
+  "disabled for VPN traffic":"desativado para tráfego VPN",
+  "Active XHTTP sessions":"Sessões XHTTP ativas",
+  "Trace every XHTTP/mux packet":"Registrar cada pacote XHTTP/Mux",
+  "debug only, slows QUIC":"somente debug, reduz a velocidade do QUIC",
+  "Apply high-traffic VPN defaults":"Aplicar padrão VPN de alto tráfego",
+  "Apply safe defaults":"Aplicar padrões seguros",
+  "XHTTP is handled as VPN tunnel traffic: packet requests use bounded backpressure and are never rejected by an HTTP request-rate ceiling. At the transport ceiling, new sockets wait in the kernel backlog instead of being reset. Keep the safe defaults unless the server is sized and load-tested for the high-traffic profile. HTTP/2 retains a 1024-stream flow-control guard per connection, while upload memory stays globally bounded. Saved in the panel config and applied live on restart/reload.":"O XHTTP é tratado como tráfego de túnel VPN: as requisições de pacotes usam backpressure com memória limitada e nunca são rejeitadas por um limite de requisições web. Ao atingir o teto de transporte, novos sockets aguardam no backlog do kernel em vez de serem resetados. Mantenha os padrões seguros, exceto se o servidor estiver dimensionado e testado para o perfil de alto tráfego. O HTTP/2 mantém um controle de fluxo de 1024 streams por conexão, e a memória de upload continua limitada globalmente. Salvo na configuração do painel e aplicado ao vivo ao reiniciar ou recarregar."
+});

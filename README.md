@@ -68,15 +68,15 @@ A confirmação dessa migração é exibida dentro do próprio painel. Se a grav
 
 ### Cota de tráfego e proteção de recursos
 
-Contas SSH e clientes VLESS/VMess do modo nativo podem usar `data_quota_bytes` com ação `block` ou `throttle`. O botão **Reset/Zerar tráfego** limpa apenas os contadores; não renova validade, senha ou configuração da conta. O valor `max_conns` é aplicado no momento em que o usuário VLESS/VMess é autenticado e vale em conjunto para TCP, UDP, WebSocket, XHTTP e conexões Mux (uma conexão Mux autenticada conta como uma conexão, independentemente dos streams filhos).
+Contas SSH e clientes VLESS/VMess do modo nativo podem usar `data_quota_bytes` com ação `block` ou `throttle`. O botão **Reset/Zerar tráfego** limpa apenas os contadores; não renova validade, senha ou configuração da conta. Não existe reset periódico automático no servidor: qualquer período comercial mostrado no site é independente e o reset ocorre somente por ação explícita no painel/API. O valor `max_conns` é aplicado no momento em que o usuário VLESS/VMess é autenticado e vale em conjunto para TCP, UDP, WebSocket, XHTTP e conexões Mux (uma conexão Mux autenticada conta como uma conexão, independentemente dos streams filhos).
 
 O runtime nativo também possui limites globais para impedir crescimento sem controle de sockets, goroutines e sessões HTTP:
 
-- `max_concurrent_connections`: conexões de transporte TCP/TLS/WebSocket/XHTTP; padrão `4096`;
-- `max_concurrent_xhttp_requests`: handlers XHTTP simultâneos; padrão `8192`;
-- `xhttp_max_sessions`: sessões XHTTP ativas; padrão `4096`.
+- `max_concurrent_connections`: conexões de transporte TCP/TLS/WebSocket/XHTTP; padrão `32768`;
+- `max_concurrent_xhttp_requests`: mantido apenas para compatibilidade de configuração; o limite de requisições web fica desativado (`-1`) no XHTTP;
+- `xhttp_max_sessions`: sessões XHTTP ativas; padrão `32768`.
 
-Esses campos ficam em **Configurações → Xray → Native Xray scale tuning**. `0` seleciona o padrão seguro e `-1` desativa o respectivo contador de admissão, o que não é recomendado em listeners públicos; conexões HTTP/2 continuam com um limite de 256 streams simultâneos por conexão. Cada transporte Mux aceita no máximo 64 sessões filhas, com limite global padrão de 8192. Sockets WebSocket incompletos têm timeout de handshake, conexões HTTP ociosas têm timeout, e parar/reiniciar o Xray nativo fecha conexões e sessões existentes. Atualizações de tráfego e de conexões ativas são agregadas e persistidas em lote a cada cinco segundos, sem criar uma goroutine ou consulta PostgreSQL por conexão. Entradas pendentes de usuários removidos são descartadas para manter os mapas de retry limitados ao conjunto atual de contas.
+Esses campos ficam em **Configurações → Xray → Native Xray scale tuning**. O XHTTP é tratado como transporte VPN: rajadas de packet-up usam backpressure cancelável e buffers de bytes limitados, sem respostas `429` nem semântica de “too many requests”. Ao atingir o teto de transporte, novos sockets permanecem no backlog do kernel em vez de serem aceitos e resetados. Conexões HTTP/2 mantêm um limite de fluxo de 1024 streams simultâneos por conexão. Cada transporte Mux aceita no máximo 64 sessões filhas, com limite global padrão de 32768. Sockets WebSocket incompletos têm timeout de handshake, conexões HTTP ociosas têm timeout, e parar/reiniciar o Xray nativo fecha conexões e sessões existentes. Atualizações de tráfego e de conexões ativas são agregadas e persistidas em lote a cada cinco segundos, sem criar uma goroutine ou consulta PostgreSQL por conexão. Entradas pendentes de usuários removidos são descartadas para manter os mapas de retry limitados ao conjunto atual de contas.
 
 ### Requisitos
 
@@ -609,15 +609,15 @@ The migration confirmation is rendered inside the panel. If saving fails, the te
 
 ### Traffic quotas and resource protection
 
-SSH accounts and native-mode VLESS/VMess clients can use `data_quota_bytes` with either the `block` or `throttle` action. The **Reset traffic** action clears only usage counters; it does not renew expiry, change a password, or alter account settings. `max_conns` is enforced when a native VLESS/VMess user is authenticated and is shared across TCP, UDP, WebSocket, XHTTP, and Mux transports (one authenticated Mux transport counts as one connection, regardless of its child streams).
+SSH accounts and native-mode VLESS/VMess clients can use `data_quota_bytes` with either the `block` or `throttle` action. The **Reset traffic** action clears only usage counters; it does not renew expiry, change a password, or alter account settings. The server does not perform an automatic periodic reset: any commercial period shown on the website is independent, and counters reset only through an explicit panel/API action. `max_conns` is enforced when a native VLESS/VMess user is authenticated and is shared across TCP, UDP, WebSocket, XHTTP, and Mux transports (one authenticated Mux transport counts as one connection, regardless of its child streams).
 
 The native runtime also has global ceilings that prevent unbounded socket, goroutine, and HTTP-session growth:
 
-- `max_concurrent_connections`: TCP/TLS/WebSocket/XHTTP transport connections; default `4096`;
-- `max_concurrent_xhttp_requests`: simultaneous XHTTP handlers; default `8192`;
-- `xhttp_max_sessions`: active XHTTP sessions; default `4096`.
+- `max_concurrent_connections`: TCP/TLS/WebSocket/XHTTP transport connections; default `32768`;
+- `max_concurrent_xhttp_requests`: retained for configuration compatibility; the web-request cap is disabled (`-1`) for XHTTP;
+- `xhttp_max_sessions`: active XHTTP sessions; default `32768`.
 
-These fields are available under **Settings → Xray → Native Xray scale tuning**. `0` selects the safe default and `-1` disables the corresponding admission counter, which is not recommended on public listeners; HTTP/2 connections still retain a 256-stream concurrent guard. Each Mux transport accepts at most 64 child sessions, with a default global ceiling of 8192. Incomplete WebSocket handshakes time out, idle HTTP connections time out, and stopping/restarting native Xray closes existing transports and XHTTP sessions. Traffic and active-connection changes are aggregated and written in five-second batches rather than creating a PostgreSQL query or goroutine for every connection. Pending retry entries for deleted clients are removed so retry maps stay bounded by the current account set.
+These fields are available under **Settings → Xray → Native Xray scale tuning**. XHTTP is treated as VPN transport traffic: packet-up bursts use cancelable backpressure and bounded byte buffers, with no `429` or “too many requests” behavior. At the transport ceiling, new sockets remain in the kernel backlog instead of being accepted and reset. HTTP/2 connections retain a 1024-stream flow-control guard per connection. Each Mux transport accepts at most 64 child sessions, with a default global ceiling of 32768. Incomplete WebSocket handshakes time out, idle HTTP connections time out, and stopping/restarting native Xray closes existing transports and XHTTP sessions. Traffic and active-connection changes are aggregated and written in five-second batches rather than creating a PostgreSQL query or goroutine for every connection. Pending retry entries for deleted clients are removed so retry maps stay bounded by the current account set.
 
 ### Requirements
 
@@ -1144,13 +1144,16 @@ curl -s "http://SERVER_IP:9090/api/users" -H "X-Session-Token: $TOKEN"
 
 #### `GET /api/users` — session
 - Optional query: `server_id`. Resellers see only their own users; superadmins see all.
-- `200`: array of user objects: `username` (string), `active_conns` (int), `max_connections` (int), `expires_at` (string/null), `limit_mbps_up` (int), `limit_mbps_down` (int), `totp_secret` (string, omitempty), `totp_period` (int), `totp_window` (int), `totp_digits` (int), `allow_static_password` (bool), `totp_enabled` (bool), `owner_username` (string, omitempty), `server_id` (string, omitempty).
+- `200`: array of user objects: `username` (string), `active_conns` (int), `max_connections` (int), `expires_at` (string/null), `limit_mbps_up` (int), `limit_mbps_down` (int), `data_quota_bytes` (int64), `quota_action` (`block` or `throttle`), `quota_throttle_mbps` (int), `total_uplink_bytes`, `total_downlink_bytes`, `total_bytes`, `quota_exceeded`, `totp_secret` (string, omitempty), `totp_period` (int), `totp_window` (int), `totp_digits` (int), `allow_static_password` (bool), `totp_enabled` (bool), `owner_username` (string, omitempty), `server_id` (string, omitempty).
 
 #### `POST /api/users/create` — session
 Creates or updates (upsert) an SSH user.
-- Body: `username` (string, required); `password` (string, optional — empty keeps the existing password on an existing user; for a new user either `password` or `totp_secret` is required); `max_connections` (int); `expires_at` (string); `limit_mbps_up` (int); `limit_mbps_down` (int); `totp_secret` (string); `totp_period` (int); `totp_window` (int); `totp_digits` (int); `allow_static_password` (bool); `owner_username` (string, optional — honored only for superadmin; resellers are forced to themselves); `server_id` (string, optional).
+- Body: `username` (string, required); `password` (string, optional — empty keeps the existing password on an existing user; for a new user either `password` or `totp_secret` is required); `max_connections` (0–10000); `expires_at` (RFC3339 string); `limit_mbps_up` and `limit_mbps_down` (0–1000000); `data_quota_bytes` (non-negative int64); `quota_action` (`block` or `throttle`); `quota_throttle_mbps` (0–1000000; zero defaults to 1); `reset_usage` (bool); `totp_secret` (string); `totp_period` (int); `totp_window` (int); `totp_digits` (int); `allow_static_password` (bool); `owner_username` (string, optional — honored only for superadmin; resellers are forced to themselves); `server_id` (string, optional).
 - `201 Created` (empty body). A proxied create returns the remote node's status/body.
 - Errors: `400 username required`, `400 password or totp_secret required for new user`; `403 user limit reached (N)`; `403 SSH creation is disabled for this server`; `503 database not configured`.
+
+#### `POST /api/users/reset-traffic` — session
+- Body: `username` (required), `server_id` (optional). Resets only byte counters. Resellers may reset only their own users.
 
 #### `DELETE /api/users/delete` — session
 - Query: `username` (string, required); optional `server_id`. Resellers may delete only their own users.
@@ -1261,15 +1264,18 @@ Read/write a managed server's `config.json`. Query: `server_id`. Local delegates
 #### `GET /api/xray/inbounds` — session
 - Optional `server_id`. Lists only inbounds that carry client lists (vless/vmess/trojan). Resellers see all inbounds but only their own clients. Clients are enriched with DB metadata and runtime stats.
 - `200`: array of `{ "tag": string, "protocol": string, "port": <raw>, "listen": string, "clients": [ XrayClientInfo ] }`.
-- **XrayClientInfo**: `id` (string, the UUID), `password` (string, omitempty), `email` (string), `level` (int), `online` (bool), `last_active` (string/null), `uplink_bytes` (int64), `downlink_bytes` (int64), `total_bytes` (int64), `active_connections` (int), `name` (string), `expires_at` (string/null), `expiration_days` (int; `-1` = no expiry, `0` = expired), `max_conns`, `owner_username`, `expired`.
+- **XrayClientInfo**: `id` (string, the UUID), `password` (string, omitempty), `email` (string), `level` (int), `online` (bool), `last_active` (string/null), `uplink_bytes` (int64), `downlink_bytes` (int64), `total_bytes` (int64), `active_connections` (int), `name` (string), `expires_at` (string/null), `expiration_days` (int; `-1` = no expiry, `0` = expired), `max_conns`, `data_quota_bytes`, `quota_action`, `quota_throttle_mbps`, `quota_exceeded`, `owner_username`, `expired`.
 
 #### `POST /api/xray/clients/add` — session
-- Body: `inbound_tag` (string, required), `uuid` (string, required), `email` (string, optional — defaults to name then uuid), `name` (string, optional), `expires_at` (string, optional), `max_connections` (int), `owner_username` (string, optional — superadmin only), `server_id` (string, optional).
+- Body: `inbound_tag` (string, required), `uuid` (valid UUID, required), `email` (string, optional — defaults to name then uuid), `name` (string, optional), `expires_at` (RFC3339, `YYYY-MM-DDThh:mm`, or `YYYY-MM-DD`), `max_connections` (0–10000), `data_quota_bytes`, `quota_action`, `quota_throttle_mbps`, `owner_username` (string, optional — superadmin only), `server_id` (string, optional).
 - `201 Created` (empty). Errors: `400 inbound_tag and uuid required` / `UUID already exists in database`; `403 reseller account suspended or expired` / `user limit reached (N)` / `Xray creation is disabled for this server`; `500`.
 
 #### `POST /api/xray/clients/update` — session
-- Body: `uuid` (string, required), `name` (string), `email` (string), `expires_at` (string), `max_connections` (int), `server_id` (string, optional). Inbound tag and owner are preserved from existing metadata. Resellers may update only their own clients.
+- Body: `uuid` (valid UUID, required), `name` (string), `email` (string), `expires_at` (string), `max_connections` (0–10000), `data_quota_bytes`, `quota_action`, `quota_throttle_mbps`, `reset_usage` (bool), `server_id` (string, optional). Inbound tag and owner are preserved from existing metadata. Resellers may update only their own clients.
 - `200`. Errors: `400 uuid required`; `403 forbidden`; `404 client metadata not found`; `500`.
+
+#### `POST /api/xray/clients/reset-traffic` — session
+- Body: `uuid` (required), `server_id` (optional). Resets only byte counters. Resellers may reset only their own clients.
 
 #### `DELETE /api/xray/clients/remove` — session
 - Query: `inbound_tag` (string, required), `uuid` (string, required); optional `server_id`. Resellers may remove only their own clients.

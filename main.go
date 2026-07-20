@@ -1907,9 +1907,24 @@ func handleCreateUser(store *Store) http.HandlerFunc {
 			http.Error(w, "invalid json", http.StatusBadRequest)
 			return
 		}
+		p.Username = strings.TrimSpace(p.Username)
 		if p.Username == "" {
 			http.Error(w, "username required", http.StatusBadRequest)
 			return
+		}
+		if p.MaxConnections < 0 || p.MaxConnections > 10000 {
+			http.Error(w, "max_connections must be between 0 and 10000", http.StatusBadRequest)
+			return
+		}
+		if p.LimitUpMbps < 0 || p.LimitUpMbps > 1000000 || p.LimitDownMbps < 0 || p.LimitDownMbps > 1000000 {
+			http.Error(w, "bandwidth limits must be between 0 and 1000000 Mbps", http.StatusBadRequest)
+			return
+		}
+		if p.ExpiresAt != "" {
+			if _, err := time.Parse(time.RFC3339, p.ExpiresAt); err != nil {
+				http.Error(w, "invalid expires_at (RFC3339 required)", http.StatusBadRequest)
+				return
+			}
 		}
 		if err := validateQuotaConfig(p.DataQuotaBytes, p.QuotaAction, p.QuotaThrottleMbps); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)

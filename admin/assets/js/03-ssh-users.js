@@ -9,7 +9,10 @@ cancelUserBtn.addEventListener("click", () => {
 function prepareNewSSHUser() {
   userForm.reset();
   fTotpPeriod.value = 60; fTotpWindow.value = 1; fTotpDigits.value = 6;
-  fQuotaAction.value = "block";
+  // SSH and SSH-over-XHTTP plans normally remain connected after quota and
+  // fall back to the configured post-quota speed. Existing users keep their
+  // saved action when edited.
+  fQuotaAction.value = "throttle";
   fQuotaThrottle.value = 1;
   fUsageDisplay.value = "0 B";
   fResetUsage.checked = false;

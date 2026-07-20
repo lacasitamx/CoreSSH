@@ -673,8 +673,8 @@ func (ib *nativeInbound) handleVMess(stream net.Conn, remote net.Addr) {
 		logNativePreAuthRejection("native xray: inbound %q rejected unknown/expired VMess auth id from %s", ib.tag, remote)
 		return
 	}
-	if xrayMgr.nativeQuotaBlocked(client.uuid) {
-		log.Printf("native xray: inbound %q rejected VMess user %s after data quota", ib.tag, client.email)
+	if reason := xrayMgr.nativeClientAccessDenied(client.uuid); reason != "" {
+		log.Printf("native xray: inbound %q rejected VMess user %s: %s", ib.tag, client.email, reason)
 		return
 	}
 
@@ -694,7 +694,7 @@ func (ib *nativeInbound) handleVMess(stream net.Conn, remote net.Addr) {
 		log.Printf("native xray: inbound %q VMess command %d not supported yet", ib.tag, req.command)
 		return
 	}
-	releaseConnection, quotaState, ok := xrayMgr.acquireNativeClientConnection(client.uuid, client.email)
+	releaseConnection, quotaState, ok := xrayMgr.acquireNativeClientConnection(client.uuid, client.email, stream)
 	if !ok {
 		return
 	}

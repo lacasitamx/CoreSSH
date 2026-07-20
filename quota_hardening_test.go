@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
@@ -68,6 +69,67 @@ func TestNativeClientMaxConnectionsAndBatchedActiveDelta(t *testing.T) {
 		t.Fatal("slot was not reusable after release")
 	}
 	release2()
+}
+
+func TestNativeOnlineUsersAreKeyedByUUID(t *testing.T) {
+	oldStore := statsStore
+	statsStore = nil
+	defer func() { statsStore = oldStore }()
+
+	m := &XrayManager{}
+	m.recordNativeConnect("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "shared@example", nil)
+	m.recordNativeConnect("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "shared@example", nil)
+	if got := m.CountOnlineUsers(); got != 2 {
+		t.Fatalf("online UUID count = %d, want 2 for two UUIDs sharing one email", got)
+	}
+	m.statsMu.RLock()
+	_, first := m.statsByEmail["aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"]
+	_, second := m.statsByEmail["bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"]
+	m.statsMu.RUnlock()
+	if !first || !second {
+		t.Fatal("native runtime stats were not stored under canonical UUID keys")
+	}
+}
+
+func TestNativeExpiryRejectsAndDisconnectsClient(t *testing.T) {
+	const uuid = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+	state := &xrayNativeQuotaState{hasExpiry: true, expiresAt: time.Now().Add(time.Hour), generation: 1}
+	m := &XrayManager{nativeQuotaByUUID: map[string]*xrayNativeQuotaState{uuid: state}}
+	closer := &closeTrackingReader{}
+	release, _, ok := m.acquireNativeClientConnection(uuid, "expiry@example", closer)
+	if !ok {
+		t.Fatal("unexpired client was rejected")
+	}
+	m.disconnectNativeClient(uuid)
+	if !closer.closed.Load() {
+		t.Fatal("active native client was not closed during revocation")
+	}
+	release()
+
+	state.mu.Lock()
+	state.expiresAt = time.Now().Add(-time.Second)
+	state.mu.Unlock()
+	if reason := m.nativeClientAccessDenied(uuid); reason != "expired" {
+		t.Fatalf("expired client denial = %q, want expired", reason)
+	}
+	if _, _, ok := m.acquireNativeClientConnection(uuid, "expiry@example"); ok {
+		t.Fatal("expired client acquired a new connection")
+	}
+}
+
+func TestQuotaAndExpiryValidationRejectsUnsafeInput(t *testing.T) {
+	if err := validateQuotaConfig(1, "typo", 1); err == nil {
+		t.Fatal("unknown quota action was accepted")
+	}
+	if err := validateQuotaConfig(1, quotaActionBlock, -1); err == nil {
+		t.Fatal("negative throttle setting was accepted")
+	}
+	if _, err := parseOptionalXrayExpiry("not-a-date"); err == nil {
+		t.Fatal("invalid Xray expiry was accepted")
+	}
+	if exp, err := parseOptionalXrayExpiry(""); err != nil || exp != nil {
+		t.Fatalf("empty Xray expiry = (%v, %v), want nil, nil", exp, err)
+	}
 }
 
 func TestRemoveNativeQuotaPolicyPrunesPendingMaps(t *testing.T) {
@@ -211,6 +273,40 @@ func TestNativeProtocolGuardsRemainFinite(t *testing.T) {
 	}
 }
 
+func TestXHTTPHandlerDoesNotApplyWebRequestCeiling(t *testing.T) {
+	oldLimit := nativeTuneMaxXHTTPRequests.Load()
+	oldActive := nativeXHTTPRequests.Load()
+	nativeTuneMaxXHTTPRequests.Store(1)
+	nativeXHTTPRequests.Store(1)
+	defer func() {
+		nativeTuneMaxXHTTPRequests.Store(oldLimit)
+		nativeXHTTPRequests.Store(oldActive)
+	}()
+
+	ib := &nativeInbound{transport: "xhttp", path: "/"}
+	req := httptest.NewRequest(http.MethodOptions, "/", nil)
+	rec := httptest.NewRecorder()
+	ib.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("XHTTP OPTIONS at legacy request ceiling = %d, want 200", rec.Code)
+	}
+}
+
+func TestLegacyXHTTPTuningMigratesToVPNDefaults(t *testing.T) {
+	got := normalizeNativeXrayTuning(&XrayNativeTuning{
+		MuxGlobalSessions:          8192,
+		MaxConcurrentConnections:   4096,
+		MaxConcurrentXHTTPRequests: 8192,
+		XHTTPMaxSessions:           4096,
+	})
+	if got.MuxGlobalSessions != defaultNativeMuxGlobalSessions ||
+		got.MaxConcurrentConnections != defaultNativeMaxConnections ||
+		got.MaxConcurrentXHTTPRequests != defaultNativeMaxXHTTPRequests ||
+		got.XHTTPMaxSessions != defaultNativeXHTTPMaxSessions {
+		t.Fatalf("legacy tuning was not migrated: %+v", got)
+	}
+}
+
 func TestXHTTPMetadataLengthIsBoundedBeforeSessionAllocation(t *testing.T) {
 	ib := &nativeInbound{transport: "xhttp", path: "/"}
 	req := httptest.NewRequest("GET", "/"+strings.Repeat("a", nativeXHTTPMaxSessionIDBytes+1), nil)
@@ -285,6 +381,72 @@ func TestXHTTPUploadQueueEnforcesPerSessionByteBudget(t *testing.T) {
 	lease.release()
 	if got := nativeXHTTPBufferedBytes.Load(); got != before {
 		t.Fatalf("rejected payload retained %d bytes, baseline %d", got, before)
+	}
+}
+
+func TestXHTTPUploadQueueBackpressuresInsteadOfRejectingBurst(t *testing.T) {
+	before := nativeXHTTPBufferedBytes.Load()
+	q := newNativeXHTTPUploadQueue(2, 4)
+	defer q.close()
+
+	first, ok := acquireNativeXHTTPMemory(4)
+	if !ok {
+		t.Fatal("failed to reserve first XHTTP payload")
+	}
+	if err := q.push(context.Background(), nativeXHTTPPacket{Payload: []byte("one!"), Seq: 0}, first); err != nil {
+		first.release()
+		t.Fatalf("first queue push failed: %v", err)
+	}
+	first.release()
+
+	second, ok := acquireNativeXHTTPMemory(4)
+	if !ok {
+		t.Fatal("failed to reserve second XHTTP payload")
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- q.push(context.Background(), nativeXHTTPPacket{Payload: []byte("two!"), Seq: 1}, second)
+	}()
+
+	select {
+	case err := <-done:
+		second.release()
+		t.Fatalf("second burst packet did not backpressure: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	buf := make([]byte, 4)
+	if n, err := q.Read(buf); err != nil || n != 4 || string(buf) != "one!" {
+		second.release()
+		t.Fatalf("first queue read = (%d, %v, %q)", n, err, string(buf))
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			second.release()
+			t.Fatalf("backpressured packet failed after space released: %v", err)
+		}
+		second.release()
+	case <-time.After(time.Second):
+		second.release()
+		t.Fatal("backpressured packet did not resume")
+	}
+
+	q.close()
+	if got := nativeXHTTPBufferedBytes.Load(); got != before {
+		t.Fatalf("backpressure test leaked %d buffered bytes (baseline %d)", got, before)
+	}
+}
+
+func TestXHTTPBodyReservationUsesActualContentLength(t *testing.T) {
+	ib := &nativeInbound{xhttpMaxEachPostBytes: 1_000_000}
+	req := httptest.NewRequest(http.MethodPost, "/session/0", strings.NewReader("small"))
+	if got := ib.xhttpUploadReservationBytes(req); got != 5 {
+		t.Fatalf("body reservation = %d, want actual payload length 5", got)
+	}
+	req.ContentLength = -1
+	if got := ib.xhttpUploadReservationBytes(req); got != 1_000_000 {
+		t.Fatalf("chunked body reservation = %d, want configured maximum", got)
 	}
 }
 

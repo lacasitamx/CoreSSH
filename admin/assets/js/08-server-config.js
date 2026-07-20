@@ -35,18 +35,18 @@ function toggleUdpgwFields(on) {
 const XRAY_NATIVE_TUNING_DEFAULTS = {
   safe: {
     runtime_gomaxprocs: 0,
-    mux_global_sessions: 8192,
-    max_concurrent_connections: 4096,
-    max_concurrent_xhttp_requests: 8192,
-    xhttp_max_sessions: 4096,
+    mux_global_sessions: 32768,
+    max_concurrent_connections: 32768,
+    max_concurrent_xhttp_requests: -1,
+    xhttp_max_sessions: 32768,
     trace_packets: false,
   },
-  "2k": {
+  "high": {
     runtime_gomaxprocs: 0,
-    mux_global_sessions: 32768,
-    max_concurrent_connections: 8192,
-    max_concurrent_xhttp_requests: 16384,
-    xhttp_max_sessions: 8192,
+    mux_global_sessions: 65536,
+    max_concurrent_connections: 65536,
+    max_concurrent_xhttp_requests: -1,
+    xhttp_max_sessions: 65536,
     trace_packets: false,
   },
 };
@@ -59,7 +59,7 @@ const XRAY_NATIVE_TUNING_FIELDS = {
   xhttp_max_sessions: "cfgXrayMaxXHTTPSessions",
 };
 
-function setXrayNativeTuningDefaults(profile = "2k") {
+function setXrayNativeTuningDefaults(profile = "high") {
   const t = XRAY_NATIVE_TUNING_DEFAULTS[profile] || XRAY_NATIVE_TUNING_DEFAULTS.safe;
   writeXrayNativeTuning(t);
 }

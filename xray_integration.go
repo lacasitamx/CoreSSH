@@ -309,6 +309,10 @@ func initXrayManager(cfg *XrayConfig) {
 	}
 	xrayMgr.mu.Unlock()
 
+	// Reconcile already-expired rows before the runtime loads DB-backed clients.
+	// The periodic checker intentionally sleeps between passes, so doing one pass
+	// here closes the startup window in which an expired UUID could reconnect.
+	expireXrayClientsOnce(statsStore)
 	xrayMgr.reloadNativeQuotaPolicies()
 
 	// In native mode the in-process emulator records traffic directly, so the
@@ -478,11 +482,12 @@ func (m *XrayManager) recordNativeConnect(uuid, email string, state *xrayNativeQ
 	if m.statsByEmail == nil {
 		m.statsByEmail = make(map[string]xrayRuntimeStat)
 	}
-	st := m.statsByEmail[email]
+	key := firstNonEmpty(uuid, email)
+	st := m.statsByEmail[key]
 	st.Email = email
 	st.LastActive = now
 	st.ActiveConnections++
-	m.statsByEmail[email] = st
+	m.statsByEmail[key] = st
 	m.statsMu.Unlock()
 
 	m.queueNativeActiveDelta(uuid, email, 1, true, state)
@@ -499,11 +504,12 @@ func (m *XrayManager) recordNativeDisconnect(uuid, email string, state *xrayNati
 	}
 	m.statsMu.Lock()
 	if m.statsByEmail != nil {
-		st := m.statsByEmail[email]
+		key := firstNonEmpty(uuid, email)
+		st := m.statsByEmail[key]
 		if st.ActiveConnections > 0 {
 			st.ActiveConnections--
 		}
-		m.statsByEmail[email] = st
+		m.statsByEmail[key] = st
 	}
 	m.statsMu.Unlock()
 
@@ -595,12 +601,13 @@ func (m *XrayManager) recordNativeTraffic(uuid, email string, up, down int64, ge
 	if m.statsByEmail == nil {
 		m.statsByEmail = make(map[string]xrayRuntimeStat)
 	}
-	st := m.statsByEmail[email]
+	key := firstNonEmpty(uuid, email)
+	st := m.statsByEmail[key]
 	st.Email = email
 	st.Uplink += up
 	st.Downlink += down
 	st.LastActive = now
-	m.statsByEmail[email] = st
+	m.statsByEmail[key] = st
 	m.statsMu.Unlock()
 
 }
@@ -2261,6 +2268,16 @@ func (m *XrayManager) modifyRawConfig(fn func(cfg map[string]interface{}) error)
 
 // AddXrayClient adds a client to the named inbound and saves the config.
 func (m *XrayManager) AddXrayClient(inboundTag, uuid, email string) error {
+	return m.addXrayClient(inboundTag, uuid, email, false)
+}
+
+// EnsureXrayClient restores a previously suspended DB-backed client without
+// failing if it is already present in the active config.
+func (m *XrayManager) EnsureXrayClient(inboundTag, uuid, email string) error {
+	return m.addXrayClient(inboundTag, uuid, email, true)
+}
+
+func (m *XrayManager) addXrayClient(inboundTag, uuid, email string, allowExisting bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	err := m.modifyRawConfig(func(raw map[string]interface{}) error {
@@ -2287,6 +2304,10 @@ func (m *XrayManager) AddXrayClient(inboundTag, uuid, email string) error {
 						id, _ = cm["password"].(string)
 					}
 					if id == uuid {
+						if allowExisting {
+							cm["email"] = email
+							return nil
+						}
 						return fmt.Errorf("UUID %s already exists in inbound %s", uuid, inboundTag)
 					}
 				}
@@ -2594,6 +2615,16 @@ func handleXrayClientAdd(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "inbound_tag and uuid required", http.StatusBadRequest)
 		return
 	}
+	req.InboundTag = strings.TrimSpace(req.InboundTag)
+	req.UUID = strings.TrimSpace(req.UUID)
+	if _, err := parseUUID(req.UUID); err != nil {
+		http.Error(w, "invalid uuid: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.MaxConnections < 0 || req.MaxConnections > 10000 {
+		http.Error(w, "max_connections must be between 0 and 10000", http.StatusBadRequest)
+		return
+	}
 	if err := validateQuotaConfig(req.DataQuotaBytes, req.QuotaAction, req.QuotaThrottleMbps); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -2645,6 +2676,11 @@ func handleXrayClientAdd(w http.ResponseWriter, r *http.Request) {
 	if req.Email == "" {
 		req.Email = req.UUID
 	}
+	expiresAt, err := parseOptionalXrayExpiry(req.ExpiresAt)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	sess := sessionFromCtx(r.Context())
 	ownerUsername := ""
@@ -2681,10 +2717,7 @@ func handleXrayClientAdd(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := xrayMgr.AddXrayClient(req.InboundTag, req.UUID, req.Email); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
+	var savedMeta *XrayClientMeta
 	if statsStore != nil {
 		meta := XrayClientMeta{
 			UUID:              req.UUID,
@@ -2697,24 +2730,22 @@ func handleXrayClientAdd(w http.ResponseWriter, r *http.Request) {
 			QuotaAction:       normalizeQuotaAction(req.QuotaAction),
 			QuotaThrottleMbps: quotaThrottleMbpsOrDefault(req.QuotaThrottleMbps),
 		}
-		if req.ExpiresAt != "" {
-			var t time.Time
-			var err error
-			for _, layout := range []string{time.RFC3339, "2006-01-02T15:04", "2006-01-02"} {
-				t, err = time.Parse(layout, req.ExpiresAt)
-				if err == nil {
-					break
-				}
-			}
-			if err == nil {
-				meta.ExpiresAt = &t
-			}
-		}
+		meta.ExpiresAt = expiresAt
 		if err := statsStore.UpsertXrayClientMeta(r.Context(), meta); err != nil {
-			xrayLogf("xray: save meta for %s: %v", req.UUID, err)
-		} else {
-			xrayMgr.setNativeQuotaPolicy(&meta)
+			http.Error(w, "save client metadata failed: "+err.Error(), http.StatusInternalServerError)
+			return
 		}
+		xrayMgr.setNativeQuotaPolicy(&meta)
+		savedMeta = &meta
+	}
+	// Publish the credential only after its quota/owner/expiry policy exists, so
+	// a fast native client can never enter an unmetered window during creation.
+	if err := xrayMgr.AddXrayClient(req.InboundTag, req.UUID, req.Email); err != nil {
+		if savedMeta != nil {
+			_ = statsStore.DeleteXrayClientMeta(r.Context(), req.UUID)
+		}
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 	xrayMgr.restartIfExternalRunning()
 	w.WriteHeader(http.StatusCreated)
@@ -2745,6 +2776,15 @@ func handleXrayClientUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.UUID == "" {
 		http.Error(w, "uuid required", http.StatusBadRequest)
+		return
+	}
+	req.UUID = strings.TrimSpace(req.UUID)
+	if _, err := parseUUID(req.UUID); err != nil {
+		http.Error(w, "invalid uuid: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.MaxConnections < 0 || req.MaxConnections > 10000 {
+		http.Error(w, "max_connections must be between 0 and 10000", http.StatusBadRequest)
 		return
 	}
 	if err := validateQuotaConfig(req.DataQuotaBytes, req.QuotaAction, req.QuotaThrottleMbps); err != nil {
@@ -2784,6 +2824,15 @@ func handleXrayClientUpdate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
+	req.Email = strings.TrimSpace(req.Email)
+	if req.Email == "" {
+		req.Email = firstNonEmpty(strings.TrimSpace(req.Name), existing.Email, req.UUID)
+	}
+	expiresAt, err := parseOptionalXrayExpiry(req.ExpiresAt)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	meta := XrayClientMeta{
 		UUID:               req.UUID,
@@ -2798,15 +2847,18 @@ func handleXrayClientUpdate(w http.ResponseWriter, r *http.Request) {
 		TotalUplinkBytes:   existing.TotalUplinkBytes,
 		TotalDownlinkBytes: existing.TotalDownlinkBytes,
 	}
-	if req.ExpiresAt != "" {
-		for _, layout := range []string{time.RFC3339, "2006-01-02T15:04", "2006-01-02"} {
-			if t, err := time.Parse(layout, req.ExpiresAt); err == nil {
-				meta.ExpiresAt = &t
-				break
-			}
+	meta.ExpiresAt = expiresAt
+	emailChanged := req.Email != existing.Email
+	if emailChanged {
+		if err := xrayMgr.UpdateXrayClientEmail(req.UUID, req.Email); err != nil {
+			http.Error(w, "update config email failed: "+err.Error(), http.StatusInternalServerError)
+			return
 		}
 	}
 	if err := statsStore.UpsertXrayClientMeta(r.Context(), meta); err != nil {
+		if emailChanged {
+			_ = xrayMgr.UpdateXrayClientEmail(req.UUID, existing.Email)
+		}
 		http.Error(w, "update failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -2819,14 +2871,26 @@ func handleXrayClientUpdate(w http.ResponseWriter, r *http.Request) {
 		meta.TotalDownlinkBytes = 0
 	}
 	xrayMgr.setNativeQuotaPolicy(&meta)
-	if req.Email != "" {
-		if err := xrayMgr.UpdateXrayClientEmail(req.UUID, req.Email); err != nil {
-			xrayLogf("xray: update config email for %s: %v", req.UUID, err)
-		} else {
-			xrayMgr.restartIfExternalRunning()
-		}
+	if meta.ExpiresAt != nil && !meta.ExpiresAt.After(time.Now()) {
+		xrayMgr.disconnectNativeClient(req.UUID)
+	}
+	if emailChanged {
+		xrayMgr.restartIfExternalRunning()
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+func parseOptionalXrayExpiry(raw string) (*time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	for _, layout := range []string{time.RFC3339, "2006-01-02T15:04", "2006-01-02"} {
+		if t, err := time.Parse(layout, raw); err == nil {
+			return &t, nil
+		}
+	}
+	return nil, fmt.Errorf("invalid expires_at (RFC3339, YYYY-MM-DDThh:mm, or YYYY-MM-DD required)")
 }
 
 func handleXrayClientResetTraffic(w http.ResponseWriter, r *http.Request) {

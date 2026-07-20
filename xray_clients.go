@@ -310,6 +310,66 @@ func removeOwnerXrayClients(ctx context.Context, store *Store, ownerUsername str
 	}
 }
 
+// suspendOwnerXrayClients revokes transport access while preserving metadata,
+// expiry, traffic and quota. This makes reseller suspension/renewal reversible.
+func suspendOwnerXrayClients(ctx context.Context, store *Store, ownerUsername string) {
+	if store == nil || ownerUsername == "" {
+		return
+	}
+	clients, err := store.ListXrayClientsByOwner(ctx, ownerUsername)
+	if err != nil {
+		log.Printf("xray owner suspension: list %s: %v", ownerUsername, err)
+		return
+	}
+	changed := false
+	for _, m := range clients {
+		xrayMgr.disconnectNativeClient(m.UUID)
+		if m.InboundTag == "" {
+			continue
+		}
+		if err := xrayMgr.RemoveXrayClient(m.InboundTag, m.UUID); err != nil {
+			log.Printf("xray owner suspension: remove %s from %s: %v", m.UUID, m.InboundTag, err)
+			continue
+		}
+		changed = true
+	}
+	if changed {
+		xrayMgr.restartIfExternalRunning()
+	}
+}
+
+// restoreOwnerXrayClients reactivates non-expired clients after reseller renewal.
+func restoreOwnerXrayClients(ctx context.Context, store *Store, ownerUsername string) {
+	if store == nil || ownerUsername == "" {
+		return
+	}
+	clients, err := store.ListXrayClientsByOwner(ctx, ownerUsername)
+	if err != nil {
+		log.Printf("xray owner restore: list %s: %v", ownerUsername, err)
+		return
+	}
+	now := time.Now()
+	changed := false
+	for _, m := range clients {
+		if m.InboundTag == "" || (m.ExpiresAt != nil && !m.ExpiresAt.After(now)) {
+			continue
+		}
+		email := m.Email
+		if email == "" {
+			email = m.UUID
+		}
+		if err := xrayMgr.EnsureXrayClient(m.InboundTag, m.UUID, email); err != nil {
+			log.Printf("xray owner restore: add %s to %s: %v", m.UUID, m.InboundTag, err)
+			continue
+		}
+		xrayMgr.setNativeQuotaPolicy(m)
+		changed = true
+	}
+	if changed {
+		xrayMgr.restartIfExternalRunning()
+	}
+}
+
 // startXrayClientExpiryChecker runs a background goroutine that removes expired
 // Xray clients from both the config file and the database every 5 minutes.
 func startXrayClientExpiryChecker(store *Store) {
@@ -320,37 +380,40 @@ func startXrayClientExpiryChecker(store *Store) {
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
-			ctx := context.Background()
-			expired, err := store.ListExpiredXrayClients(ctx)
-			if err != nil {
-				log.Printf("xray expiry checker: list error: %v", err)
-				continue
-			}
-			if len(expired) == 0 {
-				continue
-			}
-			needRestart := false
-			for _, m := range expired {
-				tag := m.InboundTag
-				if tag == "" {
-					_ = store.DeleteXrayClientMeta(ctx, m.UUID)
-					continue
-				}
-				if err := xrayMgr.RemoveXrayClient(tag, m.UUID); err != nil {
-					log.Printf("xray expiry: remove %s from %s: %v", m.UUID, tag, err)
-				} else {
-					needRestart = true
-				}
-				if err := store.DeleteXrayClientMeta(ctx, m.UUID); err != nil {
-					log.Printf("xray expiry: delete meta %s: %v", m.UUID, err)
-				}
-				log.Printf("xray expiry: removed expired client %q (%s) from inbound %s", m.Name, m.UUID, tag)
-			}
-			if needRestart {
-				xrayMgr.restartIfExternalRunning()
-			}
+			expireXrayClientsOnce(store)
 		}
 	}()
+}
+
+func expireXrayClientsOnce(store *Store) {
+	if store == nil {
+		return
+	}
+	ctx := context.Background()
+	expired, err := store.ListExpiredXrayClients(ctx)
+	if err != nil {
+		log.Printf("xray expiry checker: list error: %v", err)
+		return
+	}
+	needRestart := false
+	for _, m := range expired {
+		tag := m.InboundTag
+		xrayMgr.disconnectNativeClient(m.UUID)
+		if tag != "" {
+			if err := xrayMgr.RemoveXrayClient(tag, m.UUID); err != nil {
+				log.Printf("xray expiry: remove %s from %s: %v", m.UUID, tag, err)
+			} else {
+				needRestart = true
+			}
+		}
+		if err := store.DeleteXrayClientMeta(ctx, m.UUID); err != nil {
+			log.Printf("xray expiry: delete meta %s: %v", m.UUID, err)
+		}
+		log.Printf("xray expiry: removed expired client %q (%s) from inbound %s", m.Name, m.UUID, tag)
+	}
+	if needRestart {
+		xrayMgr.restartIfExternalRunning()
+	}
 }
 
 // ResetXrayClientTraffic clears a client's persistent usage without removing
