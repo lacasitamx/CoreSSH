@@ -18,6 +18,133 @@ document.getElementById("xCreateUUIDBtn")?.addEventListener("click", () => {
 document.getElementById("xCreateInbound")?.addEventListener("change", updateXrayCreatorInboundLabel);
 document.getElementById("xCreateClientForm")?.addEventListener("submit", submitXrayClientCreator);
 
+// Keep Xray list controls consistent with the sortable SSH user table while
+// preserving the inbound grouping. Sorting is applied inside each inbound;
+// filters apply across all inbound groups.
+const XRAY_CLIENT_SORT_EXTRACT = {
+  name: c => String(c.name || c.email || c.id || "").toLowerCase(),
+  status: c => c.expired ? 0 : 1,
+  online: c => c.online ? 1 : 0,
+  connections: c => Number(c.active_connections || 0),
+  usage: c => Number(c.total_bytes || ((c.uplink_bytes || 0) + (c.downlink_bytes || 0)) || 0),
+  expiry: c => c.expires_at ? new Date(c.expires_at).getTime() : Infinity,
+  max: c => Number(c.max_conns || 0),
+};
+const XRAY_CLIENT_SORT_DEFAULT_DESC = new Set(["status", "online", "connections", "usage", "max"]);
+const XRAY_CLIENT_SORT_OPTIONS = [
+  ["name", "Name"], ["status", "Status"], ["online", "Online"],
+  ["connections", "Connections"], ["usage", "Usage"], ["expiry", "Expiry"], ["max", "Max"],
+];
+const XRAY_CLIENT_FILTER_OPTIONS = [
+  ["all", "All"], ["online", "Online"], ["offline", "Offline"],
+  ["active", "Active"], ["expired", "Expired"], ["quota", "Quota reached"],
+];
+let xrayClientSort = { key: "name", dir: "asc" };
+let xrayClientFilter = "all";
+let lastXrayInboundsData = [];
+
+function xrayClientMatchesFilter(client) {
+  switch (xrayClientFilter) {
+    case "online": return !!client.online;
+    case "offline": return !client.online;
+    case "active": return !client.expired;
+    case "expired": return !!client.expired;
+    case "quota": return !!client.quota_exceeded;
+    default: return true;
+  }
+}
+
+function sortXrayClients(clients = []) {
+  const extract = XRAY_CLIENT_SORT_EXTRACT[xrayClientSort.key] || XRAY_CLIENT_SORT_EXTRACT.name;
+  const direction = xrayClientSort.dir === "desc" ? -1 : 1;
+  return clients.slice().sort((a, b) => {
+    const left = extract(a), right = extract(b);
+    let comparison;
+    if (typeof left === "number" && typeof right === "number") comparison = left - right;
+    else comparison = String(left).localeCompare(String(right));
+    if (comparison === 0) comparison = String(a.name || a.email || a.id || "").localeCompare(String(b.name || b.email || b.id || ""));
+    return comparison * direction;
+  });
+}
+
+function prepareXrayInboundsForList(inbounds = []) {
+  return (inbounds || []).map(inbound => ({
+    ...inbound,
+    clients: sortXrayClients((inbound.clients || []).filter(xrayClientMatchesFilter)),
+  })).filter(inbound => xrayClientFilter === "all" || inbound.clients.length > 0);
+}
+
+function xrayClientListCounts(inbounds = []) {
+  const clients = (inbounds || []).flatMap(inbound => inbound.clients || []);
+  return { total: clients.length, visible: clients.filter(xrayClientMatchesFilter).length };
+}
+
+function renderXrayListControls() {
+  const sortLabel = document.getElementById("xraySortLabel");
+  const filterLabel = document.getElementById("xrayFilterLabel");
+  const sortButtons = document.getElementById("xraySortButtons");
+  const filterButtons = document.getElementById("xrayFilterButtons");
+  const count = document.getElementById("xrayListCount");
+  if (sortLabel) sortLabel.textContent = t("Sort by");
+  if (filterLabel) filterLabel.textContent = t("Show");
+  if (sortButtons) {
+    sortButtons.replaceChildren(...XRAY_CLIENT_SORT_OPTIONS.map(([key, label]) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "xray-list-filter-btn" + (xrayClientSort.key === key ? " active" : "");
+      button.textContent = t(label);
+      button.setAttribute("aria-pressed", xrayClientSort.key === key ? "true" : "false");
+      if (xrayClientSort.key === key) button.dataset.direction = xrayClientSort.dir;
+      button.addEventListener("click", () => setXrayClientSort(key));
+      return button;
+    }));
+  }
+  if (filterButtons) {
+    filterButtons.replaceChildren(...XRAY_CLIENT_FILTER_OPTIONS.map(([key, label]) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "xray-list-filter-btn" + (xrayClientFilter === key ? " active" : "");
+      button.textContent = t(label);
+      button.setAttribute("aria-pressed", xrayClientFilter === key ? "true" : "false");
+      button.addEventListener("click", () => setXrayClientFilter(key));
+      return button;
+    }));
+  }
+  if (count) {
+    const counts = xrayClientListCounts(lastXrayInboundsData);
+    count.textContent = t("{visible} of {total} users", counts);
+  }
+}
+
+function setXrayClientSort(key) {
+  if (!XRAY_CLIENT_SORT_EXTRACT[key]) return;
+  if (xrayClientSort.key === key) xrayClientSort.dir = xrayClientSort.dir === "asc" ? "desc" : "asc";
+  else {
+    xrayClientSort.key = key;
+    xrayClientSort.dir = XRAY_CLIENT_SORT_DEFAULT_DESC.has(key) ? "desc" : "asc";
+  }
+  renderInbounds(lastXrayInboundsData, { force:true, fromControls:true });
+}
+
+function setXrayClientFilter(filter) {
+  if (!XRAY_CLIENT_FILTER_OPTIONS.some(([key]) => key === filter)) return;
+  xrayClientFilter = filter;
+  renderInbounds(lastXrayInboundsData, { force:true, fromControls:true });
+}
+
+function bindXrayTableSortHeaders(table) {
+  table.querySelectorAll("th[data-sort-key]").forEach(header => {
+    const key = header.dataset.sortKey;
+    const selected = key === xrayClientSort.key;
+    header.classList.toggle("sort-asc", selected && xrayClientSort.dir === "asc");
+    header.classList.toggle("sort-desc", selected && xrayClientSort.dir === "desc");
+    header.setAttribute("aria-sort", selected ? (xrayClientSort.dir === "asc" ? "ascending" : "descending") : "none");
+    header.addEventListener("click", () => setXrayClientSort(key));
+  });
+}
+
+renderXrayListControls();
+
 
 async function loadXrayStatus() {
   if (xrayChip) {
@@ -167,25 +294,33 @@ async function copyText(text) {
 
 function renderInbounds(inbounds, options = {}) {
   const { silent = false, force = false } = options || {};
-  updateDashboardXray(inbounds);
-  syncXrayCreatorInbounds(inbounds);
-  const nextStructure = inboundStructure(inbounds);
+  lastXrayInboundsData = Array.isArray(inbounds) ? inbounds : [];
+  updateDashboardXray(lastXrayInboundsData);
+  syncXrayCreatorInbounds(lastXrayInboundsData);
+  const listInbounds = prepareXrayInboundsForList(lastXrayInboundsData);
+  const nextStructure = inboundStructure(listInbounds);
+  renderXrayListControls();
 
-  if (silent && !force && nextStructure === lastInboundsStructure && patchRenderedInbounds(inbounds)) return;
+  if (silent && !force && nextStructure === lastInboundsStructure && patchRenderedInbounds(listInbounds)) return;
   if (silent && !force && isXrayClientEditorActive()) {
-    patchRenderedInbounds(inbounds);
+    patchRenderedInbounds(listInbounds);
     if (xStatus) xStatus.textContent = t("New client data is available; editing was preserved.");
     return;
   }
 
-  if (!inbounds.length) {
+  if (!lastXrayInboundsData.length) {
     inboundsContainer.innerHTML = `<div class="hint" style="padding:8px 0;">${t("No VLESS/VMess/Trojan inbounds found.")}</div>`;
+    lastInboundsStructure = nextStructure;
+    return;
+  }
+  if (!listInbounds.length) {
+    inboundsContainer.innerHTML = `<div class="hint" style="padding:8px 0;">${t("No Xray users match this filter.")}</div>`;
     lastInboundsStructure = nextStructure;
     return;
   }
   inboundsContainer.innerHTML = "";
   lastInboundsStructure = nextStructure;
-  inbounds.forEach(ib => {
+  listInbounds.forEach(ib => {
     const section = document.createElement("div");
     section.dataset.inboundTag = String(ib.tag || "");
     section.dataset.inboundProtocol = String(ib.protocol || "");
@@ -219,7 +354,7 @@ function renderInbounds(inbounds, options = {}) {
       tblWrap.innerHTML = `<div class="hint" style="padding:4px 0;">${t("No clients.")}</div>`;
     } else {
       const tbl = document.createElement("table");
-      tbl.innerHTML = `<thead><tr><th>${t("Name")}</th><th>UUID</th><th>${t("Email")}</th><th>${t("Expiry")}</th><th>${t("Status")}</th><th>${t("Online")}</th><th>${t("Traffic")}</th><th>${t("Max")}</th><th>${t("Actions")}</th></tr></thead>`;
+      tbl.innerHTML = `<thead><tr><th data-sort-key="name">${t("Name")}</th><th>UUID</th><th>${t("Email")}</th><th data-sort-key="expiry">${t("Expiry")}</th><th data-sort-key="status">${t("Status")}</th><th data-sort-key="online">${t("Online")}</th><th data-sort-key="connections">${t("Conn")}</th><th data-sort-key="usage">${t("Traffic")}</th><th data-sort-key="max">${t("Max")}</th><th>${t("Actions")}</th></tr></thead>`;
       const tbody = document.createElement("tbody");
       clients.forEach(c => {
         const tr = document.createElement("tr");
@@ -231,6 +366,7 @@ function renderInbounds(inbounds, options = {}) {
           <td data-cell="expiry" style="font-size:.7rem;">${escapeHTML(clientExpiryLabel(c))}</td>
           <td data-cell="status">${clientStatusHTML(c)}</td>
           <td data-cell="online">${clientOnlineHTML(c)}</td>
+          <td data-cell="connections" style="font-size:.7rem;">${escapeHTML(c.active_connections || 0)}</td>
           <td data-cell="traffic" style="font-size:.7rem;">${clientTrafficHTML(c)}</td>
           <td data-cell="max" style="font-size:.7rem;">${escapeHTML(c.max_conns || "∞")}</td>`;
         const actTd = document.createElement("td");
@@ -260,6 +396,7 @@ function renderInbounds(inbounds, options = {}) {
         tbody.appendChild(tr);
       });
       tbl.appendChild(tbody);
+      bindXrayTableSortHeaders(tbl);
       tblWrap.appendChild(tbl);
     }
     section.appendChild(tblWrap);
