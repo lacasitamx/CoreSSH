@@ -29,24 +29,24 @@ function toggleUdpgwFields(on) {
 }
 
 
-// Only operator-safe knobs remain. Transport buffers (HTTP/2 flow control, XHTTP
-// reorder buffer, mux/UDP buffers) are fixed to xray-core defaults in the backend
-// and are no longer exposed here, so they cannot be misconfigured.
+// Only operator-safe knobs remain. Global transport/XHTTP count admission is
+// fixed to unlimited; byte backpressure and protocol buffers stay internal so a
+// panel value cannot turn normal VPN traffic into HTTP overload responses.
 const XRAY_NATIVE_TUNING_DEFAULTS = {
   safe: {
     runtime_gomaxprocs: 0,
     mux_global_sessions: 32768,
-    max_concurrent_connections: 32768,
+    max_concurrent_connections: -1,
     max_concurrent_xhttp_requests: -1,
-    xhttp_max_sessions: 32768,
+    xhttp_max_sessions: -1,
     trace_packets: false,
   },
   "high": {
     runtime_gomaxprocs: 0,
     mux_global_sessions: 65536,
-    max_concurrent_connections: 65536,
+    max_concurrent_connections: -1,
     max_concurrent_xhttp_requests: -1,
-    xhttp_max_sessions: 65536,
+    xhttp_max_sessions: -1,
     trace_packets: false,
   },
 };
@@ -54,9 +54,6 @@ const XRAY_NATIVE_TUNING_DEFAULTS = {
 const XRAY_NATIVE_TUNING_FIELDS = {
   runtime_gomaxprocs: "cfgXrayRuntimeGomaxprocs",
   mux_global_sessions: "cfgXrayMuxGlobalSessions",
-  max_concurrent_connections: "cfgXrayMaxConnections",
-  max_concurrent_xhttp_requests: "cfgXrayMaxXHTTPRequests",
-  xhttp_max_sessions: "cfgXrayMaxXHTTPSessions",
 };
 
 function setXrayNativeTuningDefaults(profile = "high") {
@@ -80,6 +77,12 @@ function readXrayNativeTuning() {
     const el = document.getElementById(id);
     out[key] = parseInt(el?.value || "0", 10) || 0;
   });
+  // These legacy JSON keys are intentionally fixed at unlimited. Keeping them
+  // in saved configs makes upgrades/downgrades explicit without exposing web
+  // request ceilings that do not belong on a VPN transport.
+  out.max_concurrent_connections = -1;
+  out.max_concurrent_xhttp_requests = -1;
+  out.xhttp_max_sessions = -1;
   out.trace_packets = !!document.getElementById("cfgXrayTracePackets")?.checked;
   return out;
 }

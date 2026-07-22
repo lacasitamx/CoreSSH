@@ -204,9 +204,9 @@ func (s *nativeXrayServer) start(configFile string) error {
 			}
 			return fmt.Errorf("native xray: listen %s (shared XHTTP): %w", addr, err)
 		}
-		// Apply the global pre-authentication ceiling before net/http can spawn a
-		// goroutine or begin a TLS handshake for the accepted socket.
-		serveLn := limitNativeListener(ln)
+		// Track accepted sockets so stop/reload can close them. VPN transports are
+		// not subject to a global website-style connection ceiling.
+		serveLn := trackNativeListener(ln)
 		if group.security == "tls" {
 			serveLn = tls.NewListener(serveLn, group.tlsConfig)
 		}

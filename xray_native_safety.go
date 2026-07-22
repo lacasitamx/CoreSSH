@@ -34,14 +34,10 @@ func init() {
 }
 
 var (
-	nativeTransportConnections  atomic.Int64
-	nativeTransportRejected     atomic.Int64
-	nativeXHTTPRequests         atomic.Int64
-	nativeXHTTPRequestsRejected atomic.Int64
-	nativeXHTTPSessions         atomic.Int64
-	nativeXHTTPSessionsRejected atomic.Int64
-	nativeClientConnsRejected   atomic.Int64
-	nativePreAuthRejected       atomic.Int64
+	nativeTransportConnections atomic.Int64
+	nativeXHTTPSessions        atomic.Int64
+	nativeClientConnsRejected  atomic.Int64
+	nativePreAuthRejected      atomic.Int64
 
 	nativeTransportAccepting atomic.Bool
 	nativeTransportRegistry  = struct {
@@ -50,9 +46,9 @@ var (
 	}{conns: make(map[*nativeCountedConn]struct{})}
 )
 
-// acquireNativeCounter reserves one slot without blocking. Blocking the accept
-// loop or an HTTP handler when the process is already at its safety ceiling
-// would retain yet more sockets/goroutines, so overload is rejected promptly.
+// acquireNativeCounter tracks a counted resource and returns an exactly-once
+// release function. Native transport/XHTTP admission calls it with limit=0
+// because VPN traffic must not be rejected by a global website-style ceiling.
 func acquireNativeCounter(active *atomic.Int64, limit int) (func(), bool) {
 	for {
 		current := active.Load()
@@ -100,30 +96,11 @@ func logNativePreAuthRejection(format string, args ...interface{}) {
 }
 
 func acquireNativeTransportConnection() (func(), bool) {
-	limit := nativeMaxConnectionLimit()
-	release, ok := acquireNativeCounter(&nativeTransportConnections, limit)
-	if !ok {
-		logNativeLimitRejection("transport connection", &nativeTransportRejected, limit)
-	}
-	return release, ok
-}
-
-func acquireNativeXHTTPRequest() (func(), bool) {
-	limit := nativeMaxXHTTPRequestLimit()
-	release, ok := acquireNativeCounter(&nativeXHTTPRequests, limit)
-	if !ok {
-		logNativeLimitRejection("XHTTP request", &nativeXHTTPRequestsRejected, limit)
-	}
-	return release, ok
+	return acquireNativeCounter(&nativeTransportConnections, 0)
 }
 
 func acquireNativeXHTTPSession() (func(), bool) {
-	limit := nativeXHTTPMaxSessionLimit()
-	release, ok := acquireNativeCounter(&nativeXHTTPSessions, limit)
-	if !ok {
-		logNativeLimitRejection("XHTTP session", &nativeXHTTPSessionsRejected, limit)
-	}
-	return release, ok
+	return acquireNativeCounter(&nativeXHTTPSessions, 0)
 }
 
 func configureNativeTransportSocket(c net.Conn) {
@@ -215,9 +192,8 @@ func registerTrackedNativeTransportConn(c net.Conn, release func()) (net.Conn, b
 	return counted, true
 }
 
-// waitWrapTrackedNativeTransportConn is used by raw native accept loops. It
-// holds at most one already-accepted socket while capacity is busy, leaving the
-// rest in the kernel backlog instead of creating origin-side resets/502s.
+// waitWrapTrackedNativeTransportConn is used by raw native accept loops. Global
+// admission is unlimited; the loop remains only to coordinate listener shutdown.
 func waitWrapTrackedNativeTransportConn(c net.Conn) (net.Conn, bool) {
 	if c == nil {
 		return nil, false
@@ -254,20 +230,19 @@ func closeAllNativeTransportConnections() {
 	}
 }
 
-// nativeLimitedListener applies the same pre-authentication ceiling to XHTTP
-// listeners. net/http receives only sockets that own a slot; when capacity is
-// busy, new sockets remain in the kernel backlog until a slot becomes available.
-type nativeLimitedListener struct {
+// nativeTrackingListener registers every accepted XHTTP socket so a live
+// stop/reload can close it. It counts sockets for diagnostics but never rejects
+// or delays one because of a global application limit.
+type nativeTrackingListener struct {
 	net.Listener
 }
 
-func (l nativeLimitedListener) Accept() (net.Conn, error) {
+func (l nativeTrackingListener) Accept() (net.Conn, error) {
 	for {
-		// Reserve before accepting. When the transport is at capacity, connections
-		// remain queued by the kernel rather than being accepted and reset, which is
-		// the behavior CDNs commonly report as an origin 502.
 		release, ok := acquireNativeTransportConnection()
 		if !ok {
+			// Unlimited admission can only fail if this implementation changes. Avoid
+			// accepting and resetting a socket if that ever happens.
 			time.Sleep(nativeOverloadBackoff)
 			continue
 		}
@@ -286,9 +261,9 @@ func (l nativeLimitedListener) Accept() (net.Conn, error) {
 	}
 }
 
-func limitNativeListener(ln net.Listener) net.Listener {
+func trackNativeListener(ln net.Listener) net.Listener {
 	if ln == nil {
 		return nil
 	}
-	return nativeLimitedListener{Listener: ln}
+	return nativeTrackingListener{Listener: ln}
 }

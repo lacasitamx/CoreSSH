@@ -480,6 +480,7 @@ write_sshpanel_systemd_override() {
     echo "[Service]"
     echo "Environment=PANEL_LOG_FILE=${INSTALL_DIR}/logs/panel.log"
     echo "Environment=PANEL_LOG_MAX_BYTES=${PANEL_LOG_MAX_BYTES}"
+    echo "LimitNOFILE=1048576"
     echo "ExecStartPre="
     echo "ExecStartPre=${MKDIR_BIN} -p ${INSTALL_DIR}/logs"
     echo "ExecStartPre=${SH_BIN} -c '${MOUNTPOINT_BIN} -q ${INSTALL_DIR}/logs || ${MOUNT_BIN} -t tmpfs -o size=${LOG_TMPFS_SIZE},mode=0755 tmpfs ${INSTALL_DIR}/logs || true'"

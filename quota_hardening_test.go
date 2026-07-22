@@ -217,11 +217,7 @@ func TestTrackedNativeConnectionsAreClosedOnShutdown(t *testing.T) {
 	}
 }
 
-func TestCloseAllXHTTPSessionsReleasesGlobalSlots(t *testing.T) {
-	oldLimit := nativeTuneXHTTPMaxSessions.Load()
-	nativeTuneXHTTPMaxSessions.Store(8)
-	defer nativeTuneXHTTPMaxSessions.Store(oldLimit)
-
+func TestXHTTPSessionsIgnoreLegacyGlobalCapAndReleaseCounters(t *testing.T) {
 	before := nativeXHTTPSessions.Load()
 	ib := &nativeInbound{xhttpMaxBufferedPosts: 2}
 	for _, id := range []string{"one", "two"} {
@@ -245,28 +241,14 @@ func TestCloseAllXHTTPSessionsReleasesGlobalSlots(t *testing.T) {
 }
 
 func TestNegativeXHTTPSessionLimitMeansUnlimited(t *testing.T) {
-	old := nativeTuneXHTTPMaxSessions.Load()
-	nativeTuneXHTTPMaxSessions.Store(0)
-	defer nativeTuneXHTTPMaxSessions.Store(old)
 	if got := (&nativeInbound{}).xhttpMaxActiveSessions(); got != 0 {
 		t.Fatalf("unlimited XHTTP session limit normalized to %d", got)
 	}
 }
 
-func TestNativeProtocolGuardsRemainFinite(t *testing.T) {
-	oldRequests := nativeTuneMaxXHTTPRequests.Load()
-	defer nativeTuneMaxXHTTPRequests.Store(oldRequests)
-
-	// Zero is the internal representation of an explicitly disabled application
-	// request counter. HTTP/2 must still retain a finite per-connection guard.
-	nativeTuneMaxXHTTPRequests.Store(0)
-	if got := nativeHTTP2MaxConcurrentStreams(); got != defaultNativeHTTP2MaxStreams {
-		t.Fatalf("HTTP/2 stream guard = %d, want %d", got, defaultNativeHTTP2MaxStreams)
-	}
-
-	nativeTuneMaxXHTTPRequests.Store(32)
-	if got := nativeHTTP2MaxConcurrentStreams(); got != 32 {
-		t.Fatalf("HTTP/2 stream guard did not honor lower request cap: %d", got)
+func TestNativeHTTP2StreamsIgnoreLegacyRequestCeiling(t *testing.T) {
+	if got := nativeHTTP2MaxConcurrentStreams(); got != ^uint32(0) {
+		t.Fatalf("HTTP/2 stream setting = %d, want unlimited uint32 range", got)
 	}
 	if got := nativeMuxMaxSessionLimit(); got != 64 {
 		t.Fatalf("per-transport Mux session guard = %d, want 64", got)
@@ -274,15 +256,6 @@ func TestNativeProtocolGuardsRemainFinite(t *testing.T) {
 }
 
 func TestXHTTPHandlerDoesNotApplyWebRequestCeiling(t *testing.T) {
-	oldLimit := nativeTuneMaxXHTTPRequests.Load()
-	oldActive := nativeXHTTPRequests.Load()
-	nativeTuneMaxXHTTPRequests.Store(1)
-	nativeXHTTPRequests.Store(1)
-	defer func() {
-		nativeTuneMaxXHTTPRequests.Store(oldLimit)
-		nativeXHTTPRequests.Store(oldActive)
-	}()
-
 	ib := &nativeInbound{transport: "xhttp", path: "/"}
 	req := httptest.NewRequest(http.MethodOptions, "/", nil)
 	rec := httptest.NewRecorder()
@@ -292,18 +265,18 @@ func TestXHTTPHandlerDoesNotApplyWebRequestCeiling(t *testing.T) {
 	}
 }
 
-func TestLegacyXHTTPTuningMigratesToVPNDefaults(t *testing.T) {
+func TestPersistedXHTTPAdmissionTuningIsAlwaysUnlimited(t *testing.T) {
 	got := normalizeNativeXrayTuning(&XrayNativeTuning{
 		MuxGlobalSessions:          8192,
 		MaxConcurrentConnections:   4096,
 		MaxConcurrentXHTTPRequests: 8192,
 		XHTTPMaxSessions:           4096,
 	})
-	if got.MuxGlobalSessions != defaultNativeMuxGlobalSessions ||
-		got.MaxConcurrentConnections != defaultNativeMaxConnections ||
+	if got.MuxGlobalSessions != 8192 ||
+		got.MaxConcurrentConnections != -1 ||
 		got.MaxConcurrentXHTTPRequests != defaultNativeMaxXHTTPRequests ||
-		got.XHTTPMaxSessions != defaultNativeXHTTPMaxSessions {
-		t.Fatalf("legacy tuning was not migrated: %+v", got)
+		got.XHTTPMaxSessions != -1 {
+		t.Fatalf("persisted admission limits were not removed: %+v", got)
 	}
 }
 
@@ -325,20 +298,20 @@ func TestXHTTPMetadataLengthIsBoundedBeforeSessionAllocation(t *testing.T) {
 
 func TestXHTTPUploadMemoryIsReleasedOnReadAndClose(t *testing.T) {
 	before := nativeXHTTPBufferedBytes.Load()
-	q := newNativeXHTTPUploadQueue(4, 8)
+	q := newNativeXHTTPUploadQueue(4, 512)
 
-	lease, ok := acquireNativeXHTTPMemory(8)
+	accounted := nativeXHTTPAccountedPacketBytes(4)
+	lease, ok := acquireNativeXHTTPMemory(accounted)
 	if !ok {
 		t.Fatal("failed to reserve XHTTP test memory")
 	}
-	lease.shrink(4)
 	if err := q.push(context.Background(), nativeXHTTPPacket{Payload: []byte("test"), Seq: 0}, lease); err != nil {
 		lease.release()
 		t.Fatalf("queue push failed: %v", err)
 	}
 	lease.release() // transferred leases are a no-op for the producer.
-	if got := nativeXHTTPBufferedBytes.Load(); got != before+4 {
-		t.Fatalf("buffered bytes after push = %d, want %d", got, before+4)
+	if got := nativeXHTTPBufferedBytes.Load(); got != before+accounted {
+		t.Fatalf("buffered bytes after push = %d, want %d", got, before+accounted)
 	}
 
 	buf := make([]byte, 4)
@@ -349,7 +322,7 @@ func TestXHTTPUploadMemoryIsReleasedOnReadAndClose(t *testing.T) {
 		t.Fatalf("buffered bytes after read = %d, want %d", got, before)
 	}
 
-	lease, ok = acquireNativeXHTTPMemory(3)
+	lease, ok = acquireNativeXHTTPMemory(nativeXHTTPAccountedPacketBytes(3))
 	if !ok {
 		t.Fatal("failed to reserve second XHTTP test memory")
 	}
@@ -366,10 +339,10 @@ func TestXHTTPUploadMemoryIsReleasedOnReadAndClose(t *testing.T) {
 
 func TestXHTTPUploadQueueEnforcesPerSessionByteBudget(t *testing.T) {
 	before := nativeXHTTPBufferedBytes.Load()
-	q := newNativeXHTTPUploadQueue(4, 4)
+	q := newNativeXHTTPUploadQueue(4, nativeXHTTPMinPacketAccountingBytes-1)
 	defer q.close()
 
-	lease, ok := acquireNativeXHTTPMemory(5)
+	lease, ok := acquireNativeXHTTPMemory(nativeXHTTPAccountedPacketBytes(5))
 	if !ok {
 		t.Fatal("failed to reserve XHTTP test memory")
 	}
@@ -386,10 +359,10 @@ func TestXHTTPUploadQueueEnforcesPerSessionByteBudget(t *testing.T) {
 
 func TestXHTTPUploadQueueBackpressuresInsteadOfRejectingBurst(t *testing.T) {
 	before := nativeXHTTPBufferedBytes.Load()
-	q := newNativeXHTTPUploadQueue(2, 4)
+	q := newNativeXHTTPUploadQueue(2, nativeXHTTPMinPacketAccountingBytes)
 	defer q.close()
 
-	first, ok := acquireNativeXHTTPMemory(4)
+	first, ok := acquireNativeXHTTPMemory(nativeXHTTPAccountedPacketBytes(4))
 	if !ok {
 		t.Fatal("failed to reserve first XHTTP payload")
 	}
@@ -399,7 +372,7 @@ func TestXHTTPUploadQueueBackpressuresInsteadOfRejectingBurst(t *testing.T) {
 	}
 	first.release()
 
-	second, ok := acquireNativeXHTTPMemory(4)
+	second, ok := acquireNativeXHTTPMemory(nativeXHTTPAccountedPacketBytes(4))
 	if !ok {
 		t.Fatal("failed to reserve second XHTTP payload")
 	}
@@ -438,11 +411,50 @@ func TestXHTTPUploadQueueBackpressuresInsteadOfRejectingBurst(t *testing.T) {
 	}
 }
 
+func TestXHTTPReassemblyHasNoPacketRequestCountCeiling(t *testing.T) {
+	before := nativeXHTTPBufferedBytes.Load()
+	q := newNativeXHTTPUploadQueue(1, 4*nativeXHTTPMinPacketAccountingBytes)
+	defer q.close()
+
+	done := make(chan error, 1)
+	go func() {
+		for _, seq := range []uint64{3, 2, 1, 0} {
+			lease, ok := acquireNativeXHTTPMemory(nativeXHTTPAccountedPacketBytes(1))
+			if !ok {
+				done <- errors.New("could not reserve packet memory")
+				return
+			}
+			err := q.push(context.Background(), nativeXHTTPPacket{Payload: []byte{byte('a' + seq)}, Seq: seq}, lease)
+			lease.release()
+			if err != nil {
+				done <- err
+				return
+			}
+		}
+		done <- nil
+	}()
+
+	buf := make([]byte, 1)
+	for want := byte('a'); want <= byte('d'); want++ {
+		n, err := q.Read(buf)
+		if err != nil || n != 1 || buf[0] != want {
+			t.Fatalf("reassembled packet = (%d, %v, %q), want %q", n, err, buf[:n], []byte{want})
+		}
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("out-of-order burst was rejected: %v", err)
+	}
+	q.close()
+	if got := nativeXHTTPBufferedBytes.Load(); got != before {
+		t.Fatalf("reassembly test leaked %d buffered bytes (baseline %d)", got, before)
+	}
+}
+
 func TestXHTTPBodyReservationUsesActualContentLength(t *testing.T) {
 	ib := &nativeInbound{xhttpMaxEachPostBytes: 1_000_000}
 	req := httptest.NewRequest(http.MethodPost, "/session/0", strings.NewReader("small"))
-	if got := ib.xhttpUploadReservationBytes(req); got != 5 {
-		t.Fatalf("body reservation = %d, want actual payload length 5", got)
+	if got := ib.xhttpUploadReservationBytes(req); got != nativeXHTTPMinPacketAccountingBytes {
+		t.Fatalf("body reservation = %d, want minimum accounted packet size", got)
 	}
 	req.ContentLength = -1
 	if got := ib.xhttpUploadReservationBytes(req); got != 1_000_000 {

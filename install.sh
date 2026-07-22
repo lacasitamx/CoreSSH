@@ -674,7 +674,7 @@ ExecStart=${INSTALL_DIR}/sshpanel -config ${INSTALL_DIR}/config.json
 Restart=always
 RestartSec=5
 User=root
-LimitNOFILE=65536
+LimitNOFILE=1048576
 StandardOutput=journal
 StandardError=journal
 

@@ -71,13 +71,13 @@ A confirmação dessa migração é exibida dentro do próprio painel. Se a grav
 
 Contas SSH e clientes VLESS/VMess do modo nativo podem usar `data_quota_bytes` com ação `block` ou `throttle`. O botão **Reset/Zerar tráfego** limpa apenas os contadores; não renova validade, senha ou configuração da conta. Não existe reset periódico automático no servidor: qualquer período comercial mostrado no site é independente e o reset ocorre somente por ação explícita no painel/API. O valor `max_conns` é aplicado no momento em que o usuário VLESS/VMess é autenticado e vale em conjunto para TCP, UDP, WebSocket, XHTTP e conexões Mux (uma conexão Mux autenticada conta como uma conexão, independentemente dos streams filhos).
 
-O runtime nativo também possui limites globais para impedir crescimento sem controle de sockets, goroutines e sessões HTTP:
+As antigas chaves globais de admissão continuam no JSON somente para compatibilidade, mas são sempre normalizadas para `-1` (ilimitado), inclusive quando um `config.json` antigo ainda contém `4096`, `8192`, `32768` ou outro valor positivo:
 
-- `max_concurrent_connections`: conexões de transporte TCP/TLS/WebSocket/XHTTP; padrão `32768`;
-- `max_concurrent_xhttp_requests`: mantido apenas para compatibilidade de configuração; o limite de requisições web fica desativado (`-1`) no XHTTP;
-- `xhttp_max_sessions`: sessões XHTTP ativas; padrão `32768`.
+- `max_concurrent_connections`: sem limite global de conexões de transporte;
+- `max_concurrent_xhttp_requests`: sem limite global de requisições XHTTP;
+- `xhttp_max_sessions`: sem limite global de sessões XHTTP.
 
-Esses campos ficam em **Configurações → Xray → Native Xray scale tuning**. O XHTTP é tratado como transporte VPN: rajadas de packet-up usam backpressure cancelável e buffers de bytes limitados, sem respostas `429` nem semântica de “too many requests”. Ao atingir o teto de transporte, novos sockets permanecem no backlog do kernel em vez de serem aceitos e resetados. Conexões HTTP/2 mantêm um limite de fluxo de 1024 streams simultâneos por conexão. Cada transporte Mux aceita no máximo 64 sessões filhas, com limite global padrão de 32768. Sockets WebSocket incompletos têm timeout de handshake, conexões HTTP ociosas têm timeout, e parar/reiniciar o Xray nativo fecha conexões e sessões existentes. Atualizações de tráfego e de conexões ativas são agregadas e persistidas em lote a cada cinco segundos, sem criar uma goroutine ou consulta PostgreSQL por conexão. Entradas pendentes de usuários removidos são descartadas para manter os mapas de retry limitados ao conjunto atual de contas.
+O painel não expõe mais esses três controles como limites ajustáveis. Xray XHTTP e XHTTP SSH usam o mesmo listener VPN sem teto por quantidade de requisições, streams HTTP/2, conexões de transporte ou sessões XHTTP. Rajadas de `packet-up` e a remontagem fora de ordem usam backpressure cancelável contabilizado em bytes; até pacotes vazios consomem um custo mínimo de memória contabilizada, portanto remover o limite por quantidade não cria uma fila de metadados sem limite. Não existem respostas `429` nem rejeições `503` por capacidade global. As políticas reais por usuário (`max_conns`, cota e banda) continuam ativas. Cada transporte Mux aceita no máximo 64 sessões filhas, com limite global padrão de 32768. Parar/reiniciar o Xray nativo fecha conexões e sessões existentes. Atualizações de tráfego e de conexões ativas são agregadas e persistidas em lote a cada cinco segundos, sem criar uma goroutine ou consulta PostgreSQL por conexão. Entradas pendentes de usuários removidos são descartadas para manter os mapas de retry limitados ao conjunto atual de contas.
 
 ### Requisitos
 
@@ -612,13 +612,13 @@ The migration confirmation is rendered inside the panel. If saving fails, the te
 
 SSH accounts and native-mode VLESS/VMess clients can use `data_quota_bytes` with either the `block` or `throttle` action. The **Reset traffic** action clears only usage counters; it does not renew expiry, change a password, or alter account settings. The server does not perform an automatic periodic reset: any commercial period shown on the website is independent, and counters reset only through an explicit panel/API action. `max_conns` is enforced when a native VLESS/VMess user is authenticated and is shared across TCP, UDP, WebSocket, XHTTP, and Mux transports (one authenticated Mux transport counts as one connection, regardless of its child streams).
 
-The native runtime also has global ceilings that prevent unbounded socket, goroutine, and HTTP-session growth:
+The old global admission keys remain in JSON for compatibility, but they are always normalized to `-1` (unlimited), including when an old `config.json` still contains `4096`, `8192`, `32768`, or any other positive value:
 
-- `max_concurrent_connections`: TCP/TLS/WebSocket/XHTTP transport connections; default `32768`;
-- `max_concurrent_xhttp_requests`: retained for configuration compatibility; the web-request cap is disabled (`-1`) for XHTTP;
-- `xhttp_max_sessions`: active XHTTP sessions; default `32768`.
+- `max_concurrent_connections`: no global transport-connection count cap;
+- `max_concurrent_xhttp_requests`: no global XHTTP-request count cap;
+- `xhttp_max_sessions`: no global XHTTP-session count cap.
 
-These fields are available under **Settings → Xray → Native Xray scale tuning**. XHTTP is treated as VPN transport traffic: packet-up bursts use cancelable backpressure and bounded byte buffers, with no `429` or “too many requests” behavior. At the transport ceiling, new sockets remain in the kernel backlog instead of being accepted and reset. HTTP/2 connections retain a 1024-stream flow-control guard per connection. Each Mux transport accepts at most 64 child sessions, with a default global ceiling of 32768. Incomplete WebSocket handshakes time out, idle HTTP connections time out, and stopping/restarting native Xray closes existing transports and XHTTP sessions. Traffic and active-connection changes are aggregated and written in five-second batches rather than creating a PostgreSQL query or goroutine for every connection. Pending retry entries for deleted clients are removed so retry maps stay bounded by the current account set.
+The panel no longer exposes those three controls as adjustable ceilings. Xray XHTTP and XHTTP SSH share the same VPN listener with no count ceiling for requests, HTTP/2 streams, transport connections, or XHTTP sessions. Packet-up bursts and out-of-order reassembly use cancelable byte-accounted backpressure; even empty packets are charged a minimum accounted-memory cost, so removing the request-count limit does not create an unbounded metadata queue. There are no `429` responses or global-capacity `503` rejections. Real per-user policies (`max_conns`, quota, and bandwidth) remain active. Each Mux transport accepts at most 64 child sessions, with a default global ceiling of 32768. Stopping/restarting native Xray closes existing transports and XHTTP sessions. Traffic and active-connection changes are aggregated and written in five-second batches rather than creating a PostgreSQL query or goroutine for every connection. Pending retry entries for deleted clients are removed so retry maps stay bounded by the current account set.
 
 ### Requirements
 

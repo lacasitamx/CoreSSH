@@ -21,8 +21,6 @@ import (
 	"golang.org/x/net/http2/h2c"
 )
 
-const nativeXHTTPServerIdleTimeout = 90 * time.Second
-
 const (
 	nativeXHTTPMaxSessionIDBytes             = 256
 	nativeXHTTPMaxSequenceBytes              = 20
@@ -31,6 +29,10 @@ const (
 	nativeXHTTPMaxBufferedPosts              = 512
 	nativeXHTTPMaxBufferedSessionBytes       = 16 * 1024 * 1024
 	nativeXHTTPMaxBufferedGlobalBytes        = 128 * 1024 * 1024
+	// Tiny/empty packet-up requests still retain queue metadata. Charge a minimum
+	// amount against the byte budgets so the reassembly queue can be count-unlimited
+	// without allowing zero-byte packets to grow the heap without bound.
+	nativeXHTTPMinPacketAccountingBytes int64 = 256
 )
 
 var (
@@ -181,7 +183,6 @@ func (ib *nativeInbound) serveXHTTPListener(ln net.Listener) {
 func (g *nativeXHTTPListener) serve(ln net.Listener) {
 	defer xrayRecover(fmt.Sprintf("native xray shared XHTTP listener addr=%s", ln.Addr()))
 	h2s := &http2.Server{
-		IdleTimeout:          nativeXHTTPServerIdleTimeout,
 		MaxConcurrentStreams: nativeHTTP2MaxConcurrentStreams(),
 	}
 	handler := http.Handler(g)
@@ -195,7 +196,6 @@ func (g *nativeXHTTPListener) serve(ln net.Listener) {
 	srv := &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: 4 * time.Second,
-		IdleTimeout:       nativeXHTTPServerIdleTimeout,
 		MaxHeaderBytes:    g.headerSize,
 	}
 	if g.security == "tls" && g.tlsConfig != nil {
@@ -560,16 +560,7 @@ func (ib *nativeInbound) upsertXHTTPSession(w http.ResponseWriter, id string) *n
 		s.touch()
 		return s
 	}
-	if max := ib.xhttpMaxActiveSessions(); max > 0 && len(ib.xhttpSessions) >= max {
-		http.Error(w, "native XHTTP session capacity reached", http.StatusServiceUnavailable)
-		logNativePreAuthRejection("native xray: xhttp session rejected inbound=%q active=%d limit=%d", ib.tag, len(ib.xhttpSessions), max)
-		return nil
-	}
-	releaseSlot, ok := acquireNativeXHTTPSession()
-	if !ok {
-		http.Error(w, "native XHTTP global session capacity reached", http.StatusServiceUnavailable)
-		return nil
-	}
+	releaseSlot, _ := acquireNativeXHTTPSession()
 	s := &nativeXHTTPSession{
 		id:          id,
 		queue:       newNativeXHTTPUploadQueue(ib.xhttpMaxBufferedPosts, nativeXHTTPMaxBufferedSessionBytes),
@@ -585,9 +576,7 @@ func (ib *nativeInbound) upsertXHTTPSession(w http.ResponseWriter, id string) *n
 }
 
 func (ib *nativeInbound) xhttpMaxActiveSessions() int {
-	// normalizeNativeXrayTuning already installs the safe default. A zero value
-	// here therefore intentionally means the operator configured -1 (unlimited).
-	return nativeXHTTPMaxSessionLimit()
+	return 0
 }
 
 func (ib *nativeInbound) reapUnconnectedXHTTPSession(id string, s *nativeXHTTPSession) {
@@ -679,7 +668,7 @@ func (ib *nativeInbound) handleXHTTPPacketUpload(w http.ResponseWriter, r *http.
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	memory.shrink(int64(len(payload)))
+	memory.shrink(nativeXHTTPAccountedPacketBytes(int64(len(payload))))
 	xrayTracef("native xray: xhttp packet-up inbound=%q session=%q seq=%d payload=%d remote=%s", ib.tag, sess.id, seq, len(payload), r.RemoteAddr)
 	if err := sess.queue.push(r.Context(), nativeXHTTPPacket{Payload: payload, Seq: seq}, memory); err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -816,11 +805,18 @@ func (ib *nativeInbound) xhttpUploadReservationBytes(r *http.Request) int64 {
 	placement := firstNonEmpty(ib.xhttpUplinkDataPlacement, xhttpPlacementBody)
 	if placement == xhttpPlacementBody && r.ContentLength >= 0 {
 		if r.ContentLength > maxBytes {
-			return maxBytes
+			return nativeXHTTPAccountedPacketBytes(maxBytes)
 		}
-		return r.ContentLength
+		return nativeXHTTPAccountedPacketBytes(r.ContentLength)
 	}
-	return maxBytes
+	return nativeXHTTPAccountedPacketBytes(maxBytes)
+}
+
+func nativeXHTTPAccountedPacketBytes(payloadBytes int64) int64 {
+	if payloadBytes < nativeXHTTPMinPacketAccountingBytes {
+		return nativeXHTTPMinPacketAccountingBytes
+	}
+	return payloadBytes
 }
 
 func (ib *nativeInbound) handleXHTTPStreamOne(w http.ResponseWriter, r *http.Request) {
@@ -1186,14 +1182,14 @@ func (l *nativeXHTTPMemoryLease) release() {
 }
 
 type nativeXHTTPPacket struct {
-	Reader  io.ReadCloser
-	Payload []byte
-	Seq     uint64
+	Reader         io.ReadCloser
+	Payload        []byte
+	Seq            uint64
+	accountedBytes int64
 }
 
 type nativeXHTTPUploadQueue struct {
 	pushedPackets chan nativeXHTTPPacket
-	maxPackets    int
 	maxBytes      int64
 
 	// readMu serializes the single decoded stream reader with close-time queue
@@ -1227,7 +1223,6 @@ func newNativeXHTTPUploadQueue(maxPackets int, maxBytes int64) *nativeXHTTPUploa
 	}
 	return &nativeXHTTPUploadQueue{
 		pushedPackets: make(chan nativeXHTTPPacket, maxPackets),
-		maxPackets:    maxPackets,
 		maxBytes:      maxBytes,
 		closed:        make(chan struct{}),
 		spaceChanged:  make(chan struct{}),
@@ -1318,15 +1313,18 @@ func (q *nativeXHTTPUploadQueue) push(ctx context.Context, p nativeXHTTPPacket, 
 			}
 		}()
 	}
-	payloadBytes := int64(len(p.Payload))
-	if err := q.adoptPayloadMemory(ctx, memory, payloadBytes); err != nil {
+	accountedBytes := int64(0)
+	if p.Reader == nil {
+		accountedBytes = nativeXHTTPAccountedPacketBytes(int64(len(p.Payload)))
+	}
+	if err := q.adoptPayloadMemory(ctx, memory, accountedBytes); err != nil {
 		return err
 	}
-	transferred := payloadBytes > 0
-	if transferred {
+	p.accountedBytes = accountedBytes
+	if accountedBytes > 0 {
 		defer func() {
-			if payloadBytes > 0 {
-				q.releasePayloadMemory(payloadBytes)
+			if accountedBytes > 0 {
+				q.releasePayloadMemory(accountedBytes)
 			}
 		}()
 	}
@@ -1334,7 +1332,7 @@ func (q *nativeXHTTPUploadQueue) push(ctx context.Context, p nativeXHTTPPacket, 
 	case q.pushedPackets <- p:
 		// Ownership has moved to the queue. close() waits for this producer and
 		// then drains/releases anything not consumed by the stream reader.
-		payloadBytes = 0
+		accountedBytes = 0
 		readerReserved = false
 		return nil
 	case <-q.closed:
@@ -1449,7 +1447,7 @@ func (q *nativeXHTTPUploadQueue) Read(b []byte) (int, error) {
 		}
 		select {
 		case <-q.closed:
-			q.releasePayloadMemory(int64(len(p.Payload)))
+			q.releasePayloadMemory(p.accountedBytes)
 			return 0, io.EOF
 		default:
 		}
@@ -1461,20 +1459,21 @@ func (q *nativeXHTTPUploadQueue) Read(b []byte) (int, error) {
 
 		if packet.Seq == q.nextSeq {
 			n := copy(b, packet.Payload)
-			q.releasePayloadMemory(int64(n))
 			if n < len(packet.Payload) {
+				q.releasePayloadMemory(int64(n))
+				packet.accountedBytes -= int64(n)
 				packet.Payload = packet.Payload[n:]
 				heap.Push(&q.heap, packet)
 			} else {
+				q.releasePayloadMemory(packet.accountedBytes)
 				q.nextSeq = packet.Seq + 1
 			}
 			return n, nil
 		}
 
 		if packet.Seq > q.nextSeq {
-			if len(q.heap) > q.maxPackets {
-				return 0, errors.New("xhttp upload reassembly buffer too large")
-			}
+			// Do not apply a packet/request count ceiling. The per-session and global
+			// accounted-byte budgets backpressure producers, including empty packets.
 			heap.Push(&q.heap, packet)
 			p, err := q.recv()
 			if err != nil {
@@ -1489,7 +1488,7 @@ func (q *nativeXHTTPUploadQueue) Read(b []byte) (int, error) {
 		}
 
 		// A duplicate/late packet is discarded; release the bytes it owned.
-		q.releasePayloadMemory(int64(len(packet.Payload)))
+		q.releasePayloadMemory(packet.accountedBytes)
 	}
 
 	return 0, nil
