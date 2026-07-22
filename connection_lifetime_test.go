@@ -19,8 +19,17 @@ func TestSSHIdleTimeoutExplicitValue(t *testing.T) {
 	}
 }
 
-func TestNativeXHTTPConnectedIdleSweepDisabled(t *testing.T) {
-	if got := nativeXHTTPIdleTimeout(); got != 0 {
-		t.Fatalf("native XHTTP idle timeout = %s, want disabled", got)
+// The connected-session sweeper is the backstop that reaps XHTTP->SSH sessions
+// whose stream-down GET context never fires (silent client drop behind a CDN).
+// Without it those sessions leak fds/goroutines until a process restart, which
+// is what produced the recurring reboot-only XHTTP 502s. It must stay enabled;
+// the window is generous so only zero-traffic (dead) sessions are reaped.
+func TestNativeXHTTPConnectedIdleSweepEnabled(t *testing.T) {
+	got := nativeXHTTPIdleTimeout()
+	if got <= 0 {
+		t.Fatalf("native XHTTP idle timeout = %s, want a positive backstop window", got)
+	}
+	if got != 20*time.Minute {
+		t.Fatalf("native XHTTP idle timeout = %s, want 20m backstop", got)
 	}
 }

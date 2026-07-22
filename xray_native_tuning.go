@@ -37,12 +37,23 @@ const (
 	// buffers. Operators may request more, up to the hard cap enforced there.
 	defaultNativeXHTTPBufferedPosts = 64
 
-	// Do not impose an application-level lifetime on a connected XHTTP VPN
-	// session. The official Xray server keeps a connected session for the
-	// lifetime of its stream-down GET; request cancellation and I/O errors own
-	// cleanup. A fixed five-minute sweeper incorrectly killed healthy but idle
-	// VPNs. Zero disables the connected-session sweeper.
-	fixedNativeXHTTPIdleMS = 0
+	// Backstop reaper for connected XHTTP VPN sessions. The stream-down GET's
+	// request context is the primary lifetime owner, but behind a CDN that context
+	// frequently never fires when a client silently drops (mobile networks, CDN
+	// connection pooling, half-open TCP). When it doesn't, an idle SSH backend
+	// never errors either, so the session, its goroutines, socket/fd, and SSH
+	// connection leak until the whole process restarts. That accumulation is what
+	// drove the recurring XHTTP 502s that only a reboot cleared: the origin slowly
+	// ran out of fds/memory and could no longer serve new stream-down GETs.
+	//
+	// This sweeper only ever reaps sessions with genuinely stale lastSeen. lastSeen
+	// is refreshed on every successful read OR write via nativeXHTTPConn.onActivity,
+	// so any tunnel still passing data or keepalives is never touched -- only a
+	// session with zero bytes in BOTH directions for the full window (i.e. one that
+	// looks dead) is closed. 20 minutes is generous enough not to disturb a
+	// genuinely idle-but-alive tunnel while still bounding resource growth under
+	// heavy 6-8K-user churn. Zero disables the connected-session sweeper.
+	fixedNativeXHTTPIdleMS = 20 * 60 * 1000
 )
 
 var (
