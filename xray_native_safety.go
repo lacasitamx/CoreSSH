@@ -36,8 +36,10 @@ func init() {
 var (
 	nativeTransportConnections atomic.Int64
 	nativeXHTTPSessions        atomic.Int64
+	nativeXHTTPRequests        atomic.Int64
 	nativeClientConnsRejected  atomic.Int64
 	nativePreAuthRejected      atomic.Int64
+	nativeXHTTPRejected        atomic.Int64
 
 	nativeTransportAccepting atomic.Bool
 	nativeTransportRegistry  = struct {
@@ -47,8 +49,8 @@ var (
 )
 
 // acquireNativeCounter tracks a counted resource and returns an exactly-once
-// release function. Native transport/XHTTP admission calls it with limit=0
-// because VPN traffic must not be rejected by a global website-style ceiling.
+// release function. Limits here are simultaneous resource-safety windows, not
+// traffic-volume or request-rate ceilings.
 func acquireNativeCounter(active *atomic.Int64, limit int) (func(), bool) {
 	for {
 		current := active.Load()
@@ -96,11 +98,15 @@ func logNativePreAuthRejection(format string, args ...interface{}) {
 }
 
 func acquireNativeTransportConnection() (func(), bool) {
-	return acquireNativeCounter(&nativeTransportConnections, 0)
+	return acquireNativeCounter(&nativeTransportConnections, nativeTransportConnectionLimit())
 }
 
 func acquireNativeXHTTPSession() (func(), bool) {
-	return acquireNativeCounter(&nativeXHTTPSessions, 0)
+	return acquireNativeCounter(&nativeXHTTPSessions, nativeXHTTPSessionLimit())
+}
+
+func acquireNativeXHTTPRequest() (func(), bool) {
+	return acquireNativeCounter(&nativeXHTTPRequests, nativeXHTTPRequestLimit())
 }
 
 func configureNativeTransportSocket(c net.Conn) {
@@ -192,8 +198,9 @@ func registerTrackedNativeTransportConn(c net.Conn, release func()) (net.Conn, b
 	return counted, true
 }
 
-// waitWrapTrackedNativeTransportConn is used by raw native accept loops. Global
-// admission is unlimited; the loop remains only to coordinate listener shutdown.
+// waitWrapTrackedNativeTransportConn is used by raw native accept loops. Waiting
+// here, before another connection is admitted to the protocol handler, applies
+// socket/kernel backpressure instead of creating an unbounded goroutine backlog.
 func waitWrapTrackedNativeTransportConn(c net.Conn) (net.Conn, bool) {
 	if c == nil {
 		return nil, false
@@ -231,8 +238,8 @@ func closeAllNativeTransportConnections() {
 }
 
 // nativeTrackingListener registers every accepted XHTTP socket so a live
-// stop/reload can close it. It counts sockets for diagnostics but never rejects
-// or delays one because of a global application limit.
+// stop/reload can close it. It reserves capacity before Accept so overload stays
+// in the kernel accept queue rather than allocating more Go handlers.
 type nativeTrackingListener struct {
 	net.Listener
 }
