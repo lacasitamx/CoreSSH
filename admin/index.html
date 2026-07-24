@@ -16,7 +16,7 @@
   setTimeout(function(){document.documentElement.classList.remove("i18n-pending");},2500);
 })();
 </script>
-  <link rel="stylesheet" href="assets/app.css?v=20260720sshfilters1"/>
+  <link rel="stylesheet" href="assets/app.css?v=20260724xrayinboundsr3"/>
 </head>
 <body>
 <div class="app">
@@ -483,27 +483,23 @@
       </div>
       <!-- Wizard pane -->
       <div id="xrayWizardPane">
-        <section class="shared-endpoint-card">
-          <div class="shared-endpoint-head">
-            <div><span class="page-kicker">Shared XHTTP endpoint</span><h3>Um domínio e uma porta</h3><p>O protocolo selecionado usa <code>/</code>; SSH usa <code>/ssh</code>. Disponível no modo Xray nativo.</p></div>
-            <span class="chip green">path routing</span>
+        <section class="xray-inbound-launcher">
+          <div class="xray-inbound-launcher-copy">
+            <span class="page-kicker">Gerenciar inbounds</span>
+            <h3>Adicionar um novo inbound</h3>
+            <p>Crie um inbound em branco ou instale automaticamente o padrão usado com Azion XHTTP. Para alterar um inbound existente, use somente o botão <strong>Editar</strong> no cartão dele.</p>
           </div>
-          <div class="shared-route-preview" aria-label="Shared endpoint route preview">
-            <span><strong id="sharedProxyRouteLabel">VLESS</strong><code>/</code></span>
-            <i></i>
-            <span><strong>SSH</strong><code>/ssh</code></span>
+          <div class="xray-inbound-launcher-actions">
+            <button class="btn" id="wzAddInboundBtn" type="button" onclick="wzToggleAddInbound()">+ Adicionar inbound</button>
+            <button class="btn btn-soft" id="wzAzionDefaultBtn" type="button" onclick="createAzionDefaultXHTTP()">Criar padrão Azion XHTTP</button>
           </div>
-          <div class="form-grid shared-endpoint-grid">
-            <div class="field"><label>Protocolo em /</label><select id="sharedXHTTPProtocol"><option value="vless">VLESS</option><option value="vmess">VMess</option></select></div>
-            <div class="field"><label>Porta compartilhada</label><input id="sharedXHTTPPort" type="number" min="1" max="65535" value="443"/></div>
-            <div class="field"><label>IP de listen</label><input id="sharedXHTTPListen" value="0.0.0.0" placeholder="0.0.0.0"/></div>
-            <div class="field"><label>Host HTTP <span class="hint">opcional</span></label><input id="sharedXHTTPHost" placeholder="vpn.seudominio.com"/></div>
-            <div class="field"><label>Modo XHTTP</label><select id="sharedXHTTPMode"><option value="auto">auto</option><option value="packet-up">packet-up</option><option value="stream-up">stream-up</option><option value="stream-down">stream-down</option><option value="stream-one">stream-one</option></select></div>
-            <div class="field"><label>Segurança</label><select id="sharedXHTTPSecurity"><option value="none">Sem TLS</option><option value="tls">TLS</option></select></div>
-            <div class="field shared-tls-field hidden"><label>Arquivo do certificado</label><input id="sharedXHTTPCert" placeholder="/opt/sshpanel/certs/domain/cert.pem"/></div>
-            <div class="field shared-tls-field hidden"><label>Arquivo da chave</label><input id="sharedXHTTPKey" placeholder="/opt/sshpanel/certs/domain/key.pem"/></div>
+          <div class="azion-preset-summary" aria-label="Configuração criada pelo padrão Azion XHTTP">
+            <span><small>Listen</small><strong>0.0.0.0:443</strong></span>
+            <span><small>TLS</small><strong>example.com</strong></span>
+            <span><small>VLESS</small><strong>/</strong></span>
+            <span><small>SSH</small><strong>/ssh</strong></span>
           </div>
-          <div class="shared-endpoint-actions"><span id="sharedXHTTPStatus" class="hint">Carregue a configuração para detectar um endpoint existente.</span><button class="btn" id="sharedXHTTPApplyBtn" type="button">Criar / atualizar endpoint</button></div>
+          <span id="wzAzionDefaultStatus" class="hint">O padrão cria o certificado autoassinado, habilita TLS e salva/reinicia o Xray automaticamente.</span>
         </section>
 
         <aside class="legacy-xhttp-migration" aria-label="Migração de configuração XHTTP antiga">
@@ -525,13 +521,12 @@
               <option value="debug">debug</option>
             </select>
           </div>
-          <div class="visual-config-toolbar-copy"><strong>Inbounds configurados</strong><span>Edite qualquer cartão visualmente ou use JSON para campos avançados.</span></div>
-          <button class="btn btn-ghost btn-sm" type="button" onclick="wzToggleAddInbound()">+ Novo inbound</button>
+          <div class="visual-config-toolbar-copy"><strong>Inbounds configurados</strong><span>O editor permanece fechado. Clique em Editar somente no inbound que deseja alterar.</span></div>
         </div>
         <div id="wzInboundsList" class="visual-inbound-list"></div>
-        <!-- Add inbound form -->
+        <!-- Shared add/edit form: hidden until the user explicitly adds or edits. -->
         <div id="wzAddInboundForm" class="visual-inbound-editor hidden">
-          <div class="visual-editor-heading"><div><span class="page-kicker">Visual editor</span><h3 id="wzInboundFormTitle">Novo inbound</h3></div><span id="wzEditingBadge" class="chip hidden">editing</span></div>
+          <div class="visual-editor-heading"><div><span class="page-kicker" id="wzInboundFormKicker">Novo inbound</span><h3 id="wzInboundFormTitle">Adicionar inbound</h3></div><span id="wzEditingBadge" class="chip hidden">Editando</span></div>
           <div class="form-grid">
             <div class="field">
               <label>Protocol</label>
@@ -1585,8 +1580,8 @@
 <script defer src="assets/js/05-resellers.js?v=20260714pamfix1"></script>
 <script defer src="assets/js/06-servers.js?v=20260714pamfix1"></script>
 <script defer src="assets/js/07-stats-logs.js?v=20260714pamfix1"></script>
-<script defer src="assets/js/08-server-config.js?v=20260722xhttpunlimited2"></script>
-<script defer src="assets/js/09-xray-wizard.js?v=20260714quota1"></script>
+<script defer src="assets/js/08-server-config.js?v=20260724xrayinboundsr3"></script>
+<script defer src="assets/js/09-xray-wizard.js?v=20260724xrayinboundsr3"></script>
 <script defer src="assets/js/11-update-status.js?v=20260714pamfix1"></script>
 <script defer src="assets/js/12-bot.js?v=20260714pamfix1"></script>
 <script defer src="assets/js/10-boot.js?v=20260714pamfix1"></script>

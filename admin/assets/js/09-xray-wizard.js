@@ -92,9 +92,11 @@ function loadWizardFromConfig() {
     document.getElementById("wzLogLevel").value = cfg.log?.loglevel || "warning";
     wzInbounds = cloneJsonSafe((cfg.inbounds || []).filter(ib => ib && ib.tag !== "api")) || [];
     wzEditingIndex = -1;
+    wzCancelInbound();
     renderWzInbounds();
-    loadSharedEndpointForm();
     wzDirty = false;
+    const presetStatus = document.getElementById("wzAzionDefaultStatus");
+    if (presetStatus) presetStatus.textContent = "O padrão cria o certificado autoassinado, habilita TLS e salva/reinicia o Xray automaticamente.";
     if (st) st.textContent = `Config loaded from ${target}.`;
   }).catch(e => {
     wzLoadedServerID = null;
@@ -102,8 +104,8 @@ function loadWizardFromConfig() {
     wzLoadedFullConfig = null;
     wzInbounds = [];
     wzEditingIndex = -1;
+    wzCancelInbound();
     renderWzInbounds();
-    loadSharedEndpointForm();
     if (e.message === "auth") doAuthError();
     else if (st) st.textContent = "Error: " + e.message;
   });
@@ -116,7 +118,7 @@ function renderWzInbounds() {
   if (!wzInbounds.length) {
     const empty = document.createElement("div");
     empty.className = "hint visual-empty-state";
-    empty.textContent = "Nenhum inbound configurado. Crie um endpoint compartilhado ou adicione um inbound.";
+    empty.textContent = "Nenhum inbound configurado. Use “Adicionar inbound” ou “Criar padrão Azion XHTTP”.";
     list.appendChild(empty);
     return;
   }
@@ -201,7 +203,6 @@ function renderWzInbounds() {
       else if (wzEditingIndex > i) wzEditingIndex--;
       wzDirty = true;
       renderWzInbounds();
-      loadSharedEndpointForm();
     };
     actions.append(duplicateBtn, editBtn, delBtn);
     row.appendChild(actions);
@@ -242,7 +243,8 @@ function resetWzInboundForm() {
   setWzValue("wzTLS", "none");
   ["wzTLSCert", "wzTLSKey", "wzTLSCertPath", "wzTLSKeyPath", "wzRealityDest", "wzRealitySNI", "wzRealityPriv", "wzRealityShortID", "wzTrojanPass", "wzSSPass"].forEach(id => setWzValue(id, ""));
   setWzValue("wzSSMethod", "chacha20-ietf-poly1305");
-  document.getElementById("wzInboundFormTitle").textContent = "Novo inbound";
+  document.getElementById("wzInboundFormKicker").textContent = "Novo inbound";
+  document.getElementById("wzInboundFormTitle").textContent = "Adicionar inbound";
   document.getElementById("wzSaveInboundBtn").textContent = "Adicionar inbound";
   document.getElementById("wzEditingBadge").classList.add("hidden");
   onWzProtoChange("vless");
@@ -301,6 +303,7 @@ function editWzInbound(index) {
   setWzValue("wzSSMethod", ib.settings?.method || "chacha20-ietf-poly1305");
 
   document.getElementById("wzInboundFormTitle").textContent = `Editar ${ib.tag || "inbound"}`;
+  document.getElementById("wzInboundFormKicker").textContent = "Editar inbound existente";
   document.getElementById("wzSaveInboundBtn").textContent = "Salvar alterações";
   document.getElementById("wzEditingBadge").classList.remove("hidden");
   const form = document.getElementById("wzAddInboundForm");
@@ -525,148 +528,158 @@ function validateVisualInbounds(inbounds) {
   }
 }
 
-function findSharedEndpointPair() {
-  const roots = wzInbounds.filter(ib => {
-    const xh = visualXHTTPSettings(ib);
-    return !!xh && ["vless", "vmess"].includes(String(ib?.protocol || "").toLowerCase()) && normalizeVisualPath(xh.path) === "/";
+const azionPresetProxyTags = new Set(["azion-vless-xhttp", "shared-proxy-xhttp"]);
+const azionPresetSSHTags = new Set(["azion-ssh-xhttp", "shared-ssh-xhttp"]);
+
+function findAzionPresetInbound(tags) {
+  return wzInbounds.find(ib => tags.has(String(ib?.tag || ""))) || null;
+}
+
+function azionVLESSClients(existingProxy) {
+  const clients = Array.isArray(existingProxy?.settings?.clients) ? cloneJsonSafe(existingProxy.settings.clients) : [];
+  if (String(existingProxy?.protocol || "").toLowerCase() === "vless") return clients;
+  return clients.map(client => {
+    const converted = { id:client?.id };
+    if (client?.email) converted.email = client.email;
+    if (client?.flow) converted.flow = client.flow;
+    return converted;
+  }).filter(client => client.id);
+}
+
+function buildAzionPresetInbounds(certFile, keyFile) {
+  const existingProxy = findAzionPresetInbound(azionPresetProxyTags);
+  const existingSSH = findAzionPresetInbound(azionPresetSSHTags);
+  const managed = new Set([existingProxy, existingSSH].filter(Boolean));
+  const others = wzInbounds.filter(ib => !managed.has(ib));
+  const portConflict = others.find(ib => Number(ib?.port) === 443);
+  if (portConflict) {
+    throw new Error(`A porta 443 já é usada pelo inbound ${portConflict.tag || "sem tag"}. Edite ou remova esse inbound antes de criar o padrão Azion.`);
+  }
+  const stream = path => ({
+    network:"xhttp",
+    security:"tls",
+    xhttpSettings:{ path, mode:"auto" },
+    tlsSettings:{ certificates:[{ certificateFile:certFile, keyFile }] },
   });
-  for (const proxy of roots) {
-    const ssh = wzInbounds.find(ib => String(ib?.protocol || "").toLowerCase() === "ssh" &&
-      String(ib.listen || "0.0.0.0") === String(proxy.listen || "0.0.0.0") && String(ib.port) === String(proxy.port) &&
-      normalizeVisualPath(visualXHTTPSettings(ib)?.path) === "/ssh");
-    if (ssh) return { proxy, ssh };
-  }
-  const proxy = wzInbounds.find(ib => ib?.tag === "shared-proxy-xhttp") || null;
-  const ssh = wzInbounds.find(ib => ib?.tag === "shared-ssh-xhttp") || null;
-  return proxy && ssh ? { proxy, ssh } : null;
+  const proxyInbound = {
+    tag:"azion-vless-xhttp",
+    listen:"0.0.0.0",
+    port:443,
+    protocol:"vless",
+    settings:{ clients:azionVLESSClients(existingProxy), decryption:"none" },
+    streamSettings:stream("/"),
+  };
+  const sshInbound = {
+    tag:"azion-ssh-xhttp",
+    listen:"0.0.0.0",
+    port:443,
+    protocol:"ssh",
+    settings:{},
+    streamSettings:stream("/ssh"),
+  };
+  return [...others, proxyInbound, sshInbound];
 }
 
-function loadSharedEndpointForm() {
-  const status = document.getElementById("sharedXHTTPStatus");
-  if (!status) return;
-  const pair = findSharedEndpointPair();
-  if (!pair) {
-    status.textContent = wzLoadedConfigText ? "Nenhum endpoint compartilhado detectado. Preencha os campos para criar um." : "Carregue a configuração para detectar um endpoint existente.";
-    return;
-  }
-  const xh = visualXHTTPSettings(pair.proxy) || {};
-  const ss = pair.proxy.streamSettings || {};
-  const cert = ss.tlsSettings?.certificates?.[0] || {};
-  setWzValue("sharedXHTTPProtocol", pair.proxy.protocol || "vless");
-  setWzValue("sharedXHTTPPort", pair.proxy.port || 443);
-  setWzValue("sharedXHTTPListen", pair.proxy.listen || "0.0.0.0");
-  setWzValue("sharedXHTTPHost", xh.host || "");
-  setWzValue("sharedXHTTPMode", xh.mode || "auto");
-  setWzValue("sharedXHTTPSecurity", ss.security === "tls" ? "tls" : "none");
-  setWzValue("sharedXHTTPCert", cert.certificateFile || "");
-  setWzValue("sharedXHTTPKey", cert.keyFile || "");
-  updateSharedEndpointControls();
-  status.textContent = `Endpoint detectado em ${pair.proxy.listen || "0.0.0.0"}:${pair.proxy.port} — ${String(pair.proxy.protocol).toUpperCase()} / e SSH /ssh.`;
-}
-
-function updateSharedEndpointControls() {
-  const protocol = document.getElementById("sharedXHTTPProtocol")?.value || "vless";
-  const security = document.getElementById("sharedXHTTPSecurity")?.value || "none";
-  document.getElementById("sharedProxyRouteLabel").textContent = protocol.toUpperCase();
-  document.querySelectorAll(".shared-tls-field").forEach(el => el.classList.toggle("hidden", security !== "tls"));
-}
-
-function applySharedXHTTPEndpoint() {
-  const status = document.getElementById("sharedXHTTPStatus");
+async function createAzionDefaultXHTTP() {
+  const status = document.getElementById("wzAzionDefaultStatus");
+  const button = document.getElementById("wzAzionDefaultBtn");
   const selectedID = selectedXrayServer() || "local";
+  const target = selectedXrayServerLabel();
   if (!wzLoadedConfigText || String(wzLoadedServerID || "") !== String(selectedID)) {
-    status.textContent = "Carregue a configuração do servidor selecionado antes de editar.";
+    if (status) status.textContent = `Carregue a configuração de ${target} antes de criar o padrão Azion.`;
     return;
   }
   if ((document.getElementById("xCoreMode")?.value || "native") !== "native") {
-    status.textContent = "O endpoint compartilhado requer o modo Xray nativo.";
-    return;
-  }
-  const protocol = document.getElementById("sharedXHTTPProtocol").value;
-  const port = Number(document.getElementById("sharedXHTTPPort").value || 0);
-  const listen = document.getElementById("sharedXHTTPListen").value.trim() || "0.0.0.0";
-  const host = document.getElementById("sharedXHTTPHost").value.trim();
-  const mode = document.getElementById("sharedXHTTPMode").value || "auto";
-  const security = document.getElementById("sharedXHTTPSecurity").value;
-  const cert = document.getElementById("sharedXHTTPCert").value.trim();
-  const key = document.getElementById("sharedXHTTPKey").value.trim();
-  if (!["vless", "vmess"].includes(protocol) || !Number.isInteger(port) || port < 1 || port > 65535) {
-    status.textContent = "Escolha VLESS/VMess e uma porta válida.";
-    return;
-  }
-  if (/[\u0000-\u001f\u007f]/.test(`${listen}${host}${cert}${key}`)) {
-    status.textContent = "Os campos contêm caracteres de controle inválidos.";
-    return;
-  }
-  if (security === "tls" && (!cert || !key)) {
-    status.textContent = "Informe os arquivos do certificado e da chave para usar TLS.";
+    if (status) status.textContent = "O padrão Azion com SSH requer o modo Xray nativo.";
     return;
   }
 
-  const pair = findSharedEndpointPair();
-  const sameEndpoint = ib => String(ib?.listen || "0.0.0.0") === listen && String(ib?.port) === String(port);
-  const existingProxy = pair?.proxy || wzInbounds.find(ib => ib?.tag === "shared-proxy-xhttp") || wzInbounds.find(ib => {
-    const xh = visualXHTTPSettings(ib);
-    return sameEndpoint(ib) && !!xh && ["vless", "vmess"].includes(String(ib?.protocol || "").toLowerCase()) && normalizeVisualPath(xh.path) === "/";
-  }) || null;
-  const existingSSH = pair?.ssh || wzInbounds.find(ib => ib?.tag === "shared-ssh-xhttp") || wzInbounds.find(ib => {
-    const xh = visualXHTTPSettings(ib);
-    return sameEndpoint(ib) && !!xh && String(ib?.protocol || "").toLowerCase() === "ssh" && normalizeVisualPath(xh.path) === "/ssh";
-  }) || null;
-  const removeSet = new Set([existingProxy, existingSSH].filter(Boolean));
-  const others = wzInbounds.filter(ib => !removeSet.has(ib));
-  const blocking = others.find(ib => String(ib.listen || "0.0.0.0") === listen && String(ib.port) === String(port) && !visualXHTTPSettings(ib));
-  if (blocking) {
-    status.textContent = `A porta já é usada pelo inbound não-XHTTP ${blocking.tag || "sem tag"}. Escolha outra porta.`;
+  let nextInbounds;
+  try {
+    nextInbounds = buildAzionPresetInbounds(
+      "/opt/sshpanel/certs/example.com/cert.pem",
+      "/opt/sshpanel/certs/example.com/key.pem",
+    );
+    validateVisualInbounds(nextInbounds);
+  } catch (error) {
+    if (status) status.textContent = error.message;
     return;
   }
 
-  const buildSharedStream = (existing, path) => {
-    const stream = cloneJsonSafe(existing?.streamSettings || {});
-    stream.network = "xhttp";
-    stream.xhttpSettings = Object.assign({}, stream.xhttpSettings || stream.splithttpSettings || {}, { path, mode });
-    delete stream.splithttpSettings;
-    if (host) stream.xhttpSettings.host = host;
-    else delete stream.xhttpSettings.host;
-    if (security === "tls") {
-      stream.security = "tls";
-      stream.tlsSettings = Object.assign({}, stream.tlsSettings || {}, { certificates:[{ certificateFile:cert, keyFile:key }] });
-    } else {
-      delete stream.security;
-      delete stream.tlsSettings;
+  const existingProxy = findAzionPresetInbound(azionPresetProxyTags);
+  const accepted = await panelConfirm({
+    tone:"success",
+    icon:"AZ",
+    eyebrow:"Azion XHTTP",
+    title:existingProxy ? "Atualizar padrão Azion" : "Criar padrão Azion",
+    message:existingProxy
+      ? "Atualizar o endpoint padrão e manter os clientes VLESS existentes?"
+      : "Criar o endpoint padrão completo neste servidor?",
+    detail:[
+      `Servidor: ${target}`,
+      "Listen: 0.0.0.0:443",
+      "TLS autoassinado: example.com",
+      "VLESS XHTTP: /",
+      "SSH XHTTP: /ssh",
+      "O Xray será salvo e reiniciado automaticamente.",
+    ].join("\n"),
+    confirmLabel:existingProxy ? "Atualizar padrão" : "Criar padrão",
+  });
+  if (!accepted) return;
+
+  const previousInbounds = cloneJsonSafe(wzInbounds);
+  const previousDirty = wzDirty;
+  let presetApplied = false;
+  let configSaved = false;
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Criando padrão…";
+  }
+  if (status) status.textContent = `Gerando certificado example.com em ${target}…`;
+  try {
+    const certResponse = await api(withServerParam("/api/tls/generate-selfsigned", selectedID), {
+      method:"POST",
+      body:JSON.stringify({ domain:"example.com" }),
+    });
+    if (!certResponse.ok) throw new Error(await certResponse.text());
+    const cert = await certResponse.json();
+    if (!cert?.cert_file || !cert?.key_file) throw new Error("o servidor não retornou os caminhos do certificado");
+
+    wzInbounds = buildAzionPresetInbounds(cert.cert_file, cert.key_file);
+    validateVisualInbounds(wzInbounds);
+    presetApplied = true;
+    wzDirty = true;
+    wzCancelInbound();
+    renderWzInbounds();
+    if (status) status.textContent = "Certificado criado. Salvando configuração e reiniciando o Xray…";
+    const result = await applyWizardConfig();
+    if (!result?.saved) throw new Error(result?.error || "não foi possível salvar a configuração");
+    configSaved = true;
+    if (status) status.textContent = result.restarted
+      ? "Padrão Azion ativo: TLS example.com, VLESS / e SSH /ssh em 0.0.0.0:443."
+      : "O padrão foi salvo, mas o Xray não reiniciou. Verifique os logs e use Reiniciar.";
+    if (typeof showPanelToast === "function") {
+      showPanelToast(
+        result.restarted ? "Padrão Azion XHTTP criado e ativo." : "Padrão Azion salvo; reinício pendente.",
+        result.restarted ? "success" : "warning",
+        "Azion XHTTP",
+      );
     }
-    delete stream.realitySettings;
-    return stream;
-  };
-  const previousClients = Array.isArray(existingProxy?.settings?.clients) ? cloneJsonSafe(existingProxy.settings.clients) : [];
-  const proxyInbound = cloneJsonSafe(existingProxy || {});
-  proxyInbound.tag = existingProxy?.tag || "shared-proxy-xhttp";
-  proxyInbound.listen = listen;
-  proxyInbound.port = port;
-  proxyInbound.protocol = protocol;
-  proxyInbound.settings = existingProxy?.protocol === protocol ? cloneJsonSafe(existingProxy.settings || {}) : {};
-  proxyInbound.settings.clients = previousClients;
-  if (protocol === "vless") proxyInbound.settings.decryption = "none";
-  else delete proxyInbound.settings.decryption;
-  proxyInbound.streamSettings = buildSharedStream(existingProxy, "/");
-  const sshInbound = cloneJsonSafe(existingSSH || {});
-  sshInbound.tag = existingSSH?.tag || "shared-ssh-xhttp";
-  sshInbound.listen = listen;
-  sshInbound.port = port;
-  sshInbound.protocol = "ssh";
-  sshInbound.settings = {};
-  sshInbound.streamSettings = buildSharedStream(existingSSH, "/ssh");
-  wzInbounds = [...others, proxyInbound, sshInbound];
-  wzDirty = true;
-  renderWzInbounds();
-  loadSharedEndpointForm();
-  status.textContent = "Endpoint atualizado no rascunho. Clique em Salvar configuração e reiniciar para aplicar.";
+  } catch (error) {
+    if (presetApplied && !configSaved) {
+      wzInbounds = previousInbounds;
+      wzDirty = previousDirty;
+      renderWzInbounds();
+    }
+    if (error.message === "auth") doAuthError();
+    else if (status) status.textContent = "Erro ao criar padrão Azion: " + error.message;
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = "Criar padrão Azion XHTTP";
+    }
+  }
 }
-
-document.getElementById("sharedXHTTPProtocol")?.addEventListener("change", updateSharedEndpointControls);
-document.getElementById("sharedXHTTPSecurity")?.addEventListener("change", updateSharedEndpointControls);
-document.getElementById("sharedXHTTPApplyBtn")?.addEventListener("click", applySharedXHTTPEndpoint);
-updateSharedEndpointControls();
 
 function onWzProtoChange(val) {
   const isSSH = val === "ssh";
@@ -876,7 +889,6 @@ function wzSaveInbound() {
   else wzInbounds.push(ib);
   wzDirty = true;
   renderWzInbounds();
-  loadSharedEndpointForm();
   st.textContent = original ? `Inbound ${tag} atualizado no rascunho.` : `Inbound ${tag} adicionado ao rascunho.`;
   wzCancelInbound();
 }

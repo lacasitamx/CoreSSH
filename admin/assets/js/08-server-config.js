@@ -397,7 +397,7 @@ async function wzSavePastedCert() {
   if (!name || !cert || !key) { st.textContent = "Name, cert, and key required."; return; }
   st.textContent = "Saving…";
   try {
-    const res = await api("/api/tls/upload-pem", { method:"POST", body: JSON.stringify({ name, cert, key }) });
+    const res = await api(withServerParam("/api/tls/upload-pem", selectedXrayServer()), { method:"POST", body: JSON.stringify({ name, cert, key }) });
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
     document.getElementById("wzTLSCert").value = data.cert_file;
@@ -415,7 +415,7 @@ async function wzGenerateCert() {
   if (!domain) { st.textContent = "Domain required."; return; }
   st.textContent = "Generating…";
   try {
-    const res = await api("/api/tls/generate-selfsigned", { method:"POST", body: JSON.stringify({ domain }) });
+    const res = await api(withServerParam("/api/tls/generate-selfsigned", selectedXrayServer()), { method:"POST", body: JSON.stringify({ domain }) });
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
     document.getElementById("wzTLSCert").value = data.cert_file;
