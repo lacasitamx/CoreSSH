@@ -210,12 +210,29 @@ function renderWzInbounds() {
   });
 }
 
-function wzToggleAddInbound() {
+function mountWzInboundEditor() {
   const form = document.getElementById("wzAddInboundForm");
+  const anchor = document.getElementById("wzInboundEditorAnchor");
+  if (form && anchor && form.previousElementSibling !== anchor) {
+    anchor.insertAdjacentElement("afterend", form);
+  }
+  return form;
+}
+
+function openWzInboundEditor(scrollBlock = "nearest") {
+  const form = mountWzInboundEditor();
+  if (!form) return null;
+  form.classList.remove("hidden");
+  requestAnimationFrame(() => form.scrollIntoView({ behavior:"smooth", block:scrollBlock }));
+  return form;
+}
+
+function wzToggleAddInbound() {
+  const form = mountWzInboundEditor();
+  if (!form) return;
   if (!form.classList.contains("hidden") && wzEditingIndex < 0) return wzCancelInbound();
   resetWzInboundForm();
-  form.classList.remove("hidden");
-  form.scrollIntoView({ behavior:"smooth", block:"nearest" });
+  openWzInboundEditor("nearest");
 }
 
 function setWzValue(id, value) {
@@ -306,9 +323,7 @@ function editWzInbound(index) {
   document.getElementById("wzInboundFormKicker").textContent = "Editar inbound existente";
   document.getElementById("wzSaveInboundBtn").textContent = "Salvar alterações";
   document.getElementById("wzEditingBadge").classList.remove("hidden");
-  const form = document.getElementById("wzAddInboundForm");
-  form.classList.remove("hidden");
-  form.scrollIntoView({ behavior:"smooth", block:"start" });
+  openWzInboundEditor("start");
 }
 
 function duplicateWzInbound(index) {
