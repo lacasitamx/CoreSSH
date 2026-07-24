@@ -199,7 +199,7 @@ Também é possível editar diretamente o `config.json`:
 ```json
 "dnstt": {
   "domain": "t.example.com",
-  "udp_listen": "[::]:5300",
+  "udp_listen": "0.0.0.0:5300",
   "privkey_file": "/opt/sshpanel/dnstt.key",
   "auto_restart_interval": "6h",
   "auto_restart_grace": "2s"
@@ -219,7 +219,7 @@ Exemplo:
     "t.example.com",
     "t.local.lan"
   ],
-  "udp_listen": "[::]:5300",
+  "udp_listen": "0.0.0.0:5300",
   "privkey_file": "/opt/sshpanel/dnstt.key"
 }
 ```
@@ -738,7 +738,7 @@ You can also edit `config.json` directly:
 ```json
 "dnstt": {
   "domain": "t.example.com",
-  "udp_listen": "[::]:5300",
+  "udp_listen": "0.0.0.0:5300",
   "privkey_file": "/opt/sshpanel/dnstt.key",
   "auto_restart_interval": "6h",
   "auto_restart_grace": "2s"
@@ -758,7 +758,7 @@ Example:
     "t.example.com",
     "t.local.lan"
   ],
-  "udp_listen": "[::]:5300",
+  "udp_listen": "0.0.0.0:5300",
   "privkey_file": "/opt/sshpanel/dnstt.key"
 }
 ```

@@ -867,7 +867,7 @@
             </div>
             <div id="managedDnsttFields" class="form-grid" style="opacity:.4;pointer-events:none;">
               <div class="field" style="grid-column:1/-1"><label>NS / Root Domains <span class="hint">one per line</span></label><textarea id="managedCfgDnsttDomains" rows="3" placeholder="t.example.com&#10;t.local.lan"></textarea></div>
-              <div class="field"><label>UDP Listen</label><input type="text" id="managedCfgDnsttUDP" placeholder="[::]:5300"/></div>
+              <div class="field"><label>UDP Listen</label><input type="text" id="managedCfgDnsttUDP" placeholder="0.0.0.0:5300"/></div>
               <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;grid-column:1/-1"><input type="checkbox" id="managedCfgDnsttFakeEnabled"/> Built-in Local DNS / Fake DNS</label>
               <div class="field"><label>Local DNS Listen <span class="hint">IPv6 ok</span></label><input type="text" id="managedCfgDnsttFakeListen" placeholder="[2001:db8::1234]:53"/></div>
               <div class="field"><label>Local DNS Domain</label><input type="text" id="managedCfgDnsttFakeDomain" placeholder="t.local.lan"/></div>
@@ -1344,7 +1344,7 @@
             </div>
             <div class="field">
               <label>UDP Listen</label>
-              <input type="text" id="cfgDnsttUDP" placeholder="[::]:5300"/>
+              <input type="text" id="cfgDnsttUDP" placeholder="0.0.0.0:5300"/>
             </div>
             <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;grid-column:1/-1">
               <input type="checkbox" id="cfgDnsttFakeEnabled"/> Built-in Local DNS / Fake DNS

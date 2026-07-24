@@ -41,9 +41,17 @@ var (
 	errNativeXHTTPUploadBufferFull = errors.New("xhttp upload buffer limit reached")
 	nativeXHTTPMemoryWait          = struct {
 		sync.Mutex
-		changed chan struct{}
-	}{changed: make(chan struct{})}
+		waiters []*nativeXHTTPMemoryWaiter
+		head    int
+		queued  int
+	}{}
 )
+
+type nativeXHTTPMemoryWaiter struct {
+	bytes   int64
+	ready   chan struct{}
+	granted bool
+}
 
 const (
 	xhttpPlacementPath   = "path"
@@ -328,6 +336,15 @@ func (ib *nativeInbound) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	releaseRequest, ok := acquireNativeXHTTPRequest()
+	if !ok {
+		logNativeLimitRejection("simultaneous XHTTP handlers", &nativeXHTTPRejected, nativeXHTTPRequestLimit())
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, "xhttp transport temporarily busy", http.StatusServiceUnavailable)
+		return
+	}
+	defer releaseRequest()
+
 	sessionID, seqStr := ib.extractXHTTPMeta(r, base)
 	if len(sessionID) > nativeXHTTPMaxSessionIDBytes || len(seqStr) > nativeXHTTPMaxSequenceBytes {
 		logNativePreAuthRejection("native xray: xhttp reject inbound=%q reason=metadata-size remote=%s", ib.tag, r.RemoteAddr)
@@ -560,7 +577,13 @@ func (ib *nativeInbound) upsertXHTTPSession(w http.ResponseWriter, id string) *n
 		s.touch()
 		return s
 	}
-	releaseSlot, _ := acquireNativeXHTTPSession()
+	releaseSlot, ok := acquireNativeXHTTPSession()
+	if !ok {
+		logNativeLimitRejection("simultaneous XHTTP sessions", &nativeXHTTPRejected, nativeXHTTPSessionLimit())
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, "xhttp session capacity temporarily busy", http.StatusServiceUnavailable)
+		return nil
+	}
 	s := &nativeXHTTPSession{
 		id:          id,
 		queue:       newNativeXHTTPUploadQueue(ib.xhttpMaxBufferedPosts, nativeXHTTPMaxBufferedSessionBytes),
@@ -576,7 +599,7 @@ func (ib *nativeInbound) upsertXHTTPSession(w http.ResponseWriter, id string) *n
 }
 
 func (ib *nativeInbound) xhttpMaxActiveSessions() int {
-	return 0
+	return nativeXHTTPSessionLimit()
 }
 
 func (ib *nativeInbound) reapUnconnectedXHTTPSession(id string, s *nativeXHTTPSession) {
@@ -1048,12 +1071,19 @@ func (c *nativeXHTTPConn) SetReadDeadline(t time.Time) error {
 	return nil
 }
 
-func (c *nativeXHTTPConn) SetWriteDeadline(time.Time) error { return nil }
+func (c *nativeXHTTPConn) SetWriteDeadline(t time.Time) error {
+	if dw, ok := c.writer.(interface{ SetWriteDeadline(time.Time) error }); ok {
+		return dw.SetWriteDeadline(t)
+	}
+	return nil
+}
 
 type nativeXHTTPResponseWriter struct {
-	mu     sync.Mutex
-	w      http.ResponseWriter
-	closed bool
+	writeMu  sync.Mutex
+	stateMu  sync.Mutex
+	w        http.ResponseWriter
+	closed   bool
+	deadline time.Time
 }
 
 func newNativeXHTTPResponseWriter(w http.ResponseWriter) *nativeXHTTPResponseWriter {
@@ -1061,22 +1091,53 @@ func newNativeXHTTPResponseWriter(w http.ResponseWriter) *nativeXHTTPResponseWri
 }
 
 func (w *nativeXHTTPResponseWriter) Write(p []byte) (int, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if w.closed {
+	w.writeMu.Lock()
+	defer w.writeMu.Unlock()
+
+	w.stateMu.Lock()
+	closed := w.closed
+	deadline := w.deadline
+	w.stateMu.Unlock()
+	if closed {
 		return 0, io.ErrClosedPipe
+	}
+
+	safetyDeadline := time.Now().Add(nativeXHTTPWriteTimeout())
+	if deadline.IsZero() || deadline.After(safetyDeadline) {
+		deadline = safetyDeadline
+	}
+	controller := http.NewResponseController(w.w)
+	if err := controller.SetWriteDeadline(deadline); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		return 0, err
 	}
 	n, err := w.w.Write(p)
 	if err == nil {
-		flushHTTP(w.w)
+		if flushErr := controller.Flush(); flushErr != nil && !errors.Is(flushErr, http.ErrNotSupported) {
+			err = flushErr
+		}
 	}
 	return n, err
 }
 
 func (w *nativeXHTTPResponseWriter) close() {
-	w.mu.Lock()
+	// Do not wait for writeMu: Close is commonly called by the request-context
+	// watcher specifically because a CDN write is stalled. Mark the writer closed
+	// and force the active net/http write deadline to expire so Write returns.
+	w.stateMu.Lock()
 	w.closed = true
-	w.mu.Unlock()
+	w.stateMu.Unlock()
+	_ = http.NewResponseController(w.w).SetWriteDeadline(time.Now())
+}
+
+func (w *nativeXHTTPResponseWriter) SetWriteDeadline(t time.Time) error {
+	w.stateMu.Lock()
+	w.deadline = t
+	w.stateMu.Unlock()
+	err := http.NewResponseController(w.w).SetWriteDeadline(t)
+	if errors.Is(err, http.ErrNotSupported) {
+		return nil
+	}
+	return err
 }
 
 // nativeXHTTPMemoryLease reserves from a process-wide byte budget before a
@@ -1091,16 +1152,15 @@ func acquireNativeXHTTPMemory(n int64) (*nativeXHTTPMemoryLease, bool) {
 	if n <= 0 {
 		return &nativeXHTTPMemoryLease{}, true
 	}
-	for {
-		current := nativeXHTTPBufferedBytes.Load()
-		if current > nativeXHTTPMaxBufferedGlobalBytes-n {
-			logNativeLimitRejection("XHTTP buffered upload bytes", &nativeXHTTPBufferRejected, nativeXHTTPMaxBufferedGlobalBytes)
-			return nil, false
-		}
-		if nativeXHTTPBufferedBytes.CompareAndSwap(current, current+n) {
-			return &nativeXHTTPMemoryLease{bytes: n}, true
-		}
+	nativeXHTTPMemoryWait.Lock()
+	defer nativeXHTTPMemoryWait.Unlock()
+	current := nativeXHTTPBufferedBytes.Load()
+	if nativeXHTTPMemoryWait.queued != 0 || current > nativeXHTTPMaxBufferedGlobalBytes-n {
+		logNativeLimitRejection("XHTTP buffered upload bytes", &nativeXHTTPBufferRejected, nativeXHTTPMaxBufferedGlobalBytes)
+		return nil, false
 	}
+	nativeXHTTPBufferedBytes.Store(current + n)
+	return &nativeXHTTPMemoryLease{bytes: n}, true
 }
 
 // acquireNativeXHTTPMemoryContext applies process-wide memory backpressure.
@@ -1113,27 +1173,42 @@ func acquireNativeXHTTPMemoryContext(ctx context.Context, n int64) (*nativeXHTTP
 	if n > nativeXHTTPMaxBufferedGlobalBytes {
 		return nil, errNativeXHTTPUploadBufferFull
 	}
-	for {
-		current := nativeXHTTPBufferedBytes.Load()
-		if current <= nativeXHTTPMaxBufferedGlobalBytes-n && nativeXHTTPBufferedBytes.CompareAndSwap(current, current+n) {
-			return &nativeXHTTPMemoryLease{bytes: n}, nil
-		}
-
-		nativeXHTTPMemoryWait.Lock()
-		// Recheck while holding the generation lock so a release cannot happen
-		// between the failed check and subscribing to the notification channel.
-		current = nativeXHTTPBufferedBytes.Load()
-		if current <= nativeXHTTPMaxBufferedGlobalBytes-n {
-			nativeXHTTPMemoryWait.Unlock()
-			continue
-		}
-		changed := nativeXHTTPMemoryWait.changed
+	waiter := &nativeXHTTPMemoryWaiter{bytes: n, ready: make(chan struct{})}
+	nativeXHTTPMemoryWait.Lock()
+	current := nativeXHTTPBufferedBytes.Load()
+	if nativeXHTTPMemoryWait.queued == 0 && current <= nativeXHTTPMaxBufferedGlobalBytes-n {
+		nativeXHTTPBufferedBytes.Store(current + n)
 		nativeXHTTPMemoryWait.Unlock()
-		select {
-		case <-changed:
-		case <-ctx.Done():
-			return nil, ctx.Err()
+		return &nativeXHTTPMemoryLease{bytes: n}, nil
+	}
+	nativeXHTTPMemoryWait.waiters = append(nativeXHTTPMemoryWait.waiters, waiter)
+	nativeXHTTPMemoryWait.queued++
+	nativeXHTTPMemoryWait.Unlock()
+
+	select {
+	case <-waiter.ready:
+		return &nativeXHTTPMemoryLease{bytes: n}, nil
+	case <-ctx.Done():
+		nativeXHTTPMemoryWait.Lock()
+		if waiter.granted {
+			current := nativeXHTTPBufferedBytes.Load() - n
+			if current < 0 {
+				current = 0
+			}
+			nativeXHTTPBufferedBytes.Store(current)
+		} else {
+			for i := nativeXHTTPMemoryWait.head; i < len(nativeXHTTPMemoryWait.waiters); i++ {
+				candidate := nativeXHTTPMemoryWait.waiters[i]
+				if candidate == waiter {
+					nativeXHTTPMemoryWait.waiters[i] = nil
+					nativeXHTTPMemoryWait.queued--
+					break
+				}
+			}
 		}
+		grantNativeXHTTPMemoryWaitersLocked()
+		nativeXHTTPMemoryWait.Unlock()
+		return nil, ctx.Err()
 	}
 }
 
@@ -1141,20 +1216,69 @@ func releaseNativeXHTTPMemory(n int64) {
 	if n <= 0 {
 		return
 	}
-	for {
-		current := nativeXHTTPBufferedBytes.Load()
-		next := current - n
-		if next < 0 {
-			next = 0
+	nativeXHTTPMemoryWait.Lock()
+	current := nativeXHTTPBufferedBytes.Load()
+	next := current - n
+	if next < 0 {
+		next = 0
+	}
+	nativeXHTTPBufferedBytes.Store(next)
+	grantNativeXHTTPMemoryWaitersLocked()
+	nativeXHTTPMemoryWait.Unlock()
+}
+
+// grantNativeXHTTPMemoryWaitersLocked wakes only the FIFO waiters whose exact
+// reservations now fit. The former broadcast channel woke every blocked HTTP
+// handler after every tiny release, creating a thundering herd and sustained
+// multi-core CPU usage while the 128 MB budget was full.
+func grantNativeXHTTPMemoryWaitersLocked() {
+	for nativeXHTTPMemoryWait.queued > 0 {
+		for nativeXHTTPMemoryWait.head < len(nativeXHTTPMemoryWait.waiters) &&
+			nativeXHTTPMemoryWait.waiters[nativeXHTTPMemoryWait.head] == nil {
+			nativeXHTTPMemoryWait.head++
 		}
-		if nativeXHTTPBufferedBytes.CompareAndSwap(current, next) {
-			nativeXHTTPMemoryWait.Lock()
-			close(nativeXHTTPMemoryWait.changed)
-			nativeXHTTPMemoryWait.changed = make(chan struct{})
-			nativeXHTTPMemoryWait.Unlock()
+		if nativeXHTTPMemoryWait.head >= len(nativeXHTTPMemoryWait.waiters) {
+			nativeXHTTPMemoryWait.waiters = nil
+			nativeXHTTPMemoryWait.head = 0
+			nativeXHTTPMemoryWait.queued = 0
 			return
 		}
+
+		waiter := nativeXHTTPMemoryWait.waiters[nativeXHTTPMemoryWait.head]
+		current := nativeXHTTPBufferedBytes.Load()
+		if current > nativeXHTTPMaxBufferedGlobalBytes-waiter.bytes {
+			compactNativeXHTTPMemoryWaitersLocked()
+			return
+		}
+		nativeXHTTPMemoryWait.waiters[nativeXHTTPMemoryWait.head] = nil
+		nativeXHTTPMemoryWait.head++
+		nativeXHTTPMemoryWait.queued--
+		nativeXHTTPBufferedBytes.Store(current + waiter.bytes)
+		waiter.granted = true
+		close(waiter.ready)
 	}
+	compactNativeXHTTPMemoryWaitersLocked()
+}
+
+func compactNativeXHTTPMemoryWaitersLocked() {
+	head := nativeXHTTPMemoryWait.head
+	if head == 0 {
+		return
+	}
+	if nativeXHTTPMemoryWait.queued == 0 {
+		nativeXHTTPMemoryWait.waiters = nil
+		nativeXHTTPMemoryWait.head = 0
+		return
+	}
+	if head < 1024 && head*2 < len(nativeXHTTPMemoryWait.waiters) {
+		return
+	}
+	remaining := copy(nativeXHTTPMemoryWait.waiters, nativeXHTTPMemoryWait.waiters[head:])
+	for i := remaining; i < len(nativeXHTTPMemoryWait.waiters); i++ {
+		nativeXHTTPMemoryWait.waiters[i] = nil
+	}
+	nativeXHTTPMemoryWait.waiters = nativeXHTTPMemoryWait.waiters[:remaining]
+	nativeXHTTPMemoryWait.head = 0
 }
 
 func (l *nativeXHTTPMemoryLease) shrink(n int64) {
@@ -1427,71 +1551,74 @@ func (q *nativeXHTTPUploadQueue) Read(b []byte) (int, error) {
 		return reader.Read(b)
 	}
 
-	select {
-	case <-q.closed:
-		return 0, io.EOF
-	default:
-	}
-
-	if len(q.heap) == 0 {
-		p, err := q.recv()
-		if err != nil {
-			return 0, err
-		}
-		if p.Reader != nil {
-			if !q.setReader(p.Reader) {
-				_ = p.Reader.Close()
-				return 0, io.EOF
-			}
-			return p.Reader.Read(b)
-		}
+	for {
 		select {
 		case <-q.closed:
-			q.releasePayloadMemory(p.accountedBytes)
 			return 0, io.EOF
 		default:
 		}
-		heap.Push(&q.heap, p)
-	}
 
-	for len(q.heap) > 0 {
-		packet := heap.Pop(&q.heap).(nativeXHTTPPacket)
-
-		if packet.Seq == q.nextSeq {
-			n := copy(b, packet.Payload)
-			if n < len(packet.Payload) {
-				q.releasePayloadMemory(int64(n))
-				packet.accountedBytes -= int64(n)
-				packet.Payload = packet.Payload[n:]
-				heap.Push(&q.heap, packet)
-			} else {
-				q.releasePayloadMemory(packet.accountedBytes)
-				q.nextSeq = packet.Seq + 1
-			}
-			return n, nil
-		}
-
-		if packet.Seq > q.nextSeq {
-			// Do not apply a packet/request count ceiling. The per-session and global
-			// accounted-byte budgets backpressure producers, including empty packets.
-			heap.Push(&q.heap, packet)
+		if len(q.heap) == 0 {
 			p, err := q.recv()
 			if err != nil {
 				return 0, err
 			}
 			if p.Reader != nil {
-				_ = p.Reader.Close()
-				return 0, errors.New("xhttp mixed stream-up and packet-up upload")
+				if !q.setReader(p.Reader) {
+					_ = p.Reader.Close()
+					return 0, io.EOF
+				}
+				return p.Reader.Read(b)
+			}
+			select {
+			case <-q.closed:
+				q.releasePayloadMemory(p.accountedBytes)
+				return 0, io.EOF
+			default:
 			}
 			heap.Push(&q.heap, p)
-			continue
 		}
 
-		// A duplicate/late packet is discarded; release the bytes it owned.
-		q.releasePayloadMemory(packet.accountedBytes)
-	}
+		for len(q.heap) > 0 {
+			packet := heap.Pop(&q.heap).(nativeXHTTPPacket)
 
-	return 0, nil
+			if packet.Seq == q.nextSeq {
+				if len(packet.Payload) == 0 {
+					q.releasePayloadMemory(packet.accountedBytes)
+					q.nextSeq = packet.Seq + 1
+					continue
+				}
+				n := copy(b, packet.Payload)
+				if n < len(packet.Payload) {
+					q.releasePayloadMemory(int64(n))
+					packet.accountedBytes -= int64(n)
+					packet.Payload = packet.Payload[n:]
+					heap.Push(&q.heap, packet)
+				} else {
+					q.releasePayloadMemory(packet.accountedBytes)
+					q.nextSeq = packet.Seq + 1
+				}
+				return n, nil
+			}
+
+			if packet.Seq > q.nextSeq {
+				heap.Push(&q.heap, packet)
+				p, err := q.recv()
+				if err != nil {
+					return 0, err
+				}
+				if p.Reader != nil {
+					_ = p.Reader.Close()
+					return 0, errors.New("xhttp mixed stream-up and packet-up upload")
+				}
+				heap.Push(&q.heap, p)
+				continue
+			}
+
+			// A duplicate/late packet is discarded; release the bytes it owned.
+			q.releasePayloadMemory(packet.accountedBytes)
+		}
+	}
 }
 
 func (q *nativeXHTTPUploadQueue) loadReader() io.ReadCloser {

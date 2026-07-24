@@ -11,7 +11,7 @@ import (
 const (
 	defaultMainListen  = "0.0.0.0:80"
 	defaultExtraListen = "0.0.0.0:8080"
-	defaultDNSTTListen = "[::]:5300"
+	defaultDNSTTListen = "0.0.0.0:5300"
 	defaultUDPGWListen = "0.0.0.0:7400"
 )
 
@@ -109,9 +109,10 @@ func normalizeRuntimePorts(cfg *Config) []string {
 			}
 		}
 
-		cfg.DNSTT.UDPListen = strings.TrimSpace(cfg.DNSTT.UDPListen)
-		if cfg.DNSTT.UDPListen == "" {
-			cfg.DNSTT.UDPListen = defaultDNSTTListen
+		var migratedLegacyDNSTTWildcard bool
+		cfg.DNSTT.UDPListen, migratedLegacyDNSTTWildcard = normalizeDNSTTListenDefault(cfg.DNSTT.UDPListen)
+		if migratedLegacyDNSTTWildcard {
+			warn("DNSTT legacy default [::]:5300 is IPv6-only; using IPv4 default %s", cfg.DNSTT.UDPListen)
 		}
 		if err := udpAddrAvailableForDNSTT(cfg.DNSTT.UDPListen); err != nil {
 			old := cfg.DNSTT.UDPListen
@@ -293,6 +294,29 @@ func normalizeDNSTTDomainList(primary string, domains []string) []string {
 		add(d)
 	}
 	return out
+}
+
+// normalizeDNSTTListenDefault keeps explicit IPv4 and concrete IPv6 listeners,
+// but migrates the old wildcard IPv6 default. listenDNSTTPacket deliberately
+// opens IPv6 addresses with udp6, so [::]:5300 never receives IPv4 queries.
+// Existing installations commonly inherited that value from the old default;
+// moving only that wildcard/default-port combination makes them work after an
+// update without changing intentionally selected IPv6 interface addresses.
+func normalizeDNSTTListenDefault(addr string) (string, bool) {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return defaultDNSTTListen, false
+	}
+
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil || port != "5300" {
+		return addr, false
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	if ip != nil && ip.To4() == nil && ip.IsUnspecified() {
+		return defaultDNSTTListen, true
+	}
+	return addr, false
 }
 
 func udpAddrAvailableForDNSTT(addr string) error {

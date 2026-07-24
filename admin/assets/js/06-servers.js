@@ -426,7 +426,7 @@ async function loadManagedServerConfig(id) {
     toggleManagedDnsttFields(hasDnstt);
     const d = c.dnstt || {};
     document.getElementById("managedCfgDnsttDomains").value = dnsttDomainsText(d);
-    document.getElementById("managedCfgDnsttUDP").value = d.udp_listen || "";
+    document.getElementById("managedCfgDnsttUDP").value = d.udp_listen || "0.0.0.0:5300";
     document.getElementById("managedCfgDnsttFakeEnabled").checked = !!d.fake_dns_enabled;
     document.getElementById("managedCfgDnsttFakeListen").value = d.fake_dns_listen || "";
     document.getElementById("managedCfgDnsttFakeDomain").value = d.fake_dns_domain || "t.local.lan";
@@ -494,7 +494,7 @@ function managedConfigFromForm() {
     dnstt: document.getElementById("managedCfgDnsttEnabled").checked ? {
       domain: dnsttDomains[0] || "",
       domains: dnsttDomains,
-      udp_listen: document.getElementById("managedCfgDnsttUDP").value.trim(),
+      udp_listen: document.getElementById("managedCfgDnsttUDP").value.trim() || "0.0.0.0:5300",
       fake_dns_enabled: document.getElementById("managedCfgDnsttFakeEnabled").checked,
       fake_dns_listen: document.getElementById("managedCfgDnsttFakeListen").value.trim(),
       fake_dns_domain: document.getElementById("managedCfgDnsttFakeDomain").value.trim(),

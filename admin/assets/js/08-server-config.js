@@ -122,7 +122,7 @@ async function loadServerConfig() {
     toggleDnsttFields(hasDnstt);
     const d = c.dnstt || {};
     document.getElementById("cfgDnsttDomains").value = dnsttDomainsText(d);
-    document.getElementById("cfgDnsttUDP").value       = d.udp_listen || "";
+    document.getElementById("cfgDnsttUDP").value       = d.udp_listen || "0.0.0.0:5300";
     document.getElementById("cfgDnsttFakeEnabled").checked = !!d.fake_dns_enabled;
     document.getElementById("cfgDnsttFakeListen").value = d.fake_dns_listen || "";
     document.getElementById("cfgDnsttFakeDomain").value = d.fake_dns_domain || "t.local.lan";
@@ -201,7 +201,7 @@ async function saveServerConfig() {
     dnstt: document.getElementById("cfgDnsttEnabled").checked ? {
       domain:              dnsttDomains[0] || "",
       domains:             dnsttDomains,
-      udp_listen:          document.getElementById("cfgDnsttUDP").value.trim(),
+      udp_listen:          document.getElementById("cfgDnsttUDP").value.trim() || "0.0.0.0:5300",
       fake_dns_enabled:    document.getElementById("cfgDnsttFakeEnabled").checked,
       fake_dns_listen:     document.getElementById("cfgDnsttFakeListen").value.trim(),
       fake_dns_domain:     document.getElementById("cfgDnsttFakeDomain").value.trim(),

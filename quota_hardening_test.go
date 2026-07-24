@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -240,15 +241,21 @@ func TestXHTTPSessionsIgnoreLegacyGlobalCapAndReleaseCounters(t *testing.T) {
 	}
 }
 
-func TestNegativeXHTTPSessionLimitMeansUnlimited(t *testing.T) {
-	if got := (&nativeInbound{}).xhttpMaxActiveSessions(); got != 0 {
-		t.Fatalf("unlimited XHTTP session limit normalized to %d", got)
+func TestXHTTPSessionSafetyWindowIsAboveProductionScale(t *testing.T) {
+	if got := (&nativeInbound{}).xhttpMaxActiveSessions(); got != fixedNativeMaxXHTTPSessions {
+		t.Fatalf("XHTTP session safety window = %d, want %d", got, fixedNativeMaxXHTTPSessions)
+	}
+	if got := nativeXHTTPSessionLimit(); got < 8_000 {
+		t.Fatalf("XHTTP session safety window = %d, want room for at least 8K users", got)
 	}
 }
 
-func TestNativeHTTP2StreamsIgnoreLegacyRequestCeiling(t *testing.T) {
-	if got := nativeHTTP2MaxConcurrentStreams(); got != ^uint32(0) {
-		t.Fatalf("HTTP/2 stream setting = %d, want unlimited uint32 range", got)
+func TestNativeHTTP2StreamsUseFiniteTransportBackpressure(t *testing.T) {
+	if got := nativeHTTP2MaxConcurrentStreams(); got != fixedNativeHTTP2ConcurrentStreams {
+		t.Fatalf("HTTP/2 stream setting = %d, want %d", got, fixedNativeHTTP2ConcurrentStreams)
+	}
+	if got := nativeHTTP2MaxConcurrentStreams(); got < 1024 {
+		t.Fatalf("HTTP/2 stream setting = %d, too small for XHTTP packet bursts", got)
 	}
 	if got := nativeMuxMaxSessionLimit(); got != 64 {
 		t.Fatalf("per-transport Mux session guard = %d, want 64", got)
@@ -262,6 +269,20 @@ func TestXHTTPHandlerDoesNotApplyWebRequestCeiling(t *testing.T) {
 	ib.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("XHTTP OPTIONS at legacy request ceiling = %d, want 200", rec.Code)
+	}
+}
+
+func TestXHTTPHandlerSafetySlotIsReleased(t *testing.T) {
+	before := nativeXHTTPRequests.Load()
+	ib := &nativeInbound{transport: "xhttp", path: "/"}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	ib.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("empty XHTTP request status = %d, want 400", rec.Code)
+	}
+	if got := nativeXHTTPRequests.Load(); got != before {
+		t.Fatalf("XHTTP handler counter after return = %d, want %d", got, before)
 	}
 }
 
@@ -408,6 +429,80 @@ func TestXHTTPUploadQueueBackpressuresInsteadOfRejectingBurst(t *testing.T) {
 	q.close()
 	if got := nativeXHTTPBufferedBytes.Load(); got != before {
 		t.Fatalf("backpressure test leaked %d buffered bytes (baseline %d)", got, before)
+	}
+}
+
+func TestXHTTPGlobalMemoryBackpressureWakesWaitersFIFO(t *testing.T) {
+	before := nativeXHTTPBufferedBytes.Load()
+	fillBytes := nativeXHTTPMaxBufferedGlobalBytes - before
+	filler, ok := acquireNativeXHTTPMemory(fillBytes)
+	if !ok {
+		t.Fatal("failed to fill XHTTP memory budget for waiter test")
+	}
+	defer filler.release()
+
+	type result struct {
+		lease *nativeXHTTPMemoryLease
+		err   error
+	}
+	startWaiter := func() <-chan result {
+		done := make(chan result, 1)
+		go func() {
+			lease, err := acquireNativeXHTTPMemoryContext(context.Background(), nativeXHTTPMinPacketAccountingBytes)
+			done <- result{lease: lease, err: err}
+		}()
+		return done
+	}
+	waitForWaiters := func(want int) {
+		t.Helper()
+		deadline := time.Now().Add(time.Second)
+		for {
+			nativeXHTTPMemoryWait.Lock()
+			got := nativeXHTTPMemoryWait.queued
+			nativeXHTTPMemoryWait.Unlock()
+			if got == want {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("memory waiters = %d, want %d", got, want)
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+
+	firstDone := startWaiter()
+	waitForWaiters(1)
+	secondDone := startWaiter()
+	waitForWaiters(2)
+
+	filler.shrink(fillBytes - nativeXHTTPMinPacketAccountingBytes)
+	first := <-firstDone
+	if first.err != nil || first.lease == nil {
+		t.Fatalf("first memory waiter = (%v, %v)", first.lease, first.err)
+	}
+	select {
+	case second := <-secondDone:
+		if second.lease != nil {
+			second.lease.release()
+		}
+		t.Fatalf("second waiter woke before FIFO capacity was released: %v", second.err)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	first.lease.release()
+	select {
+	case second := <-secondDone:
+		if second.err != nil || second.lease == nil {
+			t.Fatalf("second memory waiter = (%v, %v)", second.lease, second.err)
+		}
+		second.lease.release()
+	case <-time.After(time.Second):
+		t.Fatal("second memory waiter did not wake after first released")
+	}
+
+	filler.release()
+	if got := nativeXHTTPBufferedBytes.Load(); got != before {
+		t.Fatalf("FIFO waiter test leaked %d buffered bytes (baseline %d)", got, before)
 	}
 }
 
@@ -676,5 +771,100 @@ func TestNativeXHTTPQueueCloseClosesQueuedStreamReader(t *testing.T) {
 	q.close()
 	if !r.closed.Load() {
 		t.Fatal("queued stream reader was not closed during queue shutdown")
+	}
+}
+
+func TestNativeXHTTPQueueSkipsEmptyPacketsWithoutZeroProgressRead(t *testing.T) {
+	before := nativeXHTTPBufferedBytes.Load()
+	q := newNativeXHTTPUploadQueue(2, 2*nativeXHTTPMinPacketAccountingBytes)
+	defer q.close()
+
+	for seq, payload := range [][]byte{nil, []byte("x")} {
+		accounted := nativeXHTTPAccountedPacketBytes(int64(len(payload)))
+		lease, ok := acquireNativeXHTTPMemory(accounted)
+		if !ok {
+			t.Fatal("failed to reserve packet memory")
+		}
+		if err := q.push(context.Background(), nativeXHTTPPacket{Payload: payload, Seq: uint64(seq)}, lease); err != nil {
+			lease.release()
+			t.Fatalf("queue packet %d: %v", seq, err)
+		}
+		lease.release()
+	}
+
+	buf := make([]byte, 1)
+	n, err := q.Read(buf)
+	if err != nil || n != 1 || string(buf[:n]) != "x" {
+		t.Fatalf("queue read after empty packet = (%d, %v, %q), want (1, nil, x)", n, err, buf[:n])
+	}
+	q.close()
+	if got := nativeXHTTPBufferedBytes.Load(); got != before {
+		t.Fatalf("empty-packet test leaked %d buffered bytes (baseline %d)", got, before)
+	}
+}
+
+type deadlineUnblockingResponseWriter struct {
+	header      http.Header
+	writeStart  chan struct{}
+	unblock     chan struct{}
+	startOnce   sync.Once
+	unblockOnce sync.Once
+}
+
+func newDeadlineUnblockingResponseWriter() *deadlineUnblockingResponseWriter {
+	return &deadlineUnblockingResponseWriter{
+		header:     make(http.Header),
+		writeStart: make(chan struct{}),
+		unblock:    make(chan struct{}),
+	}
+}
+
+func (w *deadlineUnblockingResponseWriter) Header() http.Header { return w.header }
+func (w *deadlineUnblockingResponseWriter) WriteHeader(int)     {}
+func (w *deadlineUnblockingResponseWriter) Flush()              {}
+func (w *deadlineUnblockingResponseWriter) Write([]byte) (int, error) {
+	w.startOnce.Do(func() { close(w.writeStart) })
+	<-w.unblock
+	return 0, os.ErrDeadlineExceeded
+}
+func (w *deadlineUnblockingResponseWriter) SetWriteDeadline(deadline time.Time) error {
+	if !deadline.IsZero() && !deadline.After(time.Now().Add(10*time.Millisecond)) {
+		w.unblockOnce.Do(func() { close(w.unblock) })
+	}
+	return nil
+}
+
+func TestNativeXHTTPResponseCloseInterruptsStalledWrite(t *testing.T) {
+	underlying := newDeadlineUnblockingResponseWriter()
+	writer := newNativeXHTTPResponseWriter(underlying)
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := writer.Write([]byte("blocked"))
+		writeDone <- err
+	}()
+
+	select {
+	case <-underlying.writeStart:
+	case <-time.After(time.Second):
+		t.Fatal("response write did not start")
+	}
+
+	closeDone := make(chan struct{})
+	go func() {
+		writer.close()
+		close(closeDone)
+	}()
+	select {
+	case <-closeDone:
+	case <-time.After(time.Second):
+		t.Fatal("response close blocked behind stalled write")
+	}
+	select {
+	case err := <-writeDone:
+		if !errors.Is(err, os.ErrDeadlineExceeded) {
+			t.Fatalf("stalled write error = %v, want deadline exceeded", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stalled response write was not interrupted")
 	}
 }

@@ -37,6 +37,18 @@ const (
 	// buffers. Operators may request more, up to the hard cap enforced there.
 	defaultNativeXHTTPBufferedPosts = 64
 
+	// These are simultaneous resource-safety windows, not request-rate limits.
+	// They are deliberately far above the expected 6-8K connected-user load, but
+	// finite so a reconnect storm, broken CDN, or hostile client cannot retain an
+	// unbounded number of sockets, HTTP handlers, sessions, and goroutine stacks.
+	// Transport Accept waits at capacity (kernel backpressure); XHTTP overloads
+	// receive 503 rather than the web-rate-limit semantics of 429.
+	fixedNativeMaxTransportConnections = 65536
+	fixedNativeMaxXHTTPRequests        = 65536
+	fixedNativeMaxXHTTPSessions        = 65536
+	fixedNativeHTTP2ConcurrentStreams  = 4096
+	fixedNativeXHTTPWriteTimeoutMS     = 60 * 1000
+
 	// Backstop reaper for connected XHTTP VPN sessions. The stream-down GET's
 	// request context is the primary lifetime owner, but behind a CDN that context
 	// frequently never fires when a client silently drops (mobile networks, CDN
@@ -111,10 +123,13 @@ func nativeMuxUDPReadBufferSize() int   { return fixedNativeMuxUDPReadBuffer }
 func nativeMuxUDPWriteBufferSize() int  { return fixedNativeMuxUDPWriteBuffer }
 func nativeXHTTPBufferedPostLimit() int { return defaultNativeXHTTPBufferedPosts }
 func nativeHTTP2MaxConcurrentStreams() uint32 {
-	// x/net/http2 otherwise installs its own finite default when this is zero.
-	// Advertise the protocol's full uint32 range so ordinary packet-up bursts can
-	// never be refused by a website-style concurrent-stream setting.
-	return ^uint32(0)
+	return fixedNativeHTTP2ConcurrentStreams
+}
+func nativeTransportConnectionLimit() int { return fixedNativeMaxTransportConnections }
+func nativeXHTTPRequestLimit() int        { return fixedNativeMaxXHTTPRequests }
+func nativeXHTTPSessionLimit() int        { return fixedNativeMaxXHTTPSessions }
+func nativeXHTTPWriteTimeout() time.Duration {
+	return fixedNativeXHTTPWriteTimeoutMS * time.Millisecond
 }
 func nativeMuxUDPIdleTimeout() time.Duration {
 	return fixedNativeMuxUDPIdleMS * time.Millisecond

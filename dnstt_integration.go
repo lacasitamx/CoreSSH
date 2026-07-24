@@ -595,11 +595,8 @@ func startDNSTTInstance(cfg *DNSTTConfig, sshConf *ssh.ServerConfig) error {
 		return err
 	}
 
-	udpListen := cfg.UDPListen
-	if udpListen == "" {
-		udpListen = defaultDNSTTListen
-		cfg.UDPListen = udpListen
-	}
+	udpListen, _ := normalizeDNSTTListenDefault(cfg.UDPListen)
+	cfg.UDPListen = udpListen
 
 	fakeDomains := domains
 	if cfg.FakeDNSEnabled {
