@@ -711,6 +711,34 @@ function clientTrafficHTML(c) {
   return `${escapeHTML(formatBytes(total))} / ${escapeHTML(quotaLabel)}${escapeHTML(state)}<div class="hint">↑ ${escapeHTML(formatBytes(up))} · ↓ ${escapeHTML(formatBytes(down))}</div>`;
 }
 
+// ─── Live bandwidth ───────────────────────────────────────────────────────────
+// The API reports the account's current speed in bytes per second, summed over
+// every connection it has open. Speeds are shown in bits per second because
+// that is the unit the per-user limits use.
+function formatSpeed(bytesPerSec) {
+  const bits = Number(bytesPerSec || 0) * 8;
+  if (!Number.isFinite(bits) || bits < 1000) return "0";
+  if (bits < 1e6) return `${Math.round(bits / 1e3)} kbps`;
+  if (bits < 1e9) return `${(bits / 1e6).toFixed(bits < 1e7 ? 2 : 1)} Mbps`;
+  return `${(bits / 1e9).toFixed(2)} Gbps`;
+}
+
+function isIdleSpeed(upBytesPerSec, downBytesPerSec) {
+  return Number(upBytesPerSec || 0) * 8 < 1000 && Number(downBytesPerSec || 0) * 8 < 1000;
+}
+
+function speedHTML(upBytesPerSec, downBytesPerSec) {
+  if (isIdleSpeed(upBytesPerSec, downBytesPerSec)) return `<span class="hint">${t("idle")}</span>`;
+  return `<span class="speed-cell">`
+    + `<span class="speed-down">↓ ${escapeHTML(formatSpeed(downBytesPerSec))}</span>`
+    + `<span class="speed-up">↑ ${escapeHTML(formatSpeed(upBytesPerSec))}</span>`
+    + `</span>`;
+}
+
+function speedTotalBytesPerSec(entry) {
+  return Number(entry?.up_bytes_per_sec || 0) + Number(entry?.down_bytes_per_sec || 0);
+}
+
 function updateCell(row, name, html) {
   const cell = row?.querySelector?.(`[data-cell="${name}"]`);
   if (cell && cell.innerHTML !== html) cell.innerHTML = html;
@@ -747,6 +775,7 @@ function patchRenderedInbounds(inbounds) {
       updateCell(row, "status", clientStatusHTML(c));
       updateCell(row, "online", clientOnlineHTML(c));
       updateCell(row, "connections", escapeHTML(c.active_connections || 0));
+      updateCell(row, "speed", speedHTML(c.up_bytes_per_sec, c.down_bytes_per_sec));
       updateCell(row, "traffic", clientTrafficHTML(c));
       updateCell(row, "max", escapeHTML(c.max_conns || "∞"));
     }
@@ -781,4 +810,14 @@ Object.assign(I18N_TEXT["pt-BR"], {
   "Apply high-traffic VPN defaults":"Aplicar padrão VPN de alto tráfego",
   "Apply safe defaults":"Aplicar padrões seguros",
   "XHTTP is handled as VPN tunnel traffic: packet requests and reassembly are limited only by bounded byte backpressure, never by a request count. Existing saved web-style caps are ignored automatically after update. Per-user max_conns, quota, and bandwidth policies still work normally.":"O XHTTP é tratado como tráfego de túnel VPN: requisições de pacotes e remontagem usam somente backpressure com limite de bytes, nunca limite por quantidade de requisições. Limites web antigos já salvos são ignorados automaticamente após a atualização. As regras por usuário de max_conns, cota e banda continuam funcionando normalmente."
+});
+
+// Live per-account bandwidth column, shared by the SSH and Xray user lists.
+Object.assign(I18N_TEXT["en-US"], {
+  "Speed":"Speed", "Limit up":"Limit up", "Limit down":"Limit down",
+  "Current up/down speed of the whole account, across all of its connections.":"Current up/down speed of the whole account, across all of its connections.",
+});
+Object.assign(I18N_TEXT["pt-BR"], {
+  "Speed":"Velocidade", "Limit up":"Limite de envio", "Limit down":"Limite de download",
+  "Current up/down speed of the whole account, across all of its connections.":"Velocidade atual de envio/recebimento da conta inteira, somando todas as conexões.",
 });

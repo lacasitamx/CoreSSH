@@ -16,6 +16,8 @@ DragonCoreSSH V40 é um painel/servidor em Go para SSH com HTTP Injection, paine
 - Área compacta de infraestrutura com Servidores, Status, Monitoramento e Tráfego no mesmo seletor visual
 - Cartões de status ao vivo nos espaços SSH, Xray e Infraestrutura, com confirmações integradas ao painel
 - Listas de usuários SSH e Xray com botões de ordenação e filtros por status, conexão, uso, validade e cota, além de cabeçalhos clicáveis
+- Velocidade ao vivo (subida/descida) por conta nas listas SSH e Xray, somando todas as conexões do usuário, com ordenação por velocidade
+- Listas de usuários em formato de cartão no celular: cada linha vira um cartão com rótulos, sem rolagem lateral
 - Navegação interna consistente com o Bot: SSH/SlowDNS e Revendedores separam consulta de cadastro; Xray separa Usuários, Criar usuário, Configuração e Logs; Configurações separa Rede/SSH, SlowDNS, UDP, TLS e Xray
 - Contas de revendedor (reseller) com cota de usuários e escopo próprio
 - Gerenciamento multi-servidor (master/slave) direto pelo painel
@@ -557,6 +559,8 @@ DragonCoreSSH V40 is a Go-based SSH HTTP Injection server with a web panel, Post
 - Native shared XHTTP endpoint: VLESS **or** VMess on `/` and SSH on `/ssh`, using the same domain/port/TLS
 - Compact infrastructure workspace with Servers, Status, Monitoring, and Traffic in one visual switcher
 - Live status cards across SSH, Xray, and Infrastructure, with panel-native confirmations
+- Live per-account up/down speed in the SSH and Xray user lists, summed across every connection the account has open, sortable by speed
+- User lists collapse into labelled cards on phones, so there is no sideways scrolling
 - Bot-style section navigation throughout the panel: SSH/SlowDNS and Resellers separate lists from creation; Xray separates Users, Create User, Configuration, and Logs; Settings separates Network/SSH, SlowDNS, UDP, TLS, and Xray
 - Reseller accounts with a user quota and self-scoped access
 - Multi-server (master/slave) management directly from the panel
@@ -1145,7 +1149,7 @@ curl -s "http://SERVER_IP:9090/api/users" -H "X-Session-Token: $TOKEN"
 
 #### `GET /api/users` — session
 - Optional query: `server_id`. Resellers see only their own users; superadmins see all.
-- `200`: array of user objects: `username` (string), `active_conns` (int), `max_connections` (int), `expires_at` (string/null), `limit_mbps_up` (int), `limit_mbps_down` (int), `data_quota_bytes` (int64), `quota_action` (`block` or `throttle`), `quota_throttle_mbps` (int), `total_uplink_bytes`, `total_downlink_bytes`, `total_bytes`, `quota_exceeded`, `totp_secret` (string, omitempty), `totp_period` (int), `totp_window` (int), `totp_digits` (int), `allow_static_password` (bool), `totp_enabled` (bool), `owner_username` (string, omitempty), `server_id` (string, omitempty).
+- `200`: array of user objects: `username` (string), `active_conns` (int), `max_connections` (int), `expires_at` (string/null), `limit_mbps_up` (int), `limit_mbps_down` (int), `data_quota_bytes` (int64), `quota_action` (`block` or `throttle`), `quota_throttle_mbps` (int), `total_uplink_bytes`, `total_downlink_bytes`, `total_bytes`, `up_bytes_per_sec` (float, live account-wide upload speed), `down_bytes_per_sec` (float, live account-wide download speed), `quota_exceeded`, `totp_secret` (string, omitempty), `totp_period` (int), `totp_window` (int), `totp_digits` (int), `allow_static_password` (bool), `totp_enabled` (bool), `owner_username` (string, omitempty), `server_id` (string, omitempty).
 
 #### `POST /api/users/create` — session
 Creates or updates (upsert) an SSH user.
@@ -1265,7 +1269,7 @@ Read/write a managed server's `config.json`. Query: `server_id`. Local delegates
 #### `GET /api/xray/inbounds` — session
 - Optional `server_id`. Lists only inbounds that carry client lists (vless/vmess/trojan). Resellers see all inbounds but only their own clients. Clients are enriched with DB metadata and runtime stats.
 - `200`: array of `{ "tag": string, "protocol": string, "port": <raw>, "listen": string, "clients": [ XrayClientInfo ] }`.
-- **XrayClientInfo**: `id` (string, the UUID), `password` (string, omitempty), `email` (string), `level` (int), `online` (bool), `last_active` (string/null), `uplink_bytes` (int64), `downlink_bytes` (int64), `total_bytes` (int64), `active_connections` (int), `name` (string), `expires_at` (string/null), `expiration_days` (int; `-1` = no expiry, `0` = expired), `max_conns`, `data_quota_bytes`, `quota_action`, `quota_throttle_mbps`, `quota_exceeded`, `owner_username`, `expired`.
+- **XrayClientInfo**: `id` (string, the UUID), `password` (string, omitempty), `email` (string), `level` (int), `online` (bool), `last_active` (string/null), `uplink_bytes` (int64), `downlink_bytes` (int64), `total_bytes` (int64), `up_bytes_per_sec` (float, live client-wide upload speed), `down_bytes_per_sec` (float, live client-wide download speed), `active_connections` (int), `name` (string), `expires_at` (string/null), `expiration_days` (int; `-1` = no expiry, `0` = expired), `max_conns`, `data_quota_bytes`, `quota_action`, `quota_throttle_mbps`, `quota_exceeded`, `owner_username`, `expired`.
 
 #### `POST /api/xray/clients/add` — session
 - Body: `inbound_tag` (string, required), `uuid` (valid UUID, required), `email` (string, optional — defaults to name then uuid), `name` (string, optional), `expires_at` (RFC3339, `YYYY-MM-DDThh:mm`, or `YYYY-MM-DD`), `max_connections` (0–10000), `data_quota_bytes`, `quota_action`, `quota_throttle_mbps`, `owner_username` (string, optional — superadmin only), `server_id` (string, optional).

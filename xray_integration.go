@@ -252,11 +252,12 @@ type XrayManager struct {
 	startTime time.Time
 	lastErr   string
 
-	statsMu       sync.RWMutex
-	statsByEmail  map[string]xrayRuntimeStat
-	lastStatsErr  string
-	lastStatsPoll time.Time
-	pollStarted   bool
+	statsMu            sync.RWMutex
+	statsByEmail       map[string]xrayRuntimeStat
+	lastStatsErr       string
+	lastStatsPoll      time.Time
+	pollStarted        bool
+	rateSamplerStarted bool
 
 	nativeDBMu              sync.Mutex
 	nativeTrafficPersistMu  sync.Mutex
@@ -319,6 +320,7 @@ func initXrayManager(cfg *XrayConfig) {
 	// external `xray api statsquery` poller is not started (it would overwrite
 	// the native counters with errors from a non-existent CLI endpoint).
 	xrayMgr.startNativeStatsFlusher()
+	xrayMgr.startRateSampler()
 	if !cfg.UseNative() {
 		xrayMgr.startStatsPoller()
 	}
@@ -886,6 +888,73 @@ func (m *XrayManager) startStatsPoller() {
 	}()
 }
 
+// Live per-client speed, derived from the same cumulative counters the panel
+// already reports as lifetime traffic.
+var xrayBandwidth = newBandwidthSampler(6*time.Second, 45*time.Second)
+
+const xrayNativeRateSampleInterval = 2 * time.Second
+
+// startRateSampler keeps xrayBandwidth fresh in native mode, where the
+// in-process runtime updates the counters continuously. In external mode the
+// counters only move once per stats poll (15s by default), so refreshRuntimeStats
+// feeds the sampler at its own cadence instead — sampling faster than the source
+// updates would show alternating spikes and zeros. The mode is re-checked on
+// every tick because a hot reload can switch it while running.
+func (m *XrayManager) startRateSampler() {
+	m.mu.Lock()
+	if m.rateSamplerStarted {
+		m.mu.Unlock()
+		return
+	}
+	m.rateSamplerStarted = true
+	m.mu.Unlock()
+
+	go func() {
+		ticker := time.NewTicker(xrayNativeRateSampleInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			if !m.usesNativeSnapshot() {
+				continue
+			}
+			m.sampleRuntimeRates(time.Now())
+		}
+	}()
+}
+
+func (m *XrayManager) usesNativeSnapshot() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cfg != nil && m.cfg.UseNative()
+}
+
+func (m *XrayManager) sampleRuntimeRates(now time.Time) {
+	type counterSnapshot struct {
+		key      string
+		uplink   int64
+		downlink int64
+	}
+	m.statsMu.RLock()
+	snapshots := make([]counterSnapshot, 0, len(m.statsByEmail))
+	for key, st := range m.statsByEmail {
+		snapshots = append(snapshots, counterSnapshot{key: key, uplink: st.Uplink, downlink: st.Downlink})
+	}
+	m.statsMu.RUnlock()
+
+	active := make(map[string]struct{}, len(snapshots))
+	for _, snapshot := range snapshots {
+		xrayBandwidth.Observe(snapshot.key, snapshot.uplink, snapshot.downlink, now)
+		active[snapshot.key] = struct{}{}
+	}
+	xrayBandwidth.Retain(active)
+}
+
+// RuntimeRateForKeys resolves a client's live speed. Clients are tracked under
+// their UUID in native mode and under their stats-API email in external mode,
+// so callers pass every identifier the client may be stored under.
+func (m *XrayManager) RuntimeRateForKeys(keys ...string) (bandwidthRate, bool) {
+	return xrayBandwidth.RateForKeys(keys...)
+}
+
 func (m *XrayManager) isRunningSnapshot() bool {
 	m.mu.Lock()
 	native := m.cfg != nil && m.cfg.UseNative()
@@ -965,9 +1034,12 @@ func (m *XrayManager) refreshRuntimeStats() {
 	if m.statsByEmail == nil {
 		m.statsByEmail = make(map[string]xrayRuntimeStat, len(traffic))
 	}
-	seen := make(map[string]bool, len(traffic))
+	// External mode: the counters only move once per poll, so this is also the
+	// natural cadence for the live speed sampler.
+	active := make(map[string]struct{}, len(traffic))
 	for email, counters := range traffic {
-		seen[email] = true
+		active[email] = struct{}{}
+		xrayBandwidth.Observe(email, counters.Uplink, counters.Downlink, now)
 		prev := m.statsByEmail[email]
 		st := xrayRuntimeStat{Email: email, Uplink: counters.Uplink, Downlink: counters.Downlink, LastActive: prev.LastActive, ActiveConnections: prev.ActiveConnections}
 		changed := counters.Uplink != prev.Uplink || counters.Downlink != prev.Downlink
@@ -979,9 +1051,10 @@ func (m *XrayManager) refreshRuntimeStats() {
 		}
 		m.statsByEmail[email] = st
 	}
-	// Keep old entries, but do not delete them immediately. Xray may omit zero
-	// counters for users that have not moved traffic yet.
-	_ = seen
+	// Keep old stat entries, but do not delete them immediately: Xray may omit
+	// zero counters for users that have not moved traffic yet. Speed samples are
+	// dropped for absent users because a missing baseline only costs one poll.
+	xrayBandwidth.Retain(active)
 }
 
 func (m *XrayManager) refreshRuntimeStatsIfStale(maxAge time.Duration) {
@@ -2161,6 +2234,10 @@ type XrayClientInfo struct {
 	DownlinkBytes     int64      `json:"downlink_bytes,omitempty"`
 	TotalBytes        int64      `json:"total_bytes,omitempty"`
 	ActiveConnections int        `json:"active_connections,omitempty"`
+	// Live speed in bytes per second for the whole client, summed across every
+	// connection it has open.
+	UpBytesPerSec   float64 `json:"up_bytes_per_sec"`
+	DownBytesPerSec float64 `json:"down_bytes_per_sec"`
 	// Metadata from PostgreSQL (enriched by handleXrayInbounds)
 	Name              string     `json:"name,omitempty"`
 	ExpiresAt         *time.Time `json:"expires_at,omitempty"`
@@ -2564,6 +2641,10 @@ func handleXrayInbounds(w http.ResponseWriter, r *http.Request) {
 func applyXrayRuntimeStats(c *XrayClientInfo) {
 	if c == nil {
 		return
+	}
+	if rate, ok := xrayMgr.RuntimeRateForKeys(c.Email, c.UUID, c.Name); ok {
+		c.UpBytesPerSec = rate.UpBytesPerSec
+		c.DownBytesPerSec = rate.DownBytesPerSec
 	}
 	st, ok := xrayMgr.RuntimeStatsForKeys(c.Email, c.UUID, c.Name)
 	if !ok {

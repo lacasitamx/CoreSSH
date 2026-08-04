@@ -761,3 +761,44 @@ th[data-sort-key].sort-desc::after{content:" \25BC";}
 .user-list-controls{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;margin:0 0 16px;padding:12px;border:1px solid rgba(var(--section-accent,139,92,246),.18);border-radius:16px;background:rgba(var(--section-accent,139,92,246),.055)}
 .user-list-control-group{display:flex;flex-direction:column;gap:6px;min-width:0}.user-list-control-label{color:var(--muted);font-size:.63rem;font-weight:900;letter-spacing:.09em;text-transform:uppercase}.user-list-buttons{display:flex;align-items:center;gap:5px;flex-wrap:wrap}.user-list-filter-btn{min-height:30px;padding:5px 9px;border:1px solid rgba(148,163,184,.16);border-radius:10px;background:rgba(255,255,255,.025);color:var(--muted);font-size:.68rem;font-weight:850;cursor:pointer;transition:.15s ease}.user-list-filter-btn:hover{color:var(--text);border-color:rgba(var(--section-accent,139,92,246),.38);background:rgba(var(--section-accent,139,92,246),.09)}.user-list-filter-btn.active{color:#fff;border-color:rgba(var(--section-accent,139,92,246),.44);background:linear-gradient(135deg,rgba(var(--section-accent,139,92,246),.3),rgba(34,211,238,.1));box-shadow:inset 0 1px 0 rgba(255,255,255,.06)}.user-list-filter-btn[data-direction]::after{margin-left:4px;font-size:.7em}.user-list-filter-btn[data-direction="asc"]::after{content:"\25B2"}.user-list-filter-btn[data-direction="desc"]::after{content:"\25BC"}.user-list-count{margin-left:auto;white-space:nowrap}
 @media(max-width:760px){.user-list-controls{align-items:stretch}.user-list-control-group{width:100%}.user-list-buttons{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}.user-list-filter-btn{width:100%}.user-list-count{margin-left:0;align-self:flex-start}}
+
+/* Live per-account speed (whole account, all connections summed) */
+.speed-cell{display:inline-flex;flex-direction:column;gap:1px;line-height:1.25;font-variant-numeric:tabular-nums;font-weight:850;white-space:nowrap;}
+.speed-cell .speed-down{color:var(--accent-3);}
+.speed-cell .speed-up{color:var(--accent);}
+
+/* Card tables: on phones the wide user lists stop scrolling sideways and each
+   row becomes a labelled card. Labels come from each cell's data-label. */
+@media(max-width:760px){
+  .tbl-wrap:has(table.table-cards){overflow:visible;border:0;border-radius:0;background:transparent;}
+  table.table-cards{display:block;min-width:0;width:100%;font-size:.78rem;}
+  table.table-cards thead{display:none;}
+  table.table-cards tbody{display:flex;flex-direction:column;gap:10px;}
+  table.table-cards tr{
+    display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 12px;
+    padding:13px 14px;border:1px solid rgba(148,163,184,.14);border-radius:18px;
+    background:rgba(3,6,10,.55);
+  }
+  table.table-cards tbody tr:hover{background:rgba(34,211,238,.05);}
+  table.table-cards td{
+    display:flex;flex-direction:column;gap:3px;min-width:0;
+    padding:0;border:0;font-size:.78rem!important;overflow-wrap:anywhere;
+  }
+  table.table-cards td::before{
+    content:attr(data-label);color:var(--muted);font-size:.6rem;font-weight:900;
+    letter-spacing:.1em;text-transform:uppercase;
+  }
+  table.table-cards td[colspan]{grid-column:1/-1;text-align:center;}
+  table.table-cards td:not([data-label])::before{display:none;}
+  table.table-cards td.cell-primary{grid-column:1/-1;font-size:.98rem!important;font-weight:900;color:var(--text);}
+  table.table-cards td.cell-primary::before{display:none;}
+  table.table-cards td.cell-wide{grid-column:1/-1;}
+  table.table-cards td.cell-actions{
+    grid-column:1/-1;flex-direction:row;flex-wrap:wrap;gap:6px;
+    padding-top:4px;white-space:normal!important;
+  }
+  table.table-cards td.cell-actions::before{display:none;}
+  table.table-cards td.cell-actions .btn{flex:1 1 auto;margin:0!important;min-height:36px;}
+  table.table-cards .table-meter{max-width:none;}
+  table.table-cards .speed-cell{flex-direction:row;gap:12px;}
+}

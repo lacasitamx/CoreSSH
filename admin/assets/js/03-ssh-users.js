@@ -75,16 +75,17 @@ const USER_SORT_EXTRACT = {
   max:      u => u.max_connections || 0,
   up:       u => u.limit_mbps_up || 0,
   down:     u => u.limit_mbps_down || 0,
+  speed:    u => speedTotalBytesPerSec(u),
   usage:    u => Number(u.total_bytes || ((u.total_uplink_bytes || 0) + (u.total_downlink_bytes || 0)) || 0),
   expires:  u => u.expires_at ? new Date(u.expires_at).getTime() : Infinity,
   owner:    u => String(u.owner_username || "").toLowerCase(),
 };
 // Columns that default to descending on first click (most/online first).
-const USER_SORT_DEFAULT_DESC = new Set(["status", "conn", "max", "up", "down", "usage"]);
+const USER_SORT_DEFAULT_DESC = new Set(["status", "conn", "max", "up", "down", "speed", "usage"]);
 const USER_SORT_OPTIONS = [
   ["username", "User"], ["status", "Status"], ["auth", "Auth"], ["conn", "Connections"],
-  ["usage", "Usage"], ["expires", "Expiry"], ["max", "Max"], ["up", "Up"], ["down", "Dn"],
-  ["owner", "Owner"],
+  ["speed", "Speed"], ["usage", "Usage"], ["expires", "Expiry"], ["max", "Max"],
+  ["up", "Up"], ["down", "Dn"], ["owner", "Owner"],
 ];
 const USER_FILTER_OPTIONS = [
   ["all", "All"], ["online", "Online"], ["offline", "Offline"],
@@ -227,25 +228,36 @@ function renderUsers(users) {
   users.forEach(u => {
     const on = (u.active_conns || 0) > 0;
     const tr = document.createElement("tr");
+    // Every cell carries its column label so the table can collapse into
+    // labelled cards on phones instead of scrolling sideways. "wide" cells span
+    // the full card width there.
     const cells = [
-      u.username,
-      on ? `<span class="badge-on">${t("online")}</span>` : `<span class="badge-off">${t("idle")}</span>`,
-      u.use_pam ? "PAM" : (u.totp_enabled ? (u.allow_static_password ? "TOTP+pw" : "TOTP") : "Password"),
-      u.active_conns ?? 0,
-      u.max_connections || 0,
-      u.limit_mbps_up || 0,
-      u.limit_mbps_down || 0,
-      sshTrafficHTML(u),
-      u.expires_at ? fmtDate(u.expires_at) : "—",
+      { label:"User", text:u.username, cls:"cell-primary" },
+      { label:"Status", html: on ? `<span class="badge-on">${t("online")}</span>` : `<span class="badge-off">${t("idle")}</span>` },
+      { label:"Auth", text: u.use_pam ? "PAM" : (u.totp_enabled ? (u.allow_static_password ? "TOTP+pw" : "TOTP") : "Password") },
+      { label:"Conn", text: String(u.active_conns ?? 0) },
+      { label:"Max", text: String(u.max_connections || 0) },
+      // "Up"/"Dn" are speed limits, not current speed: spell that out on the
+      // card layout where the label sits right next to the live speed.
+      { label:"Up", cardLabel:"Limit up", text: String(u.limit_mbps_up || 0) },
+      { label:"Dn", cardLabel:"Limit down", text: String(u.limit_mbps_down || 0) },
+      { label:"Speed", html: speedHTML(u.up_bytes_per_sec, u.down_bytes_per_sec), small:true, cls:"cell-wide" },
+      { label:"Traffic", html: sshTrafficHTML(u), small:true, cls:"cell-wide" },
+      { label:"Expires", text: u.expires_at ? fmtDate(u.expires_at) : "—" },
     ];
-    if (isSA) cells.push(u.owner_username || "—");
-    cells.forEach((c, i) => {
+    if (isSA) cells.push({ label:"Owner", text: u.owner_username || "—" });
+    cells.forEach(cell => {
       const td = document.createElement("td");
-      if (i === 1 || i === 7) td.innerHTML = c; else td.textContent = c;
-      if (i === 7) td.style.fontSize = ".7rem";
+      td.dataset.label = t(cell.cardLabel || cell.label);
+      if (cell.cls) td.className = cell.cls;
+      if (cell.html !== undefined) td.innerHTML = cell.html;
+      else td.textContent = cell.text ?? "—";
+      if (cell.small) td.style.fontSize = ".7rem";
       tr.appendChild(td);
     });
     const tdA = document.createElement("td");
+    tdA.dataset.label = t("Actions");
+    tdA.className = "cell-actions";
     const editBtn = Object.assign(document.createElement("button"), {
       className:"btn btn-ghost btn-sm", textContent:t("Edit"),
       onclick: () => fillUserForm(u),
@@ -268,7 +280,7 @@ function renderUsers(users) {
   if (!users.length) {
     const row = document.createElement("tr");
     const cell = document.createElement("td");
-    cell.colSpan = isSA ? 11 : 10;
+    cell.colSpan = isSA ? 12 : 11;
     cell.className = "hint";
     cell.style.cssText = "padding:24px;text-align:center;";
     cell.textContent = t("No SSH users match this filter.");

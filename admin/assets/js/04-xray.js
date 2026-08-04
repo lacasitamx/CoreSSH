@@ -26,14 +26,15 @@ const XRAY_CLIENT_SORT_EXTRACT = {
   status: c => c.expired ? 0 : 1,
   online: c => c.online ? 1 : 0,
   connections: c => Number(c.active_connections || 0),
+  speed: c => speedTotalBytesPerSec(c),
   usage: c => Number(c.total_bytes || ((c.uplink_bytes || 0) + (c.downlink_bytes || 0)) || 0),
   expiry: c => c.expires_at ? new Date(c.expires_at).getTime() : Infinity,
   max: c => Number(c.max_conns || 0),
 };
-const XRAY_CLIENT_SORT_DEFAULT_DESC = new Set(["status", "online", "connections", "usage", "max"]);
+const XRAY_CLIENT_SORT_DEFAULT_DESC = new Set(["status", "online", "connections", "speed", "usage", "max"]);
 const XRAY_CLIENT_SORT_OPTIONS = [
   ["name", "Name"], ["status", "Status"], ["online", "Online"],
-  ["connections", "Connections"], ["usage", "Usage"], ["expiry", "Expiry"], ["max", "Max"],
+  ["connections", "Connections"], ["speed", "Speed"], ["usage", "Usage"], ["expiry", "Expiry"], ["max", "Max"],
 ];
 const XRAY_CLIENT_FILTER_OPTIONS = [
   ["all", "All"], ["online", "Online"], ["offline", "Offline"],
@@ -354,22 +355,27 @@ function renderInbounds(inbounds, options = {}) {
       tblWrap.innerHTML = `<div class="hint" style="padding:4px 0;">${t("No clients.")}</div>`;
     } else {
       const tbl = document.createElement("table");
-      tbl.innerHTML = `<thead><tr><th data-sort-key="name">${t("Name")}</th><th>UUID</th><th>${t("Email")}</th><th data-sort-key="expiry">${t("Expiry")}</th><th data-sort-key="status">${t("Status")}</th><th data-sort-key="online">${t("Online")}</th><th data-sort-key="connections">${t("Conn")}</th><th data-sort-key="usage">${t("Traffic")}</th><th data-sort-key="max">${t("Max")}</th><th>${t("Actions")}</th></tr></thead>`;
+      tbl.className = "table-cards";
+      tbl.innerHTML = `<thead><tr><th data-sort-key="name">${t("Name")}</th><th>UUID</th><th>${t("Email")}</th><th data-sort-key="expiry">${t("Expiry")}</th><th data-sort-key="status">${t("Status")}</th><th data-sort-key="online">${t("Online")}</th><th data-sort-key="connections">${t("Conn")}</th><th data-sort-key="speed" title="${escapeHTML(t("Current up/down speed of the whole account, across all of its connections."))}">${t("Speed")}</th><th data-sort-key="usage">${t("Traffic")}</th><th data-sort-key="max">${t("Max")}</th><th>${t("Actions")}</th></tr></thead>`;
       const tbody = document.createElement("tbody");
       clients.forEach(c => {
         const tr = document.createElement("tr");
         tr.dataset.clientId = String(c.id || "");
+        // data-label drives the labelled card layout used on narrow screens.
         tr.innerHTML = `
-          <td data-cell="name">${escapeHTML(c.name || "—")}</td>
-          <td data-cell="uuid" style="font-family:monospace;font-size:.65rem;">${escapeHTML(c.id || "—")}</td>
-          <td data-cell="email">${escapeHTML(c.email || "—")}</td>
-          <td data-cell="expiry" style="font-size:.7rem;">${escapeHTML(clientExpiryLabel(c))}</td>
-          <td data-cell="status">${clientStatusHTML(c)}</td>
-          <td data-cell="online">${clientOnlineHTML(c)}</td>
-          <td data-cell="connections" style="font-size:.7rem;">${escapeHTML(c.active_connections || 0)}</td>
-          <td data-cell="traffic" style="font-size:.7rem;">${clientTrafficHTML(c)}</td>
-          <td data-cell="max" style="font-size:.7rem;">${escapeHTML(c.max_conns || "∞")}</td>`;
+          <td data-cell="name" data-label="${escapeHTML(t("Name"))}" class="cell-primary">${escapeHTML(c.name || "—")}</td>
+          <td data-cell="uuid" data-label="UUID" class="cell-wide" style="font-family:monospace;font-size:.65rem;word-break:break-all;">${escapeHTML(c.id || "—")}</td>
+          <td data-cell="email" data-label="${escapeHTML(t("Email"))}" class="cell-wide">${escapeHTML(c.email || "—")}</td>
+          <td data-cell="expiry" data-label="${escapeHTML(t("Expiry"))}" style="font-size:.7rem;">${escapeHTML(clientExpiryLabel(c))}</td>
+          <td data-cell="status" data-label="${escapeHTML(t("Status"))}">${clientStatusHTML(c)}</td>
+          <td data-cell="online" data-label="${escapeHTML(t("Online"))}">${clientOnlineHTML(c)}</td>
+          <td data-cell="connections" data-label="${escapeHTML(t("Conn"))}" style="font-size:.7rem;">${escapeHTML(c.active_connections || 0)}</td>
+          <td data-cell="speed" data-label="${escapeHTML(t("Speed"))}" class="cell-wide" style="font-size:.7rem;">${speedHTML(c.up_bytes_per_sec, c.down_bytes_per_sec)}</td>
+          <td data-cell="traffic" data-label="${escapeHTML(t("Traffic"))}" class="cell-wide" style="font-size:.7rem;">${clientTrafficHTML(c)}</td>
+          <td data-cell="max" data-label="${escapeHTML(t("Max"))}" style="font-size:.7rem;">${escapeHTML(c.max_conns || "∞")}</td>`;
         const actTd = document.createElement("td");
+        actTd.dataset.label = t("Actions");
+        actTd.className = "cell-actions";
         actTd.style.whiteSpace = "nowrap";
         const copyBtn = document.createElement("button");
         copyBtn.className = "btn btn-ghost btn-sm";

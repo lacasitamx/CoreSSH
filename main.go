@@ -1784,28 +1784,32 @@ func startAdminAPI(store *Store, addr string, adminDir string) {
 
 // UserDTO is returned by the admin API for listing.
 type UserDTO struct {
-	Username            string     `json:"username"`
-	ActiveConns         int        `json:"active_conns"`
-	MaxConnections      int        `json:"max_connections"`
-	ExpiresAt           *time.Time `json:"expires_at,omitempty"`
-	LimitUpMbps         int        `json:"limit_mbps_up"`
-	LimitDownMbps       int        `json:"limit_mbps_down"`
-	DataQuotaBytes      int64      `json:"data_quota_bytes"`
-	QuotaAction         string     `json:"quota_action"`
-	QuotaThrottleMbps   int        `json:"quota_throttle_mbps"`
-	TotalUplinkBytes    int64      `json:"total_uplink_bytes"`
-	TotalDownlinkBytes  int64      `json:"total_downlink_bytes"`
-	TotalBytes          int64      `json:"total_bytes"`
-	QuotaExceeded       bool       `json:"quota_exceeded"`
-	TOTPSecret          string     `json:"totp_secret,omitempty"`
-	TOTPPeriod          int        `json:"totp_period"`
-	TOTPWindow          int        `json:"totp_window"`
-	TOTPDigits          int        `json:"totp_digits"`
-	AllowStaticPassword bool       `json:"allow_static_password"`
-	UsePAM              bool       `json:"use_pam"`
-	TOTPEnabled         bool       `json:"totp_enabled"`
-	OwnerUsername       string     `json:"owner_username,omitempty"`
-	ServerID            string     `json:"server_id,omitempty"`
+	Username           string     `json:"username"`
+	ActiveConns        int        `json:"active_conns"`
+	MaxConnections     int        `json:"max_connections"`
+	ExpiresAt          *time.Time `json:"expires_at,omitempty"`
+	LimitUpMbps        int        `json:"limit_mbps_up"`
+	LimitDownMbps      int        `json:"limit_mbps_down"`
+	DataQuotaBytes     int64      `json:"data_quota_bytes"`
+	QuotaAction        string     `json:"quota_action"`
+	QuotaThrottleMbps  int        `json:"quota_throttle_mbps"`
+	TotalUplinkBytes   int64      `json:"total_uplink_bytes"`
+	TotalDownlinkBytes int64      `json:"total_downlink_bytes"`
+	TotalBytes         int64      `json:"total_bytes"`
+	// Live account-wide speed in bytes per second, summed across every
+	// connection the user has open.
+	UpBytesPerSec       float64 `json:"up_bytes_per_sec"`
+	DownBytesPerSec     float64 `json:"down_bytes_per_sec"`
+	QuotaExceeded       bool    `json:"quota_exceeded"`
+	TOTPSecret          string  `json:"totp_secret,omitempty"`
+	TOTPPeriod          int     `json:"totp_period"`
+	TOTPWindow          int     `json:"totp_window"`
+	TOTPDigits          int     `json:"totp_digits"`
+	AllowStaticPassword bool    `json:"allow_static_password"`
+	UsePAM              bool    `json:"use_pam"`
+	TOTPEnabled         bool    `json:"totp_enabled"`
+	OwnerUsername       string  `json:"owner_username,omitempty"`
+	ServerID            string  `json:"server_id,omitempty"`
 }
 
 func handleListUsers(w http.ResponseWriter, r *http.Request) {
@@ -1840,6 +1844,8 @@ func handleListUsers(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		rate := sshUserRate(cfg.Username)
+
 		out = append(out, UserDTO{
 			Username:            cfg.Username,
 			ActiveConns:         c,
@@ -1853,6 +1859,8 @@ func handleListUsers(w http.ResponseWriter, r *http.Request) {
 			TotalUplinkBytes:    totalUp,
 			TotalDownlinkBytes:  totalDown,
 			TotalBytes:          totalBytes,
+			UpBytesPerSec:       rate.UpBytesPerSec,
+			DownBytesPerSec:     rate.DownBytesPerSec,
 			QuotaExceeded:       cfg.DataQuotaBytes > 0 && totalBytes >= cfg.DataQuotaBytes,
 			TOTPSecret:          cfg.TOTPSecret,
 			TOTPPeriod:          cfg.TOTPPeriod,
@@ -3297,6 +3305,9 @@ func main() {
 	// start background collector for CPU + interface stats
 	primeCurrentStats()
 	startStatsCollector()
+
+	// Turn the per-account byte counters into live up/down speeds for the panel.
+	startSSHUserRateSampler()
 
 	adminAddr := os.Getenv("ADMIN_HTTP_ADDR")
 	if adminAddr == "" {
