@@ -97,6 +97,7 @@ function setWorkspaceSection(workspace, section, options = {}) {
   if (!options.silent) {
     if (workspace === "xray" && section === "config" && currentRole === "superadmin" && typeof loadWizardFromConfig === "function") loadWizardFromConfig();
     if (workspace === "xray" && section === "logs" && currentRole === "superadmin" && typeof loadXrayLogs === "function") loadXrayLogs();
+    if (workspace === "config" && section === "tls" && currentRole === "superadmin" && typeof loadTLSCertificates === "function") loadTLSCertificates();
   }
   return true;
 }

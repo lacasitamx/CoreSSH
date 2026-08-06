@@ -1459,7 +1459,33 @@
       </section>
 
       <section class="workspace-section" data-workspace-panel="config" data-workspace-section-panel="tls">
-        <div class="workspace-section-heading"><div><span>04 · Segurança</span><h3>Encaminhadores TLS</h3><p>Crie listeners TLS com certificado automático, colado ou armazenado em arquivo.</p></div></div>
+        <div class="workspace-section-heading"><div><span>04 · Segurança</span><h3>Encaminhadores TLS</h3><p>Gerencie os certificados do servidor e crie listeners TLS com certificado automático, colado ou armazenado em arquivo.</p></div></div>
+
+        <!-- TLS Certificates -->
+        <div class="card" style="margin-top:12px">
+          <div class="card-hdr">
+            <div class="card-title">Certificados TLS <span class="chip" id="tlsCertsCountChip">0</span></div>
+            <span class="chip green">live</span>
+            <button class="btn btn-ghost btn-sm" type="button" onclick="loadTLSCertificates()">Recarregar lista</button>
+            <button class="btn btn-ghost btn-sm" type="button" onclick="toggleNewCertForm()">+ Novo</button>
+          </div>
+          <div class="hint" style="margin-top:2px;">Cole o <code>fullchain.pem</code> e o <code>privkey.pem</code> para renovar um certificado. Os arquivos são substituídos no mesmo caminho (com backup <code>.bak</code>), então nenhuma configuração precisa ser alterada, e os listeners TLS e inbounds Xray que usam o certificado são recarregados na hora.</div>
+          <div id="tlsCertsList" style="margin-top:8px;"></div>
+          <div id="newCertPanel" class="hidden" style="border:1px solid var(--border);border-radius:8px;padding:10px;margin-top:8px;">
+            <div class="field"><label>Nome <span class="hint">(pasta de armazenamento, ex.: meu-dominio)</span></label><input type="text" id="newCertName" placeholder="meu-dominio"/></div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;">
+              <div class="field"><label>fullchain.pem <span class="hint">(certificado + intermediários)</span></label><textarea id="newCertFullchain" rows="6" placeholder="-----BEGIN CERTIFICATE-----&#10;…" style="font-family:monospace;font-size:.7rem;width:100%;box-sizing:border-box;resize:vertical;background:var(--input-bg);border:1px solid var(--border);border-radius:4px;color:inherit;padding:4px;"></textarea></div>
+              <div class="field"><label>privkey.pem <span class="hint">(chave privada)</span></label><textarea id="newCertPrivkey" rows="6" placeholder="-----BEGIN PRIVATE KEY-----&#10;…" style="font-family:monospace;font-size:.7rem;width:100%;box-sizing:border-box;resize:vertical;background:var(--input-bg);border:1px solid var(--border);border-radius:4px;color:inherit;padding:4px;"></textarea></div>
+            </div>
+            <div class="form-actions" style="margin-top:8px;">
+              <button class="btn btn-sm" type="button" onclick="saveNewCert()">Salvar certificado</button>
+              <button class="btn btn-ghost btn-sm" type="button" onclick="toggleNewCertForm()">Cancelar</button>
+            </div>
+            <div id="newCertStatus" class="hint" style="margin-top:4px;"></div>
+          </div>
+          <div id="tlsCertsStatus" class="hint" style="margin-top:6px;"></div>
+        </div>
+
         <!-- TLS Forwarders -->
         <div class="card" style="margin-top:12px">
           <div class="card-hdr">
@@ -1577,13 +1603,13 @@
      classic scripts sharing one global scope; `defer` preserves execution order,
      so behavior is identical to the old single file. Keep this load order. -->
 <script defer src="assets/js/01-core.js?v=20260722xhttpunlimited2"></script>
-<script defer src="assets/js/02-shell.js?v=20260714pamfix1"></script>
+<script defer src="assets/js/02-shell.js?v=20260805certupdate1"></script>
 <script defer src="assets/js/03-ssh-users.js?v=20260720sshfilters1"></script>
 <script defer src="assets/js/04-xray.js?v=20260720sshfilters1"></script>
 <script defer src="assets/js/05-resellers.js?v=20260714pamfix1"></script>
 <script defer src="assets/js/06-servers.js?v=20260714pamfix1"></script>
 <script defer src="assets/js/07-stats-logs.js?v=20260714pamfix1"></script>
-<script defer src="assets/js/08-server-config.js?v=20260724xrayinboundsr3"></script>
+<script defer src="assets/js/08-server-config.js?v=20260805certupdate1"></script>
 <script defer src="assets/js/09-xray-wizard.js?v=20260724xrayinboundsr4"></script>
 <script defer src="assets/js/11-update-status.js?v=20260714pamfix1"></script>
 <script defer src="assets/js/12-bot.js?v=20260714pamfix1"></script>

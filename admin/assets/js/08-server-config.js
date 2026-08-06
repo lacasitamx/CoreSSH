@@ -158,6 +158,7 @@ async function loadServerConfig() {
     // TLS forwarders
     tlsForwardersState = c.tls_forwarders || [];
     renderTLSForwarders();
+    loadTLSCertificates();
 
     // Xray
     const x = c.xray || {};
@@ -287,6 +288,235 @@ function renderTLSForwarders() {
     list.appendChild(row);
   });
 }
+
+// ─── TLS Certificates (renew fullchain + privkey) ─────────────────────────────
+let tlsCertsState = [];
+
+async function loadTLSCertificates() {
+  const st = document.getElementById("tlsCertsStatus");
+  const list = document.getElementById("tlsCertsList");
+  if (!list) return;
+  if (st) st.textContent = "Carregando certificados…";
+  try {
+    const res = await api("/api/tls/certs");
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    tlsCertsState = data.certs || [];
+    renderTLSCertificates();
+    if (st) st.textContent = tlsCertsState.length
+      ? `${tlsCertsState.length} certificado(s). Pasta do painel: ${data.certs_dir || "/opt/sshpanel/certs"}`
+      : "Nenhum certificado encontrado.";
+  } catch (e) {
+    if (e.message === "auth") doAuthError();
+    else if (st) st.textContent = "Erro: " + e.message;
+  }
+}
+
+function certExpiryChip(c) {
+  if (!c.exists) return '<span class="chip red">arquivo ausente</span>';
+  if (c.error) return `<span class="chip red">${escapeHTML(c.error)}</span>`;
+  if (c.expired) return '<span class="chip red">expirado</span>';
+  if (c.expiring) return `<span class="chip warn">expira em ${c.days_left} dia(s)</span>`;
+  return `<span class="chip green">válido por ${c.days_left} dia(s)</span>`;
+}
+
+function renderTLSCertificates() {
+  const list = document.getElementById("tlsCertsList");
+  const chip = document.getElementById("tlsCertsCountChip");
+  if (!list) return;
+  if (chip) chip.textContent = tlsCertsState.length;
+  if (!tlsCertsState.length) {
+    list.innerHTML = '<div class="hint" style="padding:4px 0;">Nenhum certificado encontrado neste servidor.</div>';
+    return;
+  }
+  list.innerHTML = "";
+  tlsCertsState.forEach((c, i) => {
+    const row = document.createElement("div");
+    row.style = "padding:8px 0;border-bottom:1px solid var(--border);font-size:.73rem;";
+
+    const usedBy = (c.used_by || []).map(u => {
+      const label = u.kind === "tls_forwarder" ? "TLS " + u.ref : "Xray " + u.ref;
+      return `<span class="chip">${escapeHTML(label)}</span>`;
+    }).join(" ") || '<span class="hint">não referenciado na configuração</span>';
+
+    const head = document.createElement("div");
+    head.style = "display:flex;align-items:center;gap:8px;flex-wrap:wrap;";
+    head.innerHTML = `<strong style="font-size:.78rem;">${escapeHTML(c.name || "cert")}</strong>
+      ${certExpiryChip(c)}
+      ${c.self_signed ? '<span class="chip warn">autoassinado</span>' : ""}
+      ${c.managed ? '<span class="chip">painel</span>' : ""}
+      <span style="flex:1"></span>`;
+
+    const btn = document.createElement("button");
+    btn.className = "btn btn-ghost btn-sm";
+    btn.type = "button";
+    btn.textContent = "Atualizar certificado";
+    btn.onclick = () => toggleCertRenewForm(i);
+    head.appendChild(btn);
+    row.appendChild(head);
+
+    const meta = document.createElement("div");
+    meta.className = "hint";
+    meta.style = "margin-top:3px;font-family:monospace;word-break:break-all;";
+    const domains = (c.domains || []).join(", ") || "sem SAN";
+    meta.innerHTML = `${escapeHTML(domains)}<br/>${escapeHTML(c.cert_file || "")}<br/>${escapeHTML(c.key_file || "sem chave")}`;
+    row.appendChild(meta);
+
+    const extra = document.createElement("div");
+    extra.className = "hint";
+    extra.style = "margin-top:3px;";
+    const bits = [];
+    if (c.issuer) bits.push("emissor: " + c.issuer);
+    if (c.key_type) bits.push("chave: " + c.key_type);
+    if (c.chain_length) bits.push("cadeia: " + c.chain_length + " cert(s)");
+    if (c.not_after) bits.push("expira: " + c.not_after.replace("T", " ").replace("Z", " UTC"));
+    extra.textContent = bits.join(" · ");
+    row.appendChild(extra);
+
+    const usage = document.createElement("div");
+    usage.style = "margin-top:5px;display:flex;gap:4px;flex-wrap:wrap;align-items:center;";
+    usage.innerHTML = `<span class="hint">em uso por:</span> ${usedBy}`;
+    row.appendChild(usage);
+
+    const panel = document.createElement("div");
+    panel.id = "certRenewPanel-" + i;
+    panel.className = "hidden";
+    panel.style = "border:1px solid var(--border);border-radius:8px;padding:10px;margin-top:8px;";
+    panel.innerHTML = `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+        <div class="field"><label>fullchain.pem <span class="hint">(certificado + intermediários)</span></label>
+          <textarea id="certRenewFullchain-${i}" rows="6" placeholder="-----BEGIN CERTIFICATE-----&#10;…" style="font-family:monospace;font-size:.7rem;width:100%;box-sizing:border-box;resize:vertical;background:var(--input-bg);border:1px solid var(--border);border-radius:4px;color:inherit;padding:4px;"></textarea></div>
+        <div class="field"><label>privkey.pem <span class="hint">(chave privada)</span></label>
+          <textarea id="certRenewPrivkey-${i}" rows="6" placeholder="-----BEGIN PRIVATE KEY-----&#10;…" style="font-family:monospace;font-size:.7rem;width:100%;box-sizing:border-box;resize:vertical;background:var(--input-bg);border:1px solid var(--border);border-radius:4px;color:inherit;padding:4px;"></textarea></div>
+      </div>
+      <div class="hint" style="margin-top:6px;">Grava em <code>${escapeHTML(c.cert_file || "")}</code> e <code>${escapeHTML(c.key_file || "")}</code>. O conteúdo anterior fica salvo como <code>.bak</code>.</div>
+      <div class="form-actions" style="margin-top:8px;">
+        <button class="btn btn-sm" type="button" onclick="submitCertRenew(${i})">Salvar e recarregar</button>
+        <button class="btn btn-ghost btn-sm" type="button" onclick="toggleCertRenewForm(${i})">Cancelar</button>
+      </div>
+      <div id="certRenewStatus-${i}" class="hint" style="margin-top:4px;"></div>`;
+    row.appendChild(panel);
+
+    list.appendChild(row);
+  });
+}
+
+function toggleCertRenewForm(i) {
+  const panel = document.getElementById("certRenewPanel-" + i);
+  if (!panel) return;
+  panel.classList.toggle("hidden");
+  if (!panel.classList.contains("hidden")) {
+    document.getElementById("certRenewStatus-" + i).textContent = "";
+    document.getElementById("certRenewFullchain-" + i).focus();
+  }
+}
+
+function reportCertUpdate(statusEl, data) {
+  const r = data?.reloaded || {};
+  const applied = [];
+  if ((r.tls_forwarders || []).length) applied.push("TLS " + r.tls_forwarders.join(", "));
+  if (r.xray_restarted) applied.push("Xray reiniciado (" + (r.xray_inbounds || []).join(", ") + ")");
+  const warnings = data?.warnings || [];
+  const cert = data?.cert || {};
+  const parts = ["Certificado gravado."];
+  if (cert.not_after) parts.push("Válido até " + cert.not_after.replace("T", " ").replace("Z", " UTC") + ".");
+  if (applied.length) parts.push("Recarregado: " + applied.join(" | ") + ".");
+  else parts.push("Nenhum listener em uso precisou recarregar.");
+  if (warnings.length) parts.push("Avisos: " + warnings.join(" | "));
+  statusEl.textContent = parts.join(" ");
+  showPanelToast(
+    warnings.length ? "Certificado atualizado com avisos." : "Certificado atualizado e aplicado.",
+    warnings.length ? "warning" : "success",
+  );
+}
+
+async function submitCertRenew(i) {
+  const c = tlsCertsState[i];
+  const st = document.getElementById("certRenewStatus-" + i);
+  if (!c || !st) return;
+  const fullchain = document.getElementById("certRenewFullchain-" + i).value.trim();
+  const privkey   = document.getElementById("certRenewPrivkey-" + i).value.trim();
+  if (!fullchain || !privkey) { st.textContent = "Cole o fullchain.pem e o privkey.pem."; return; }
+
+  const usedBy = (c.used_by || []).length;
+  const ok = await panelConfirm({
+    title: "Atualizar certificado",
+    message: `Substituir o certificado de ${c.name || c.cert_file}?`,
+    detail: usedBy
+      ? "Os listeners TLS que usam este certificado serão reabertos e o Xray será reiniciado se algum inbound usar o certificado. Conexões já estabelecidas não são encerradas."
+      : "Os arquivos serão substituídos (backup .bak).",
+    confirmLabel: "Atualizar",
+  });
+  if (!ok) return;
+
+  st.textContent = "Gravando e recarregando…";
+  await postCertUpdate({ cert_file: c.cert_file, key_file: c.key_file, fullchain, privkey }, st, () => {
+    document.getElementById("certRenewPanel-" + i)?.classList.add("hidden");
+    loadTLSCertificates();
+  });
+}
+
+async function postCertUpdate(payload, st, onDone) {
+  try {
+    let res = await api("/api/tls/certs/update", { method: "POST", body: JSON.stringify(payload) });
+    if (!res.ok) {
+      const text = await res.text();
+      if (res.status === 400 && text.includes("force=true")) {
+        const force = await panelConfirm({
+          title: "Certificado expirado",
+          message: text.split(";")[0],
+          detail: "Gravar mesmo assim? Clientes não conseguirão validar um certificado expirado.",
+          confirmLabel: "Gravar mesmo assim",
+          danger: true,
+        });
+        if (!force) { st.textContent = "Cancelado."; return; }
+        res = await api("/api/tls/certs/update", { method: "POST", body: JSON.stringify({ ...payload, force: true }) });
+        if (!res.ok) throw new Error(await res.text());
+      } else {
+        throw new Error(text);
+      }
+    }
+    const data = await res.json();
+    reportCertUpdate(st, data);
+    onDone?.();
+  } catch (e) {
+    if (e.message === "auth") doAuthError();
+    else st.textContent = "Erro: " + e.message;
+  }
+}
+
+function toggleNewCertForm() {
+  const panel = document.getElementById("newCertPanel");
+  if (!panel) return;
+  panel.classList.toggle("hidden");
+  if (!panel.classList.contains("hidden")) {
+    document.getElementById("newCertStatus").textContent = "";
+    document.getElementById("newCertName").value = "";
+    document.getElementById("newCertFullchain").value = "";
+    document.getElementById("newCertPrivkey").value = "";
+  }
+}
+
+async function saveNewCert() {
+  const st = document.getElementById("newCertStatus");
+  const name = document.getElementById("newCertName").value.trim();
+  const fullchain = document.getElementById("newCertFullchain").value.trim();
+  const privkey = document.getElementById("newCertPrivkey").value.trim();
+  if (!name || !fullchain || !privkey) { st.textContent = "Nome, fullchain.pem e privkey.pem são obrigatórios."; return; }
+  st.textContent = "Gravando…";
+  await postCertUpdate({ name, fullchain, privkey }, st, () => {
+    document.getElementById("newCertFullchain").value = "";
+    document.getElementById("newCertPrivkey").value = "";
+    loadTLSCertificates();
+  });
+}
+
+// Inline onclick handlers in index.html need these exposed explicitly.
+window.loadTLSCertificates = loadTLSCertificates;
+window.toggleCertRenewForm = toggleCertRenewForm;
+window.submitCertRenew = submitCertRenew;
+window.toggleNewCertForm = toggleNewCertForm;
+window.saveNewCert = saveNewCert;
 
 function toggleAddTLSForm() {
   const panel = document.getElementById("addTLSPanel");

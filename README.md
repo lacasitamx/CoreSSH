@@ -1290,7 +1290,7 @@ Read/write a managed server's `config.json`. Query: `server_id`. Local delegates
 
 ### TLS certificates (superadmin only)
 
-All three accept `POST` only and support `server_id` proxying.
+All endpoints support `server_id` proxying, so a certificate can also be listed/updated on a managed slave node. The three issue/upload endpoints below accept `POST` only.
 
 #### `POST /api/tls/generate-selfsigned`
 - Body: `domain` (string, required). Writes a self-signed ECDSA (P-256) cert (10-year validity) to `/opt/sshpanel/certs/<domain>/`.
@@ -1303,6 +1303,19 @@ All three accept `POST` only and support `server_id` proxying.
 #### `POST /api/tls/upload-pem`
 - Body: `name` (string, required), `cert` (string, required — PEM), `key` (string, required — PEM). Saves to `/opt/sshpanel/certs/<name>/`.
 - `200`: `{ "cert_file": string, "key_file": string }`. Errors: `400 name, cert, and key required` / `invalid name`; `500`.
+
+#### `GET /api/tls/certs`
+Lists every certificate this node knows about: the ones stored under `/opt/sshpanel/certs/`, the ones referenced by `tls_forwarders`, and the ones referenced by Xray inbound `tlsSettings` (inbounds that enable TLS without naming a certificate are reported against the first TLS forwarder's material, which is what `buildInboundTLS` falls back to).
+- `200`: `{ "certs_dir": string, "certs": [ { "name", "cert_file", "key_file", "managed", "exists", "subject", "issuer", "domains": [string], "not_before", "not_after", "days_left", "expired", "expiring", "self_signed", "chain_length", "key_type", "key_ok", "modified", "error", "used_by": [ { "kind": "tls_forwarder"|"xray_inbound", "ref": string } ] } ] }`.
+
+#### `POST /api/tls/certs/update`
+Replaces a certificate's `fullchain.pem` + `privkey.pem`. The panel's **Configuração → TLS → Certificados TLS** card uses this for renewals.
+- Body: `fullchain` (string, required — PEM; `cert` accepted as alias), `privkey` (string, required — PEM; `key` accepted as alias), plus **either** `cert_file` (+ optional `key_file`) to replace an existing certificate in place, **or** `name` to create/replace `/opt/sshpanel/certs/<name>/`. Optional `reload` (bool, default `true`) and `force` (bool, default `false`).
+- The pair is validated with `tls.X509KeyPair` before anything is written; the previous content is kept as `<file>.bak`; existing file modes are preserved; symlinked targets (certbot layout) are followed so the link structure survives.
+- `cert_file` must be inside `/opt/sshpanel/certs/` or already referenced by the running config / Xray config — this endpoint is not an arbitrary file-write primitive.
+- Because the paths do not change, no other configuration needs editing. With `reload` on, the TLS forwarders serving the certificate are rebound (established connections are untouched) and Xray is restarted if one of its inbounds uses it.
+- `200`: `{ "cert_file": string, "key_file": string, "cert": <same shape as the list entry>, "reloaded": { "tls_forwarders": [string], "xray_inbounds": [string], "xray_restarted": bool }, "warnings": [string] }`. Warnings cover a leaf-only PEM (no intermediates), a not-yet-valid certificate, a domain change versus the previous certificate, and certbot-managed paths.
+- Errors: `400` for a missing/mismatched pair, an expired certificate without `force=true`, or a path outside the allowed set; `413` for PEM over 1 MiB; `500` on write failure.
 
 ---
 

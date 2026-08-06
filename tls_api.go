@@ -22,7 +22,9 @@ import (
 	"time"
 )
 
-const tlsCertsDir = "/opt/sshpanel/certs"
+// tlsCertsDir holds panel-managed certificates. It is a var so tests can point
+// it at a temporary directory.
+var tlsCertsDir = "/opt/sshpanel/certs"
 
 var (
 	tlsDNSNamePattern   = regexp.MustCompile(`^(?:\*\.)?(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$`)

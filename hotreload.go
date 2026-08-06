@@ -199,6 +199,32 @@ func (p *tlsListenerPool) Has(addr string) bool {
 	return ok
 }
 
+// Drop closes the listeners for the given addresses so a following Sync rebinds
+// them. Used after a certificate is replaced on disk: tls.Listen captures the
+// certificate when the listener is created, so the socket has to be recreated
+// for new material to be served. Accepted connections are not owned by the pool
+// and keep running.
+func (p *tlsListenerPool) Drop(addrs []string, reason string) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, addr := range addrs {
+		entry, ok := p.entries[addr]
+		if !ok {
+			continue
+		}
+		_ = entry.Close()
+		delete(p.entries, addr)
+		if reason != "" {
+			log.Printf("hotreload: dropped TLS %s (%s)", addr, reason)
+		} else {
+			log.Printf("hotreload: dropped TLS %s", addr)
+		}
+	}
+}
+
 func (p *tlsListenerPool) StopAll(reason string) {
 	if p == nil {
 		return

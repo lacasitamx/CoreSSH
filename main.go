@@ -1736,6 +1736,8 @@ func startAdminAPI(store *Store, addr string, adminDir string) {
 	mux.Handle("/api/tls/generate-selfsigned", saSession(handleManagedProxyOrLocal(store, handleTLSGenerateSelfSigned)))
 	mux.Handle("/api/tls/letsencrypt", saSession(handleManagedProxyOrLocal(store, handleTLSLetsEncrypt)))
 	mux.Handle("/api/tls/upload-pem", saSession(handleManagedProxyOrLocal(store, handleTLSUploadPEM)))
+	mux.Handle("/api/tls/certs", saSession(handleManagedProxyOrLocal(store, handleTLSCertList)))
+	mux.Handle("/api/tls/certs/update", saSession(handleManagedProxyOrLocal(store, handleTLSCertUpdate)))
 
 	// Superadmin-only: DNSTT key management
 	mux.Handle("/api/dnstt/genkey", saSession(handleManagedProxyOrLocal(store, handleDnsttGenKey)))
