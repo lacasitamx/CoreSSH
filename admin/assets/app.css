@@ -767,15 +767,21 @@ th[data-sort-key].sort-desc::after{content:" \25BC";}
 .speed-cell .speed-down{color:var(--accent-3);}
 .speed-cell .speed-up{color:var(--accent);}
 
-/* Card tables: on phones the wide user lists stop scrolling sideways and each
-   row becomes a labelled card. Labels come from each cell's data-label. */
-@media(max-width:760px){
+/* Card tables: when the space left for these wide user lists is too small to
+   show every column, the table stops scrolling sideways and each row becomes a
+   labelled card. Labels come from each cell's data-label.
+   The switch is driven by the card's own width instead of the viewport, so it
+   also catches 1366/1440-class monitors, where the sidebar plus paddings leave
+   the table ~900px and the last columns end up cut off. */
+.card:has(table.table-cards){container-type:inline-size;container-name:usertbl;}
+
+@container usertbl (max-width:1120px){
   .tbl-wrap:has(table.table-cards){overflow:visible;border:0;border-radius:0;background:transparent;}
   table.table-cards{display:block;min-width:0;width:100%;font-size:.78rem;}
   table.table-cards thead{display:none;}
   table.table-cards tbody{display:flex;flex-direction:column;gap:10px;}
   table.table-cards tr{
-    display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 12px;
+    display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px 12px;
     padding:13px 14px;border:1px solid rgba(148,163,184,.14);border-radius:18px;
     background:rgba(3,6,10,.55);
   }
@@ -792,13 +798,21 @@ th[data-sort-key].sort-desc::after{content:" \25BC";}
   table.table-cards td:not([data-label])::before{display:none;}
   table.table-cards td.cell-primary{grid-column:1/-1;font-size:.98rem!important;font-weight:900;color:var(--text);}
   table.table-cards td.cell-primary::before{display:none;}
-  table.table-cards td.cell-wide{grid-column:1/-1;}
+  table.table-cards td.cell-wide{grid-column:span 2;}
   table.table-cards td.cell-actions{
     grid-column:1/-1;flex-direction:row;flex-wrap:wrap;gap:6px;
     padding-top:4px;white-space:normal!important;
   }
   table.table-cards td.cell-actions::before{display:none;}
-  table.table-cards td.cell-actions .btn{flex:1 1 auto;margin:0!important;min-height:36px;}
+  table.table-cards td.cell-actions .btn{margin:0!important;min-height:36px;}
   table.table-cards .table-meter{max-width:none;}
   table.table-cards .speed-cell{flex-direction:row;gap:12px;}
+}
+@container usertbl (max-width:860px){
+  table.table-cards tr{grid-template-columns:repeat(3,minmax(0,1fr));}
+}
+@container usertbl (max-width:560px){
+  table.table-cards tr{grid-template-columns:repeat(2,minmax(0,1fr));}
+  table.table-cards td.cell-wide{grid-column:1/-1;}
+  table.table-cards td.cell-actions .btn{flex:1 1 auto;}
 }
