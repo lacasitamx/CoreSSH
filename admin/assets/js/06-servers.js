@@ -409,6 +409,7 @@ async function loadManagedServerConfig(id) {
     const c = await res.json();
 
     document.getElementById("managedCfgListen").value = c.listen || "";
+    document.getElementById("managedCfgLocalSSHListen").value = c.local_ssh_listen || "127.0.0.1:2222";
     document.getElementById("managedCfgExtraListen").value = (c.extra_listen || []).join("\n");
     document.getElementById("managedCfgProxyAutoRestart").value = c.proxy_auto_restart_interval || "";
     document.getElementById("managedCfgProxyRestartGrace").value = c.proxy_auto_restart_grace || "";
@@ -478,6 +479,7 @@ function managedConfigFromForm() {
   const dnsttDomains = readDnsttDomains("managedCfgDnsttDomains");
   return {
     listen: document.getElementById("managedCfgListen").value.trim(),
+    local_ssh_listen: document.getElementById("managedCfgLocalSSHListen").value.trim() || "127.0.0.1:2222",
     extra_listen: extraLines,
     proxy_auto_restart_interval: document.getElementById("managedCfgProxyAutoRestart").value.trim(),
     proxy_auto_restart_grace: document.getElementById("managedCfgProxyRestartGrace").value.trim(),

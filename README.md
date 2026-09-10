@@ -7,6 +7,7 @@ DragonCoreSSH V40 é um painel/servidor em Go para SSH com HTTP Injection, paine
 ### Recursos principais
 
 - SSH com HTTP Injection
+- Endpoint SSH raw interno sempre ativo em `127.0.0.1:2222` para proxies e túneis locais
 - Painel web administrativo
 - Banco de dados PostgreSQL
 - Integração com Xray-core/V2Ray
@@ -148,6 +149,7 @@ O instalador monta `/opt/sshpanel/logs` como tmpfs de 15 MiB quando possível, p
 ```text
 80      SSH com HTTP Injection
 8080    SSH extra com HTTP Injection
+2222    SSH raw interno em 127.0.0.1 (não público)
 53/udp  DNS público para DNSTT, redirecionado para 5300/udp
 5300/udp DNSTT interno
 9090    Painel web + API pública /check
@@ -166,6 +168,27 @@ sudo ufw allow 9090/tcp
 sudo ufw allow 10086/tcp
 sudo ufw allow 10087/tcp
 ```
+
+### Endpoint SSH interno para proxies locais
+
+O processo do DragonCore mantém um listener SSH raw separado em `127.0.0.1:2222`. Ele usa as mesmas contas, autenticação, cotas, limites de conexão e banda do SSH público, mas não executa a limpeza de cabeçalhos HTTP. O listener inicia junto com o serviço `sshpanel`, continua aberto durante reinícios automáticos dos listeners públicos e pode ser configurado em **Configurações → Rede/SSH → Internal Raw SSH**.
+
+Um proxy/túnel executado no mesmo servidor pode usar diretamente:
+
+```text
+Host: 127.0.0.1
+Porta: 2222
+Tipo: SSH raw
+Usuário/senha: uma conta SSH do painel
+```
+
+Por exemplo, para criar um SOCKS local com o cliente OpenSSH:
+
+```bash
+ssh -N -D 127.0.0.1:1080 -p 2222 usuario@127.0.0.1
+```
+
+Não abra a porta `2222` no firewall: o servidor aceita para `local_ssh_listen` somente IPs loopback numéricos (`127.0.0.0/8` ou `::1`) e volta ao padrão seguro se receber um endereço público, wildcard ou inválido. Em contêineres, `127.0.0.1` aponta para o próprio contêiner; use rede host ou outra integração local apropriada para alcançar o listener do host.
 
 
 ### DNSTT na porta DNS 53
@@ -551,6 +574,7 @@ DragonCoreSSH V40 is a Go-based SSH HTTP Injection server with a web panel, Post
 ### Main features
 
 - SSH with HTTP Injection
+- Always-on internal raw SSH endpoint at `127.0.0.1:2222` for local proxies and tunnels
 - Administrative web panel
 - PostgreSQL database
 - Xray-core/V2Ray integration
@@ -689,6 +713,7 @@ Admin token
 ```text
 80      SSH with HTTP Injection
 8080    Extra SSH with HTTP Injection
+2222    Internal raw SSH on 127.0.0.1 (not public)
 53/udp  Public DNS for DNSTT, redirected to 5300/udp
 5300/udp Internal DNSTT listener
 9090    Web panel + public /check API
@@ -707,6 +732,27 @@ sudo ufw allow 9090/tcp
 sudo ufw allow 10086/tcp
 sudo ufw allow 10087/tcp
 ```
+
+### Internal SSH endpoint for local proxies
+
+The DragonCore process keeps a separate raw SSH listener on `127.0.0.1:2222`. It uses the same accounts, authentication, quotas, connection caps, and bandwidth limits as public SSH, but does not perform HTTP-header cleanup. The listener starts with the `sshpanel` service, remains bound while public listeners are automatically restarted, and can be configured under **Settings → Network/SSH → Internal Raw SSH**.
+
+A proxy or tunnel running on the same server can point directly to:
+
+```text
+Host: 127.0.0.1
+Port: 2222
+Type: raw SSH
+Username/password: a panel SSH account
+```
+
+For example, to create a local SOCKS proxy with the OpenSSH client:
+
+```bash
+ssh -N -D 127.0.0.1:1080 -p 2222 username@127.0.0.1
+```
+
+Do not open port `2222` in the firewall. `local_ssh_listen` accepts only numeric loopback IPs (`127.0.0.0/8` or `::1`) and falls back to the safe default when given a public, wildcard, or invalid address. Inside a container, `127.0.0.1` means that container itself; use host networking or another suitable local integration to reach the host listener.
 
 
 ### DNSTT on DNS port 53
@@ -1325,6 +1371,7 @@ Replaces a certificate's `fullchain.pem` + `privkey.pem`. The panel's **Configur
 Reads/writes the panel's `config.json` and hot-applies changes.
 - **GET**: returns the raw config file JSON.
 - **POST**: body is the full config JSON (≤ 512 KiB). Validated (`listen` required), the file-based `users` array is preserved, ports normalized, then written to disk and applied live.
+  - `local_ssh_listen` defaults to `127.0.0.1:2222`, is always enabled, and is restricted to a numeric loopback address. Its live status is returned as `services.local_ssh`.
   - `200`: reload report `{ "applied": bool, "warnings": string[], "services": { "<name>": ServiceReloadStatus } }`.
   - Errors: `400 invalid JSON: ...` / `listen address required`; `500 config path not set` / read/write errors.
 

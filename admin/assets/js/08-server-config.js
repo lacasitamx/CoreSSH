@@ -100,6 +100,7 @@ async function loadServerConfig() {
 
     // Network
     document.getElementById("cfgListen").value       = c.listen || "";
+    document.getElementById("cfgLocalSSHListen").value = c.local_ssh_listen || "127.0.0.1:2222";
     document.getElementById("cfgExtraListen").value  = (c.extra_listen || []).join("\n");
     document.getElementById("cfgProxyAutoRestart").value = c.proxy_auto_restart_interval || "";
     document.getElementById("cfgProxyRestartGrace").value = c.proxy_auto_restart_grace || "";
@@ -185,6 +186,7 @@ async function saveServerConfig() {
 
   const cfg = {
     listen:               document.getElementById("cfgListen").value.trim(),
+    local_ssh_listen:     document.getElementById("cfgLocalSSHListen").value.trim() || "127.0.0.1:2222",
     extra_listen:         extraLines,
     proxy_auto_restart_interval: document.getElementById("cfgProxyAutoRestart").value.trim(),
     proxy_auto_restart_grace:    document.getElementById("cfgProxyRestartGrace").value.trim(),

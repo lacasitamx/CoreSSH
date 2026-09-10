@@ -261,6 +261,7 @@ func (p *tlsListenerPool) HasAll(forwarders []TLSForwarderConfig) bool {
 
 var (
 	publicPool *listenerPool    // HTTP+SSH: listen + extra_listen
+	localPool  *listenerPool    // raw SSH: loopback-only local_ssh_listen
 	tlsPool    *tlsListenerPool // TLS forwarders
 )
 
@@ -376,6 +377,22 @@ func applyFullConfigReload(newCfg *Config) ConfigReloadReport {
 		setAdminHandler(http.FileServer(http.Dir(newCfg.AdminDir)))
 	}
 
+	// Internal raw SSH listener. Keep it separate from the public listener
+	// pool so proxy auto-restarts never take the local integration endpoint
+	// offline. normalizeRuntimePorts guarantees one loopback address here.
+	localAddrs := []string{newCfg.LocalSSHListen}
+	for _, e := range localPool.Sync(localAddrs) {
+		report.warnf("internal SSH listener error: %v", e)
+	}
+	report.Services["local_ssh"] = ServiceReloadStatus{
+		Enabled: true,
+		Running: localPool.HasAll(localAddrs),
+		Listen:  newCfg.LocalSSHListen,
+	}
+	if !report.Services["local_ssh"].Running {
+		report.Services["local_ssh"] = ServiceReloadStatus{Enabled: true, Running: false, Listen: newCfg.LocalSSHListen, Error: "internal SSH listener could not be opened"}
+	}
+
 	// Public SSH listeners (main listen + extra_listen)
 	publicAddrs := append([]string{newCfg.Listen}, newCfg.ExtraListen...)
 	for _, e := range publicPool.Sync(publicAddrs) {
@@ -389,9 +406,6 @@ func applyFullConfigReload(newCfg *Config) ConfigReloadReport {
 	if !report.Services["ssh"].Running {
 		report.Services["ssh"] = ServiceReloadStatus{Enabled: true, Running: false, Listen: joinAddrs(publicAddrs), Error: "one or more SSH listeners could not be opened"}
 	}
-
-	// Legacy local_ssh_listen is intentionally ignored. DragonCore handles DNSTT in-process.
-	newCfg.LocalSSHListen = ""
 
 	// TLS forwarders
 	for _, e := range tlsPool.Sync(newCfg.TLSForwarders) {

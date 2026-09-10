@@ -4,15 +4,17 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 )
 
 const (
-	defaultMainListen  = "0.0.0.0:80"
-	defaultExtraListen = "0.0.0.0:8080"
-	defaultDNSTTListen = "0.0.0.0:5300"
-	defaultUDPGWListen = "0.0.0.0:7400"
+	defaultMainListen     = "0.0.0.0:80"
+	defaultExtraListen    = "0.0.0.0:8080"
+	defaultLocalSSHListen = "127.0.0.1:2222"
+	defaultDNSTTListen    = "0.0.0.0:5300"
+	defaultUDPGWListen    = "0.0.0.0:7400"
 )
 
 func normalizeRuntimePorts(cfg *Config) []string {
@@ -62,8 +64,22 @@ func normalizeRuntimePorts(cfg *Config) []string {
 	}
 	cfg.ExtraListen = extra
 
-	// DragonCore no longer uses an internal local SSH listener.
-	cfg.LocalSSHListen = ""
+	oldLocalSSHListen := strings.TrimSpace(cfg.LocalSSHListen)
+	normalizedLocalSSHListen, localSSHErr := normalizeLocalSSHListen(oldLocalSSHListen)
+	cfg.LocalSSHListen = normalizedLocalSSHListen
+	if localSSHErr != nil {
+		warn("internal SSH listener %q is invalid (%v); using safe default %s", oldLocalSSHListen, localSSHErr, cfg.LocalSSHListen)
+	}
+	if err := tcpAddrAvailableForPool(cfg.LocalSSHListen, localPool); err != nil {
+		old := cfg.LocalSSHListen
+		cfg.LocalSSHListen = defaultLocalSSHListen
+		if old != defaultLocalSSHListen {
+			warn("internal SSH listener %s is unavailable (%v); using default %s", old, err, cfg.LocalSSHListen)
+		}
+		if err2 := tcpAddrAvailableForPool(cfg.LocalSSHListen, localPool); err2 != nil {
+			warn("default internal SSH listener %s is unavailable: %v", cfg.LocalSSHListen, err2)
+		}
+	}
 
 	cfg.ProxyAutoRestartInterval = strings.TrimSpace(cfg.ProxyAutoRestartInterval)
 	if cfg.ProxyAutoRestartInterval != "" && cfg.ProxyAutoRestartInterval != "0" && cfg.ProxyAutoRestartInterval != "0s" && !strings.EqualFold(cfg.ProxyAutoRestartInterval, "off") && !strings.EqualFold(cfg.ProxyAutoRestartInterval, "disabled") {
@@ -243,6 +259,34 @@ func normalizeRuntimePorts(cfg *Config) []string {
 	}
 
 	return warnings
+}
+
+// normalizeLocalSSHListen guarantees that the raw integration endpoint can
+// only bind to this machine. Hostnames and wildcard/non-loopback addresses are
+// deliberately rejected: a changed hosts file must not turn an internal SSH
+// port into a remotely reachable service.
+func normalizeLocalSSHListen(addr string) (string, error) {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return defaultLocalSSHListen, nil
+	}
+
+	host, portText, err := net.SplitHostPort(addr)
+	if err != nil {
+		return defaultLocalSSHListen, fmt.Errorf("expected loopback host:port: %w", err)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return defaultLocalSSHListen, fmt.Errorf("host must be a numeric loopback IP")
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port < 1 || port > 65535 {
+		return defaultLocalSSHListen, fmt.Errorf("port must be between 1 and 65535")
+	}
+	if ipv4 := ip.To4(); ipv4 != nil {
+		ip = ipv4
+	}
+	return net.JoinHostPort(ip.String(), strconv.Itoa(port)), nil
 }
 
 func tcpAddrAvailableForPool(addr string, pool *listenerPool) error {

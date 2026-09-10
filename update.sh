@@ -387,7 +387,7 @@ patch_configs() {
 
   if [[ -f "$cfg" ]]; then
     python3 - "$cfg" <<'PYEOF'
-import json, sys
+import ipaddress, json, sys
 path = sys.argv[1]
 try:
     with open(path) as f:
@@ -399,8 +399,23 @@ changed = False
 if 'banner_file' not in d:
     d['banner_file'] = '/opt/sshpanel/banner.txt'
     changed = True
-if 'local_ssh_listen' in d:
-    d.pop('local_ssh_listen', None)
+local_ssh = str(d.get('local_ssh_listen') or '').strip()
+local_ssh_valid = False
+try:
+    if local_ssh.startswith('['):
+        end = local_ssh.index(']')
+        host = local_ssh[1:end]
+        if local_ssh[end + 1:end + 2] != ':':
+            raise ValueError('missing port')
+        port = int(local_ssh[end + 2:])
+    else:
+        host, port_text = local_ssh.rsplit(':', 1)
+        port = int(port_text)
+    local_ssh_valid = ipaddress.ip_address(host).is_loopback and 1 <= port <= 65535
+except (ValueError, IndexError):
+    pass
+if not local_ssh_valid:
+    d['local_ssh_listen'] = '127.0.0.1:2222'
     changed = True
 x = d.get('xray')
 if isinstance(x, dict):

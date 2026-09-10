@@ -530,6 +530,7 @@ cat > "$INSTALL_DIR/config.json" <<EOF
 {
   "listen": "0.0.0.0:80",
   "extra_listen": ["0.0.0.0:8080"],
+  "local_ssh_listen": "127.0.0.1:2222",
   "host_key_file": "${INSTALL_DIR}/ssh_host_rsa_key",
   "quiet": false,
   "admin_dir": "${INSTALL_DIR}/admin",
@@ -694,6 +695,7 @@ echo -e "${GREEN}═════════════════════
 echo ""
 echo -e "  Server IP    : ${YELLOW}${SERVER_IP}${NC}"
 echo -e "  SSH ports    : 80, 8080  (HTTP-injected SSH)"
+echo -e "  Internal SSH : 127.0.0.1:2222  (raw SSH for local proxies)"
 echo -e "  VLESS port   : 10086"
 echo -e "  VLESS UUID   : ${YELLOW}${UUID}${NC}"
 echo -e "  DNSTT DNS    : UDP 53 redirects to local UDP 5300"

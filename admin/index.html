@@ -822,6 +822,11 @@
               <input type="text" id="managedCfgListen" placeholder="0.0.0.0:80"/>
             </div>
             <div class="field" style="margin-top:8px;">
+              <label>Internal Raw SSH <span class="hint">(loopback only)</span></label>
+              <input type="text" id="managedCfgLocalSSHListen" placeholder="127.0.0.1:2222"/>
+              <div class="hint" style="margin-top:4px;">Always-on endpoint for local proxy/tunnel services. Numeric 127.0.0.0/8 or ::1 addresses only.</div>
+            </div>
+            <div class="field" style="margin-top:8px;">
               <label>Extra Listen Addresses <span class="hint">(one per line, e.g. 0.0.0.0:8080)</span></label>
               <textarea id="managedCfgExtraListen" rows="4" style="width:100%;box-sizing:border-box;background:var(--input-bg);border:1px solid var(--border);border-radius:8px;color:inherit;padding:10px;resize:vertical;"></textarea>
             </div>
@@ -1254,6 +1259,11 @@
               <label>Main Listen (SSH / HTTP)</label>
               <input type="text" id="cfgListen" placeholder="0.0.0.0:80"/>
             </div>
+            <div class="field" style="grid-column:1/-1">
+              <label>Internal Raw SSH <span class="hint">(loopback only)</span></label>
+              <input type="text" id="cfgLocalSSHListen" placeholder="127.0.0.1:2222"/>
+              <div class="hint" style="margin-top:4px;">Always-on endpoint for local proxy/tunnel services. Numeric 127.0.0.0/8 or ::1 addresses only.</div>
+            </div>
           </div>
           <div class="field" style="margin-top:6px">
             <label>Extra Listen Addresses <span class="hint">(one per line, e.g. 0.0.0.0:8080)</span></label>
@@ -1607,9 +1617,9 @@
 <script defer src="assets/js/03-ssh-users.js?v=20260720sshfilters1"></script>
 <script defer src="assets/js/04-xray.js?v=20260720sshfilters1"></script>
 <script defer src="assets/js/05-resellers.js?v=20260714pamfix1"></script>
-<script defer src="assets/js/06-servers.js?v=20260714pamfix1"></script>
+<script defer src="assets/js/06-servers.js?v=20260910localssh1"></script>
 <script defer src="assets/js/07-stats-logs.js?v=20260714pamfix1"></script>
-<script defer src="assets/js/08-server-config.js?v=20260805certupdate1"></script>
+<script defer src="assets/js/08-server-config.js?v=20260910localssh1"></script>
 <script defer src="assets/js/09-xray-wizard.js?v=20260724xrayinboundsr4"></script>
 <script defer src="assets/js/11-update-status.js?v=20260714pamfix1"></script>
 <script defer src="assets/js/12-bot.js?v=20260714pamfix1"></script>

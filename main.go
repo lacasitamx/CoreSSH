@@ -87,8 +87,10 @@ type Config struct {
 	// "[::]:80", "[2001:db8::20]:8080".  Empty slice means no
 	// additional listeners.
 	ExtraListen []string `json:"extra_listen"`
-	// Legacy compatibility only. DragonCore no longer starts a local raw SSH listener.
-	LocalSSHListen string `json:"local_ssh_listen,omitempty"`
+	// LocalSSHListen is the raw SSH endpoint used by local proxy/tunnel daemons.
+	// It is always enabled, defaults to 127.0.0.1:2222, and is restricted to a
+	// numeric loopback address so it cannot accidentally become a public port.
+	LocalSSHListen string `json:"local_ssh_listen"`
 	HostKeyFile    string `json:"host_key_file"`
 	Quiet          bool   `json:"quiet"`
 
@@ -1288,7 +1290,7 @@ func loadConfig(path string) (*Config, map[string]*UserState, error) {
 	}
 
 	if cfg.Listen == "" {
-		cfg.Listen = ":2222"
+		cfg.Listen = defaultMainListen
 	}
 	if cfg.HostKeyFile == "" {
 		cfg.HostKeyFile = "ssh_host_rsa_key"
@@ -2867,8 +2869,8 @@ func serveHTTP80(ln net.Listener) {
 
 // serveRawSSH accepts connections on ln and passes each directly into
 // handleConn.  Unlike serveHTTP80 it does not perform HTTP cleanup
-// and starts the SSH handshake immediately.  This is used for
-// local-only listeners that other daemons (e.g. DNSTT) dial into.
+// and starts the SSH handshake immediately. This is used by local proxy and
+// tunnel daemons that need a stable SSH upstream.
 func serveRawSSH(ln net.Listener) {
 	for {
 		c, err := ln.Accept()
@@ -3473,10 +3475,18 @@ func main() {
 
 	// Initialise listener pools (used for initial startup and hot-reload alike).
 	publicPool = newListenerPool(serveHTTP80)
+	localPool = newListenerPool(serveRawSSH)
 	tlsPool = newTLSListenerPool()
 
 	for _, msg := range normalizeRuntimePorts(cfg) {
 		log.Printf("startup config fallback: %s", msg)
+	}
+
+	// Keep a plain, loopback-only SSH endpoint available to local proxy and
+	// tunnel daemons. It has its own listener pool, so cycling the public proxy
+	// ports does not close this socket.
+	for _, e := range localPool.Sync([]string{cfg.LocalSSHListen}) {
+		log.Printf("failed to start internal SSH listener: %v", e)
 	}
 
 	// Start the integrated DNSTT and UDPGW if configured. Startup errors are logged
