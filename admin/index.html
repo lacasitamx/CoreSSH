@@ -1231,15 +1231,17 @@
     <section class="page-hero" data-tone="blue"><div class="page-hero-copy"><span class="page-kicker">System studio</span><h2>Configurações</h2><p>Rede, SSH, túneis e TLS organizados em blocos visuais e aplicados ao vivo.</p></div></section>
 
     <div class="workspace-nav-shell" data-tone="blue">
-      <nav class="workspace-section-nav" id="configSectionNav" aria-label="Áreas de configuração" style="--workspace-nav-columns:5">
+      <nav class="workspace-section-nav" id="configSectionNav" aria-label="Áreas de configuração" style="--workspace-nav-columns:7">
         <button class="active" type="button" data-workspace="config" data-workspace-section="general"><span>⌁</span> Rede e SSH</button>
         <button type="button" data-workspace="config" data-workspace-section="slowdns"><span>DNS</span> SlowDNS</button>
         <button type="button" data-workspace="config" data-workspace-section="udp"><span>⇅</span> UDP Gateway</button>
+        <button type="button" data-workspace="config" data-workspace-section="bhttp"><span>BH</span> BHTTP</button>
+        <button type="button" data-workspace="config" data-workspace-section="btun"><span>BT</span> BTUN</button>
         <button type="button" data-workspace="config" data-workspace-section="tls"><span>◇</span> TLS</button>
         <button type="button" data-workspace="config" data-workspace-section="xray"><span>◆</span> Xray</button>
       </nav>
       <select id="configSection" class="workspace-section-select" data-workspace-select="config" aria-label="Área de configuração">
-        <option value="general">Rede e SSH</option><option value="slowdns">SlowDNS</option><option value="udp">UDP Gateway</option><option value="tls">TLS</option><option value="xray">Xray</option>
+        <option value="general">Rede e SSH</option><option value="slowdns">SlowDNS</option><option value="udp">UDP Gateway</option><option value="bhttp">BHTTP</option><option value="btun">BTUN</option><option value="tls">TLS</option><option value="xray">Xray</option>
       </select>
     </div>
 
@@ -1468,8 +1470,205 @@
 
       </section>
 
+      <section class="workspace-section" data-workspace-panel="config" data-workspace-section-panel="bhttp">
+        <div class="workspace-section-heading"><div><span>04 · BHTTP</span><h3>BHTTP (BHP1 / BHP2)</h3><p>Transporte TCP ofuscado dos apps DTunnel. Cada sessão é entregue ao servidor SSH interno do painel — nunca ao sshd do sistema.</p></div></div>
+        <div class="card" style="margin-top:12px">
+          <div class="card-hdr">
+            <div class="card-title">BHTTP Transport</div>
+            <span class="chip green">live</span>
+            <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;margin-left:auto;">
+              <input type="checkbox" id="cfgBhttpEnabled" onchange="toggleBhttpFields(this.checked)"/> Enabled
+            </label>
+          </div>
+          <div id="bhttpFields" class="form-grid" style="opacity:.4;pointer-events:none;">
+            <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;grid-column:1/-1">
+              <input type="checkbox" id="cfgBhttpSharedPorts"/> Compartilhar as portas do painel <span class="hint">80/8080 (proxy) e 443 (TLS)</span>
+            </label>
+            <div class="hint" style="grid-column:1/-1;margin-top:-4px;">
+              Os listeners existentes leem os primeiros bytes de cada conexão e entregam ao BHTTP somente quando o quadro é inconfundível — um quadro BHTTP começa com o número do modo (0–5), enquanto SSH começa com <code>S</code> e HTTP com a letra do método. Clientes SSH e de injeção HTTP na mesma porta continuam iguais.
+              <strong>Uma mudança existe:</strong> com o compartilhamento ligado, a porta do proxy espera os primeiros bytes do cliente em vez de responder <code>HTTP/1.1 101</code> imediatamente. Todo cliente conhecido envia na hora, mas desligue isto se algum cliente seu aguardar esse 101 antes de falar.
+            </div>
+            <div class="field" style="grid-column:1/-1">
+              <label>Listen <span class="hint">um endereço por linha; vazio = só portas compartilhadas</span></label>
+              <textarea id="cfgBhttpListen" rows="3" placeholder="0.0.0.0:8880&#10;[::]:8881"></textarea>
+              <span class="hint">Porta dedicada, opcional. As portas 80 e 8080 já pertencem ao proxy HTTP+SSH: para usá-las, marque o compartilhamento acima em vez de listá-las aqui.</span>
+            </div>
+            <div class="field">
+              <label>Session Timeout <span class="hint">10s..1h</span></label>
+              <input type="text" id="cfgBhttpSessionTimeout" placeholder="2m"/>
+            </div>
+            <div class="field">
+              <label>Max v2 Lanes Per Session <span class="hint">0 = 128</span></label>
+              <input type="number" id="cfgBhttpMaxLanes" min="0" placeholder="128"/>
+            </div>
+            <div class="field">
+              <label>Max Sessions <span class="hint">0 = default (10000), -1 = unlimited</span></label>
+              <input type="number" id="cfgBhttpMaxSessions" placeholder="10000"/>
+            </div>
+            <div class="field">
+              <label>Max Client Sockets <span class="hint">0 = default (10000), -1 = unlimited</span></label>
+              <input type="number" id="cfgBhttpMaxConnections" placeholder="10000"/>
+            </div>
+            <div class="field">
+              <label>Auto Restart Interval <span class="hint">0s/off disables</span></label>
+              <input type="text" id="cfgBhttpAutoRestart" placeholder="24h"/>
+            </div>
+            <div class="field">
+              <label>Restart Grace Delay</label>
+              <input type="text" id="cfgBhttpRestartGrace" placeholder="2s"/>
+            </div>
+            <div class="hint" style="grid-column:1/-1;margin-top:-4px;">Restart forte: fecha apenas os listeners BHTTP e suas sessões, depois religa. Não reinicia o painel nem a VPS.</div>
+            <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;grid-column:1/-1">
+              <input type="checkbox" id="cfgBhttpNoConsole"/> Disable Console Log
+            </label>
+            <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;grid-column:1/-1">
+              <input type="checkbox" id="cfgBhttpLogConnections"/> Verbose Connection Logs
+            </label>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:12px">
+          <div class="card-hdr">
+            <div class="card-title">Status BHTTP</div>
+            <span class="chip" id="bhttpStatusChip">—</span>
+            <button class="btn btn-ghost btn-sm" type="button" onclick="loadBhttpHealth()">Atualizar</button>
+          </div>
+          <div class="metrics">
+            <div class="metric"><div class="m-label">Active Sessions</div><div class="m-val" id="bhttpActiveSessions">--</div></div>
+            <div class="metric"><div class="m-label">Active Sockets</div><div class="m-val" id="bhttpActiveConns">--</div></div>
+            <div class="metric"><div class="m-label">Upload</div><div class="m-val" id="bhttpUploadBytes">--</div></div>
+            <div class="metric"><div class="m-label">Download</div><div class="m-val" id="bhttpDownloadBytes">--</div></div>
+          </div>
+          <div class="tbl-wrap" style="margin-top:10px;">
+            <table>
+              <thead><tr><th>Counter</th><th>Value</th><th>Counter</th><th>Value</th></tr></thead>
+              <tbody id="bhttpHealthBody"></tbody>
+            </table>
+          </div>
+          <div class="statusbar"><span id="bhttpStatusSummary">Salve a configuração para iniciar o transporte.</span><span class="hint">Rejeições e falhas de alvo devem normalmente ficar em 0.</span></div>
+          <div class="card-hdr" style="margin-top:12px">
+            <div class="card-title">Logs BHTTP</div>
+            <button class="btn btn-ghost btn-sm" type="button" onclick="loadBhttpLogs()">Carregar logs</button>
+          </div>
+          <pre id="bhttpLogs" class="log-box">—</pre>
+        </div>
+      </section>
+
+      <section class="workspace-section" data-workspace-panel="config" data-workspace-section-panel="btun">
+        <div class="workspace-section-heading"><div><span>05 · BTUN</span><h3>BTUN (DTUNNEL/1.1)</h3><p>VPN nativa por pacotes IP em TCP e UDP. Autentica nas contas do painel — sem PAM e sem /etc/shadow.</p></div></div>
+        <div class="card" style="margin-top:12px">
+          <div class="card-hdr">
+            <div class="card-title">BTUN Protocol Server</div>
+            <span class="chip green">live</span>
+            <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;margin-left:auto;">
+              <input type="checkbox" id="cfgBtunEnabled" onchange="toggleBtunFields(this.checked)"/> Enabled
+            </label>
+          </div>
+          <div id="btunFields" class="form-grid" style="opacity:.4;pointer-events:none;">
+            <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;grid-column:1/-1">
+              <input type="checkbox" id="cfgBtunSharedPorts"/> Compartilhar as portas do painel <span class="hint">80/8080 (proxy) e 443 (TLS), só TCP</span>
+            </label>
+            <div class="hint" style="grid-column:1/-1;margin-top:-4px;">
+              Os listeners existentes entregam ao BTUN apenas no marcador fixo <code>DTUNNEL/1.1 CLIENT_HELLO</code>, então SSH, injeção HTTP e BHTTP na mesma porta continuam iguais. Vale somente para TCP — o painel não tem porta UDP compartilhada, então clientes UDP ainda precisam do <strong>UDP Listen</strong>.
+            </div>
+            <div class="field">
+              <label>TCP Listen <span class="hint">vazio desativa; opcional com portas compartilhadas</span></label>
+              <input type="text" id="cfgBtunTCPListen" placeholder="0.0.0.0:7300"/>
+            </div>
+            <div class="field">
+              <label>UDP Listen <span class="hint">empty disables</span></label>
+              <input type="text" id="cfgBtunUDPListen" placeholder="0.0.0.0:7300"/>
+            </div>
+            <div class="field">
+              <label>TUN Interface</label>
+              <input type="text" id="cfgBtunTUNName" placeholder="btun0"/>
+            </div>
+            <div class="field">
+              <label>Client Subnet <span class="hint">IPv4 CIDR</span></label>
+              <input type="text" id="cfgBtunSubnet" placeholder="10.77.0.0/16"/>
+            </div>
+            <div class="field">
+              <label>Gateway <span class="hint">empty derives from subnet</span></label>
+              <input type="text" id="cfgBtunGateway" placeholder="10.77.0.1/16"/>
+            </div>
+            <div class="field">
+              <label>MTU <span class="hint">576..9000</span></label>
+              <input type="number" id="cfgBtunMTU" min="576" max="9000" placeholder="1400"/>
+            </div>
+            <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;grid-column:1/-1">
+              <input type="checkbox" id="cfgBtunManageRouting"/> Manage Routing <span class="hint">configura o IP da interface, ip_forward e o NAT</span>
+            </label>
+            <div class="field">
+              <label>WAN Interface <span class="hint">empty auto-detects</span></label>
+              <input type="text" id="cfgBtunWAN" placeholder="eth0"/>
+            </div>
+            <div class="field">
+              <label>Handshake Timeout <span class="hint">1s..5m</span></label>
+              <input type="text" id="cfgBtunHandshakeTimeout" placeholder="15s"/>
+            </div>
+            <div class="field">
+              <label>Idle Timeout <span class="hint">10s..1h</span></label>
+              <input type="text" id="cfgBtunIdleTimeout" placeholder="2m"/>
+            </div>
+            <div class="field">
+              <label>Max Packet Size <span class="hint">0 = 64 KiB</span></label>
+              <input type="number" id="cfgBtunMaxPacketSize" min="0" placeholder="65536"/>
+            </div>
+            <div class="field">
+              <label>Max Cover Bytes <span class="hint">0 = 64 KiB</span></label>
+              <input type="number" id="cfgBtunMaxCoverBytes" min="0" placeholder="65536"/>
+            </div>
+            <div class="field">
+              <label>Max Sessions <span class="hint">0 = default (10000), -1 = unlimited</span></label>
+              <input type="number" id="cfgBtunMaxSessions" placeholder="10000"/>
+            </div>
+            <div class="field">
+              <label>Auto Restart Interval <span class="hint">0s/off disables</span></label>
+              <input type="text" id="cfgBtunAutoRestart" placeholder="24h"/>
+            </div>
+            <div class="field">
+              <label>Restart Grace Delay</label>
+              <input type="text" id="cfgBtunRestartGrace" placeholder="2s"/>
+            </div>
+            <div class="hint" style="grid-column:1/-1;margin-top:-4px;">Cada sessão BTUN conta no <strong>max_connections</strong> da conta, no limite de banda e na cota de dados, junto com as conexões SSH.</div>
+            <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;grid-column:1/-1">
+              <input type="checkbox" id="cfgBtunNoConsole"/> Disable Console Log
+            </label>
+            <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;grid-column:1/-1">
+              <input type="checkbox" id="cfgBtunLogConnections"/> Verbose Connection Logs
+            </label>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:12px">
+          <div class="card-hdr">
+            <div class="card-title">Status BTUN</div>
+            <span class="chip" id="btunStatusChip">—</span>
+            <button class="btn btn-ghost btn-sm" type="button" onclick="loadBtunHealth()">Atualizar</button>
+          </div>
+          <div class="metrics">
+            <div class="metric"><div class="m-label">Active Sessions</div><div class="m-val" id="btunActiveSessions">--</div></div>
+            <div class="metric"><div class="m-label">Authenticated</div><div class="m-val" id="btunAuthSucceeded">--</div></div>
+            <div class="metric"><div class="m-label">Client → Net</div><div class="m-val" id="btunClientBytes">--</div></div>
+            <div class="metric"><div class="m-label">Net → Client</div><div class="m-val" id="btunInternetBytes">--</div></div>
+          </div>
+          <div class="tbl-wrap" style="margin-top:10px;">
+            <table>
+              <thead><tr><th>Counter</th><th>Value</th><th>Counter</th><th>Value</th></tr></thead>
+              <tbody id="btunHealthBody"></tbody>
+            </table>
+          </div>
+          <div class="statusbar"><span id="btunStatusSummary">Salve a configuração para iniciar o servidor.</span><span class="hint">Pacotes descartados indicam MTU ou rota incorreta.</span></div>
+          <div class="card-hdr" style="margin-top:12px">
+            <div class="card-title">Logs BTUN</div>
+            <button class="btn btn-ghost btn-sm" type="button" onclick="loadBtunLogs()">Carregar logs</button>
+          </div>
+          <pre id="btunLogs" class="log-box">—</pre>
+        </div>
+      </section>
+
       <section class="workspace-section" data-workspace-panel="config" data-workspace-section-panel="tls">
-        <div class="workspace-section-heading"><div><span>04 · Segurança</span><h3>Encaminhadores TLS</h3><p>Gerencie os certificados do servidor e crie listeners TLS com certificado automático, colado ou armazenado em arquivo.</p></div></div>
+        <div class="workspace-section-heading"><div><span>06 · Segurança</span><h3>Encaminhadores TLS</h3><p>Gerencie os certificados do servidor e crie listeners TLS com certificado automático, colado ou armazenado em arquivo.</p></div></div>
 
         <!-- TLS Certificates -->
         <div class="card" style="margin-top:12px">

@@ -2,3 +2,8 @@
 /BOT_PLAN.md
 /SECURITY_REVIEW.md
 /DragonCoreSSH-NewWEB.zip
+/dist/
+/.tmp-bhttp-harness.exe
+/Dockerfile.build
+/tunnel_pipe_test.go
+/docker-build.sh

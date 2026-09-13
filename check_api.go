@@ -59,7 +59,7 @@ func checkSSHUser(w http.ResponseWriter, username string) {
 	}
 
 	u.mu.Lock()
-	activeConns := len(u.conns)
+	activeConns := len(u.conns) + u.btunConns
 	u.ActiveConns = activeConns
 	maxConns := u.Cfg.MaxConnections
 	expiresAt := u.ExpiresAt

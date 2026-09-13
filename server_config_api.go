@@ -87,11 +87,15 @@ func serverConfigPost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "config exceeds 512 KiB", http.StatusRequestEntityTooLarge)
 		return
 	}
-	// Keep track of optional field presence separately from its boolean value.
-	// This protects a newly-added setting from being reset by a stale cached
-	// panel bundle that does not know how to send the field yet.
+	// Keep track of optional field presence separately from its value. This
+	// protects a newly-added setting from being reset by a stale cached panel
+	// bundle that does not know how to send the field yet. For the service
+	// blocks the distinction matters twice over: a missing key must keep the
+	// running service, while an explicit null is the panel disabling it.
 	var fieldPresence struct {
-		PAMAuthEnabled *bool `json:"pam_auth_enabled"`
+		PAMAuthEnabled *bool            `json:"pam_auth_enabled"`
+		BHTTP          *json.RawMessage `json:"bhttp"`
+		BTUN           *json.RawMessage `json:"btun"`
 	}
 	if err := json.Unmarshal(body, &fieldPresence); err != nil {
 		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
@@ -117,6 +121,12 @@ func serverConfigPost(w http.ResponseWriter, r *http.Request) {
 		newCfg.Users = globalCfg.Users
 		if fieldPresence.PAMAuthEnabled == nil {
 			newCfg.PAMAuthEnabled = globalCfg.PAMAuthEnabled
+		}
+		if fieldPresence.BHTTP == nil {
+			newCfg.BHTTP = globalCfg.BHTTP
+		}
+		if fieldPresence.BTUN == nil {
+			newCfg.BTUN = globalCfg.BTUN
 		}
 	}
 	globalCfgMu.RUnlock()

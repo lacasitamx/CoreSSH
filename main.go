@@ -152,6 +152,17 @@ type Config struct {
 	// Xray holds configuration for the integrated Xray-core process.  If nil
 	// the Xray subprocess is not started.  See xray_integration.go.
 	Xray *XrayConfig `json:"xray"`
+
+	// BHTTP holds configuration for the integrated BHTTP (BHP1/BHP2) transport.
+	// If nil, the transport is disabled. Sessions are relayed to this process's
+	// own SSH server, never to the system sshd. See bhttp_integration.go.
+	BHTTP *BHTTPConfig `json:"bhttp"`
+
+	// BTUN holds configuration for the integrated BTUN protocol server. If nil,
+	// the server is disabled. BTUN moves IP packets rather than an SSH stream,
+	// so it authenticates against the panel's own account database — never PAM
+	// or /etc/shadow. See btun_integration.go.
+	BTUN *BTUNConfig `json:"btun"`
 }
 
 // DNSTTConfig defines the settings for the integrated dnstt server.  See
@@ -392,6 +403,10 @@ type UserState struct {
 	mu          sync.Mutex
 	ActiveConns int
 	conns       map[*ssh.ServerConn]struct{} // active SSH connections for this user
+	// btunConns counts active BTUN sessions for this user. BTUN carries IP
+	// packets instead of an SSH stream, so it has no *ssh.ServerConn to track;
+	// it shares max_connections with SSH through this counter.
+	btunConns int
 
 	// Persistent per-user tunnel traffic. totalBytes includes reservations made
 	// by concurrent copy loops, while directional totals only include bytes that
@@ -467,7 +482,7 @@ func (m *UserManager) ReplaceAllPreserveRuntime(newUsers map[string]*UserState) 
 				ou.conns = make(map[*ssh.ServerConn]struct{})
 			}
 			// Self-heal any previously stale counter by trusting the live connection map.
-			ou.ActiveConns = len(ou.conns)
+			ou.ActiveConns = len(ou.conns) + ou.btunConns
 			ou.mu.Unlock()
 
 			newUsers[username] = ou
@@ -498,6 +513,9 @@ func (m *UserManager) DisconnectUser(username string) {
 	for _, c := range conns {
 		_ = c.Close()
 	}
+	// BTUN sessions belong to the same account allowance, so a panel-driven
+	// disconnect has to drop them too.
+	btunDisconnectUser(username)
 }
 
 // DisconnectAll closes every authenticated SSH connection currently tracked by
@@ -526,7 +544,7 @@ func (m *UserManager) DisconnectAll() int {
 	for c := range seen {
 		_ = c.Close()
 	}
-	return len(seen)
+	return len(seen) + btunDisconnectAll()
 }
 
 // Global state
@@ -1707,6 +1725,10 @@ func startAdminAPI(store *Store, addr string, adminDir string) {
 	mux.Handle("/api/system/update-status", saSession(http.HandlerFunc(handleUpdateStatus)))
 	mux.Handle("/api/dnstt", saSession(http.HandlerFunc(handleDnsttStats)))
 	mux.Handle("/api/dnstt/logs", saSession(http.HandlerFunc(handleDnsttLogs)))
+	mux.Handle("/api/bhttp", saSession(http.HandlerFunc(handleBHTTPStats)))
+	mux.Handle("/api/bhttp/logs", saSession(http.HandlerFunc(handleBHTTPLogs)))
+	mux.Handle("/api/btun", saSession(http.HandlerFunc(handleBTUNStats)))
+	mux.Handle("/api/btun/logs", saSession(http.HandlerFunc(handleBTUNLogs)))
 
 	// Superadmin-only: reseller management
 	mux.Handle("/api/resellers", saSession(http.HandlerFunc(handleListResellers(store))))
@@ -1834,7 +1856,7 @@ func handleListUsers(w http.ResponseWriter, r *http.Request) {
 	out := make([]UserDTO, 0, len(states))
 	for _, u := range states {
 		u.mu.Lock()
-		c := len(u.conns)
+		c := len(u.conns) + u.btunConns
 		u.ActiveConns = c
 		cfg := u.Cfg
 		expires := u.ExpiresAt
@@ -2274,6 +2296,60 @@ func handleDnsttLogs(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(lines)
 }
 
+// handleBHTTPStats returns the current BHTTP transport counters.
+func handleBHTTPStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if proxyManagedServerFromRequest(w, r, statsStore, "/api/bhttp", nil, "") {
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(GetBHTTPStatsSnapshot())
+}
+
+// handleBHTTPLogs returns the recent BHTTP log lines as a JSON array.
+func handleBHTTPLogs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	lines := getBHTTPLogLines()
+	if lines == nil {
+		lines = []string{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(lines)
+}
+
+// handleBTUNStats returns the current BTUN protocol server counters.
+func handleBTUNStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if proxyManagedServerFromRequest(w, r, statsStore, "/api/btun", nil, "") {
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(GetBTUNStatsSnapshot())
+}
+
+// handleBTUNLogs returns the recent BTUN log lines as a JSON array.
+func handleBTUNLogs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	lines := getBTUNLogLines()
+	if lines == nil {
+		lines = []string{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(lines)
+}
+
 // ---------- Auth helpers ----------
 
 func normalizeBase32Secret(secret string) string {
@@ -2491,7 +2567,9 @@ func handleConn(tcpConn net.Conn, config *ssh.ServerConfig) {
 	if u.conns == nil {
 		u.conns = make(map[*ssh.ServerConn]struct{})
 	}
-	activeConns := len(u.conns)
+	// BTUN sessions count against the same allowance, so a user cannot double
+	// their limit by mixing transports.
+	activeConns := len(u.conns) + u.btunConns
 	u.ActiveConns = activeConns
 	if u.Cfg.MaxConnections > 0 && activeConns >= u.Cfg.MaxConnections {
 		u.mu.Unlock()
@@ -2500,7 +2578,7 @@ func handleConn(tcpConn net.Conn, config *ssh.ServerConfig) {
 		return
 	}
 	u.conns[sshConn] = struct{}{}
-	u.ActiveConns = len(u.conns)
+	u.ActiveConns = len(u.conns) + u.btunConns
 	u.mu.Unlock()
 
 	// Use per-user limit if set; otherwise fall back to the global config default.
@@ -2535,7 +2613,7 @@ func handleConn(tcpConn net.Conn, config *ssh.ServerConfig) {
 		close(idleDone)
 		u.mu.Lock()
 		delete(u.conns, sshConn)
-		u.ActiveConns = len(u.conns)
+		u.ActiveConns = len(u.conns) + u.btunConns
 		u.mu.Unlock()
 
 		updateUserDisplay()
@@ -2659,7 +2737,7 @@ func updateUserDisplay() {
 	parts := make([]string, 0, len(userStates))
 	for _, u := range userStates {
 		u.mu.Lock()
-		c := len(u.conns)
+		c := len(u.conns) + u.btunConns
 		u.ActiveConns = c
 		name := u.Cfg.Username
 		u.mu.Unlock()
@@ -2845,6 +2923,18 @@ func handleHTTP80Conn(raw net.Conn, sshConfig *ssh.ServerConfig) {
 	// Clear deadline before SSH handshake begins.
 	_ = raw.SetReadDeadline(time.Time{})
 
+	// A tunnel client may use an HTTP request as cover, exactly like the
+	// injection clients this cleanup exists for. The cleanup above consumed
+	// that cover and already answered 101/200, so what remains is either the
+	// SSH banner or a tunnel handshake; only the latter is handed over.
+	if tunnelShareEnabled() {
+		reader, taken := tunnelTakeSharedConn(raw, br)
+		if taken {
+			return
+		}
+		br = reader
+	}
+
 	// Hand off to SSH server, ensuring any buffered bytes are preserved.
 	handleConn(&bufferedConn{Conn: raw, r: br}, sshConfig)
 }
@@ -2863,8 +2953,32 @@ func serveHTTP80(ln net.Listener) {
 			log.Printf("accept error on %s: %v", ln.Addr().String(), err)
 			continue
 		}
-		go handleHTTP80Conn(tcpConn, getSSHConfig())
+		go handleProxyConn(tcpConn, getSSHConfig())
 	}
+}
+
+// handleProxyConn owns one connection accepted on a public proxy port. When
+// BHTTP shares these ports it gets first look, because a BHTTP client speaks
+// immediately and must not receive the unsolicited "HTTP/1.1 101" that the
+// HTTP-injection path opens with. Anything that is not a BHTTP frame falls
+// through to handleHTTP80Conn with its bytes untouched.
+func handleProxyConn(raw net.Conn, sshConfig *ssh.ServerConfig) {
+	// Best-effort TCP tuning here too: the sniff may wrap the connection, and
+	// handleHTTP80Conn's own type assertion would then no longer see a TCPConn.
+	if tc, ok := raw.(*net.TCPConn); ok {
+		_ = tc.SetKeepAlive(true)
+		_ = tc.SetKeepAlivePeriod(30 * time.Second)
+		_ = tc.SetNoDelay(true)
+	}
+	if !tunnelShareEnabled() {
+		handleHTTP80Conn(raw, sshConfig)
+		return
+	}
+	reader, taken := tunnelTakeSharedConn(raw, nil)
+	if taken {
+		return
+	}
+	handleHTTP80Conn(&bufferedConn{Conn: raw, r: reader}, sshConfig)
 }
 
 // serveRawSSH accepts connections on ln and passes each directly into
@@ -2910,6 +3024,17 @@ func serveTLSSSH(ln net.Listener) {
 				}
 			}
 			_ = client.SetDeadline(time.Time{})
+			// Inside TLS the stream is either the SSH banner or, when a tunnel
+			// transport shares this port, its handshake. The sniff decides on
+			// the decrypted bytes, so the TLS certificate and SNI are untouched.
+			if tunnelShareEnabled() {
+				reader, taken := tunnelTakeSharedConn(client, nil)
+				if taken {
+					return
+				}
+				handleConn(&bufferedConn{Conn: client, r: reader}, getSSHConfig())
+				return
+			}
 			handleConn(client, getSSHConfig())
 		}(c)
 	}
@@ -3496,6 +3621,17 @@ func main() {
 	}
 	if err := startUDPGW(cfg.UDPGW); err != nil {
 		log.Printf("udpgw auto-start failed: %v", err)
+	}
+
+	// Start the integrated BHTTP transport and BTUN protocol server. Both relay
+	// into this process (BHTTP into the built-in SSH server, BTUN into its own
+	// TUN device with panel-backed authentication), so neither depends on the
+	// system sshd. Startup errors are logged and surfaced in the admin UI.
+	if err := startBHTTP(cfg.BHTTP); err != nil {
+		log.Printf("bhttp auto-start failed: %v", err)
+	}
+	if err := startBTUN(cfg.BTUN); err != nil {
+		log.Printf("btun auto-start failed: %v", err)
 	}
 
 	// Start public SSH listeners (listen + extra_listen).

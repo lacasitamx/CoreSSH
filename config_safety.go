@@ -17,6 +17,58 @@ const (
 	defaultUDPGWListen    = "0.0.0.0:7400"
 )
 
+// normalizeDurationField validates one optional duration setting in place. An
+// invalid value is cleared so the service falls back to its own default rather
+// than starting with a nonsense timeout.
+func normalizeDurationField(value *string, label string, minimum, maximum time.Duration, warn func(string, ...interface{})) {
+	*value = strings.TrimSpace(*value)
+	if *value == "" {
+		return
+	}
+	d, err := time.ParseDuration(*value)
+	if err != nil || d <= 0 {
+		warn("%s %q is invalid; using the service default", label, *value)
+		*value = ""
+		return
+	}
+	if minimum > 0 && d < minimum {
+		warn("%s %q is below the minimum %s; clamping", label, *value, minimum)
+		*value = minimum.String()
+		return
+	}
+	if maximum > 0 && d > maximum {
+		warn("%s %q is above the maximum %s; clamping", label, *value, maximum)
+		*value = maximum.String()
+	}
+}
+
+// normalizeAutoRestartFields applies the shared auto-restart rules used by
+// every embedded service: an interval below 1m disables the watchdog, and the
+// grace delay is capped at 1m.
+func normalizeAutoRestartFields(interval, grace *string, label string, warn func(string, ...interface{})) {
+	*interval = strings.TrimSpace(*interval)
+	if *interval != "" && *interval != "0" && *interval != "0s" &&
+		!strings.EqualFold(*interval, "off") && !strings.EqualFold(*interval, "disabled") {
+		if d, err := time.ParseDuration(*interval); err != nil {
+			warn("%s auto restart interval %q is invalid; disabling auto restart", label, *interval)
+			*interval = ""
+		} else if d < time.Minute {
+			warn("%s auto restart interval %q is below minimum 1m; disabling auto restart", label, *interval)
+			*interval = ""
+		}
+	}
+	*grace = strings.TrimSpace(*grace)
+	if *grace != "" {
+		if d, err := time.ParseDuration(*grace); err != nil || d < 0 {
+			warn("%s auto restart grace %q is invalid; using default 2s", label, *grace)
+			*grace = ""
+		} else if d > time.Minute {
+			warn("%s auto restart grace %q is above 1m; clamping to 1m", label, *grace)
+			*grace = "1m"
+		}
+	}
+}
+
 func normalizeRuntimePorts(cfg *Config) []string {
 	var warnings []string
 	warn := func(format string, args ...interface{}) {
@@ -258,7 +310,157 @@ func normalizeRuntimePorts(cfg *Config) []string {
 		}
 	}
 
+	if cfg.BHTTP != nil {
+		addrs := normalizeBHTTPListenList(cfg.BHTTP.Listen)
+		if len(addrs) == 0 && !cfg.BHTTP.SharedPorts {
+			// With no dedicated listener and no shared ports nothing would
+			// serve BHTTP at all, so fall back to a port of its own.
+			addrs = []string{defaultBHTTPListen}
+			warn("BHTTP has no listen address and shared ports are off; using default %s", defaultBHTTPListen)
+		}
+		kept := make([]string, 0, len(addrs))
+		for _, addr := range addrs {
+			if err := tcpAddrAvailableForBHTTP(addr); err != nil {
+				warn("BHTTP listener %s is unavailable (%v)", addr, err)
+				continue
+			}
+			kept = append(kept, addr)
+		}
+		if len(addrs) > 0 && len(kept) == 0 {
+			warn("no BHTTP listener could be opened; keeping the configured addresses so the panel reports the failure")
+			kept = addrs
+		}
+		cfg.BHTTP.Listen = kept
+
+		normalizeDurationField(&cfg.BHTTP.SessionTimeout, "BHTTP session_timeout", 10*time.Second, time.Hour, warn)
+		if cfg.BHTTP.MaxV2Lanes < 0 {
+			warn("BHTTP max_v2_lanes %d is invalid; using the protocol default", cfg.BHTTP.MaxV2Lanes)
+			cfg.BHTTP.MaxV2Lanes = 0
+		}
+		if cfg.BHTTP.MaxSessions < -1 {
+			warn("BHTTP max_sessions %d is invalid; using unlimited (-1)", cfg.BHTTP.MaxSessions)
+			cfg.BHTTP.MaxSessions = -1
+		}
+		if cfg.BHTTP.MaxConnections < -1 {
+			warn("BHTTP max_connections %d is invalid; using unlimited (-1)", cfg.BHTTP.MaxConnections)
+			cfg.BHTTP.MaxConnections = -1
+		}
+		normalizeAutoRestartFields(&cfg.BHTTP.AutoRestartInterval, &cfg.BHTTP.AutoRestartGrace, "BHTTP", warn)
+	}
+
+	if cfg.BTUN != nil {
+		normalizeBTUNConfig(cfg.BTUN)
+		if cfg.BTUN.TCPListen == "" && cfg.BTUN.UDPListen == "" && !cfg.BTUN.SharedPorts {
+			// With no listener and no shared ports nothing would serve BTUN at
+			// all, so fall back to ports of its own.
+			cfg.BTUN.TCPListen = defaultBTUNTCPListen
+			cfg.BTUN.UDPListen = defaultBTUNUDPListen
+			warn("BTUN has no listener and shared ports are off; using defaults tcp/udp %s", defaultBTUNTCPListen)
+		}
+		if cfg.BTUN.TCPListen != "" {
+			if err := tcpAddrAvailableForBTUN(cfg.BTUN.TCPListen); err != nil {
+				warn("BTUN TCP listener %s is unavailable (%v)", cfg.BTUN.TCPListen, err)
+			}
+		}
+		if cfg.BTUN.UDPListen != "" {
+			if err := udpAddrAvailableForBTUN(cfg.BTUN.UDPListen); err != nil {
+				warn("BTUN UDP listener %s is unavailable (%v)", cfg.BTUN.UDPListen, err)
+			}
+		}
+		if _, _, err := net.ParseCIDR(cfg.BTUN.Subnet); err != nil {
+			warn("BTUN subnet %q is invalid (%v); using default %s", cfg.BTUN.Subnet, err, defaultBTUNSubnet)
+			cfg.BTUN.Subnet = defaultBTUNSubnet
+			cfg.BTUN.Gateway = ""
+		}
+		if gateway, err := btunGatewayForSubnet(cfg.BTUN.Subnet); err != nil {
+			warn("BTUN subnet %q cannot host clients (%v); using default %s", cfg.BTUN.Subnet, err, defaultBTUNSubnet)
+			cfg.BTUN.Subnet = defaultBTUNSubnet
+			cfg.BTUN.Gateway, _ = btunGatewayForSubnet(defaultBTUNSubnet)
+		} else if cfg.BTUN.Gateway == "" {
+			cfg.BTUN.Gateway = gateway
+		} else if _, _, err := net.ParseCIDR(cfg.BTUN.Gateway); err != nil {
+			warn("BTUN gateway %q is invalid (%v); deriving %s from the subnet", cfg.BTUN.Gateway, err, gateway)
+			cfg.BTUN.Gateway = gateway
+		}
+		if cfg.BTUN.MTU < 576 || cfg.BTUN.MTU > 9000 {
+			warn("BTUN mtu %d is out of the 576..9000 range; using default %d", cfg.BTUN.MTU, defaultBTUNMTU)
+			cfg.BTUN.MTU = defaultBTUNMTU
+		}
+		normalizeDurationField(&cfg.BTUN.HandshakeTimeout, "BTUN handshake_timeout", time.Second, 5*time.Minute, warn)
+		normalizeDurationField(&cfg.BTUN.IdleTimeout, "BTUN idle_timeout", 10*time.Second, time.Hour, warn)
+		if cfg.BTUN.MaxPacketSize < 0 {
+			warn("BTUN max_packet_size %d is invalid; using the protocol default", cfg.BTUN.MaxPacketSize)
+			cfg.BTUN.MaxPacketSize = 0
+		}
+		if cfg.BTUN.MaxCoverBytes < 0 {
+			warn("BTUN max_cover_bytes %d is invalid; using the protocol default", cfg.BTUN.MaxCoverBytes)
+			cfg.BTUN.MaxCoverBytes = 0
+		}
+		if cfg.BTUN.MaxSessions < -1 {
+			warn("BTUN max_sessions %d is invalid; using unlimited (-1)", cfg.BTUN.MaxSessions)
+			cfg.BTUN.MaxSessions = -1
+		}
+		normalizeAutoRestartFields(&cfg.BTUN.AutoRestartInterval, &cfg.BTUN.AutoRestartGrace, "BTUN", warn)
+	}
+
 	return warnings
+}
+
+// tcpAddrAvailableForBHTTP reports whether a BHTTP listen address can be bound.
+// An address this process already serves for BHTTP is treated as available, so
+// saving an unchanged config does not report a false conflict.
+func tcpAddrAvailableForBHTTP(addr string) error {
+	if addr == "" {
+		return nil
+	}
+	if bhttpRunning() {
+		for _, current := range strings.Split(bhttpListenList(), ", ") {
+			if strings.TrimSpace(current) == addr {
+				return nil
+			}
+		}
+	}
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	return ln.Close()
+}
+
+func tcpAddrAvailableForBTUN(addr string) error {
+	if addr == "" {
+		return nil
+	}
+	btunMu.Lock()
+	current := btunListenTCP
+	running := btunServer != nil
+	btunMu.Unlock()
+	if running && current == addr {
+		return nil
+	}
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	return ln.Close()
+}
+
+func udpAddrAvailableForBTUN(addr string) error {
+	if addr == "" {
+		return nil
+	}
+	btunMu.Lock()
+	current := btunListenUDP
+	running := btunServer != nil
+	btunMu.Unlock()
+	if running && current == addr {
+		return nil
+	}
+	pc, err := net.ListenPacket("udp", addr)
+	if err != nil {
+		return err
+	}
+	return pc.Close()
 }
 
 // normalizeLocalSSHListen guarantees that the raw integration endpoint can

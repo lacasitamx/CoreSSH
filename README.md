@@ -152,6 +152,9 @@ O instalador monta `/opt/sshpanel/logs` como tmpfs de 15 MiB quando possível, p
 2222    SSH raw interno em 127.0.0.1 (não público)
 53/udp  DNS público para DNSTT, redirecionado para 5300/udp
 5300/udp DNSTT interno
+8880    BHTTP (BHP1/BHP2) — desativado por padrão; pode compartilhar 80/8080/443
+7300    BTUN TCP — desativado por padrão; pode compartilhar 80/8080/443
+7300/udp BTUN UDP — desativado por padrão
 9090    Painel web + API pública /check
 10086   Xray VLESS
 10087   Xray VMess
@@ -277,6 +280,101 @@ Exemplo no `config.json`:
   }
 }
 ```
+
+### BHTTP (BHP1 / BHP2)
+
+O BHTTP é o transporte TCP ofuscado usado pelos apps da família DTunnel. O cliente abre um socket TCP comum, opcionalmente envia uma requisição HTTP como cobertura, e em seguida fala o enquadramento BHTTP (cabeçalho de 29 bytes) com os modos *probe*, *upload*, *download*, *batch* e *ACK*. O BHP2 adiciona *lanes* persistentes com `resume` e ACK cumulativo de upload.
+
+Cada sessão BHTTP é entregue ao **servidor SSH embutido do próprio painel**, exatamente como o DNSTT faz. Não existe conexão com o `sshd` do sistema, nem com PAM ou `/etc/shadow`: as contas, validade, TOTP, `max_connections`, limites de banda e cotas de dados do painel valem sem nenhuma configuração extra.
+
+#### Compartilhar as portas 80, 8080 e 443
+
+O BHTTP pode atender **nas portas que o painel já usa**, sem porta dedicada e sem atrapalhar o resto. Isso funciona porque os três protocolos começam de formas incompatíveis: um quadro BHTTP começa com o número do modo (`0`–`5`), o SSH começa com `S` (`0x53`) e uma linha HTTP começa com a letra do método. O primeiro byte já separa os três.
+
+Como um cliente de injeção HTTP pode mandar lixo antes do payload, um byte baixo sozinho não basta. Então o cabeçalho de 29 bytes também é validado e, nos dois modos que carregam assinatura — o *probe* que abre toda sessão e o *lane hello* do v2 — a assinatura (`BHP1`/`BHP2`, `BLN2`) é descriptografada e conferida. Como a chave vem do próprio session ID do cabeçalho, lixo não passa por acaso. Nada é consumido quando o veredito é negativo: a conexão segue para o caminho HTTP/SSH normal com os bytes intactos.
+
+Ligue em **Configurações → BHTTP → Compartilhar as portas do painel**. Vale para `listen`, `extra_listen` e todos os encaminhadores TLS. Com isso ligado o campo **Listen** pode ficar vazio: o BHTTP passa a existir só nas portas compartilhadas.
+
+Uma única coisa muda para os outros clientes: hoje a porta do proxy responde `HTTP/1.1 101` assim que o socket abre, antes de ler qualquer coisa; com o compartilhamento ligado ela espera os primeiros bytes do cliente (no máximo 3s) antes de decidir. Isso é necessário porque um cliente BHTTP não pode receber esse 101 sem querer. Todo cliente conhecido — de injeção HTTP ou BHTTP — envia seus bytes imediatamente ao conectar, e um cliente que não enviar nada em 3s cai no caminho antigo. Se algum cliente seu aguardar o 101 antes de falar, desmarque a opção.
+
+Configure em **Configurações → BHTTP**:
+
+- **Compartilhar as portas do painel** — aceita BHTTP em 80/8080 e 443 junto com SSH e injeção HTTP, como descrito acima.
+- **Listen** — porta dedicada, um endereço por linha, opcional quando o compartilhamento está ligado. As portas 80 e 8080 pertencem ao proxy HTTP+SSH: para usá-las, ligue o compartilhamento em vez de listá-las aqui. O padrão, sem compartilhamento, é `0.0.0.0:8880`.
+- **Session Timeout** — tempo sem tráfego antes de derrubar a sessão e fechar seu SSH. Também limita por quanto tempo um `resume` do BHP2 continua possível.
+- **Max v2 Lanes Per Session** — teto de lanes simultâneas por sessão (`0` usa 128).
+- **Max Sessions** / **Max Client Sockets** — tetos globais. `0` usa o padrão (10000) e `-1` remove o limite. Sockets acima do teto são fechados antes de qualquer trabalho de protocolo.
+- **Auto Restart Interval** / **Restart Grace Delay** — restart forte que fecha somente os listeners BHTTP e suas sessões. Não reinicia o painel nem a VPS. Intervalo mínimo de 1m.
+- **Disable Console Log** / **Verbose Connection Logs** — os logs continuam disponíveis em `/api/bhttp/logs` mesmo com o console desligado.
+
+O card **Status BHTTP** na mesma aba mostra sessões e sockets ativos, bytes trafegados, probes BHP1/BHP2, lanes anexadas e rejeitadas, falhas ao abrir o alvo SSH e erros de protocolo.
+
+### BTUN (DTUNNEL/1.1)
+
+O BTUN é a VPN nativa por pacotes IP: o cliente faz o handshake `DTUNNEL/1.1 CLIENT_HELLO` em TCP ou UDP, autentica, recebe um IPv4 de uma sub-rede privada e passa a trocar pacotes IP com uma interface TUN criada por este processo.
+
+Diferente do BHTTP e do DNSTT, o BTUN **não** carrega um fluxo SSH — ele carrega pacotes IP. Por isso a autenticação não passa pelo `handleConn`, e sim direto pelo banco de contas do painel: mesmo usuário e senha (ou TOTP), mesma validade, mesmo dono/revendedor, mesma cota de dados e o mesmo `max_connections`. **Não existe caminho PAM nem `/etc/shadow` no BTUN**, e a opção `pam_auth_enabled` (que é uma configuração do SSH) não se aplica a ele.
+
+Cada sessão BTUN conta no `max_connections` da conta junto com as conexões SSH, respeita `limit_mbps_up`/`limit_mbps_down` e consome a mesma cota de dados. Excluir, editar ou expirar um usuário derruba as sessões BTUN dele igual às conexões SSH.
+
+#### Compartilhar as portas 80, 8080 e 443
+
+O BTUN também pode atender nas portas que o painel já usa. A detecção aqui é ainda mais direta que a do BHTTP: uma sessão BTUN começa com o marcador fixo `DTUNNEL/1.1 CLIENT_HELLO`, que nenhum banner SSH e nenhuma linha HTTP pode igualar. A conexão só vai para o BTUN quando esses 25 bytes batem exatamente no início; qualquer outra coisa segue intacta para o caminho normal.
+
+Duas limitações, ambas por natureza do compartilhamento:
+
+- **Vale só para TCP.** O painel não tem porta UDP compartilhada, então clientes UDP continuam precisando de **UDP Listen**.
+- **Cover bytes.** Numa porta dedicada o BTUN tolera lixo arbitrário antes do hello. Numa porta compartilhada o marcador precisa estar no começo, porque não dá para guardar um prefixo sem limite enquanto o SSH espera atrás. Cover em forma de requisição HTTP funciona — a limpeza de injeção do painel consome a requisição e o marcador reaparece no início — mas nesse caso o cliente recebe antes a resposta `101`/`200` do painel e precisa ignorá-la. Para qualquer outro formato de cover, use a porta dedicada.
+
+Ligue em **Configurações → BTUN → Compartilhar as portas do painel**. Com isso ligado, **TCP Listen** pode ficar vazio.
+
+Configure em **Configurações → BTUN**:
+
+- **Compartilhar as portas do painel** — aceita BTUN em 80/8080 e 443 junto com SSH, injeção HTTP e BHTTP, como descrito acima. Somente TCP.
+- **TCP Listen** / **UDP Listen** — deixe um em branco para desativar aquele transporte. Sem o compartilhamento, pelo menos um é obrigatório; o padrão é `0.0.0.0:7300` nos dois.
+- **TUN Interface** — interface criada e usada por este processo (padrão `btun0`). Não pode colidir com uma interface de outro serviço.
+- **Client Subnet** / **Gateway** / **MTU** — faixa IPv4 entregue aos clientes (padrão `10.77.0.0/16`), endereço da própria interface (derivado da sub-rede quando vazio) e MTU (padrão 1400).
+- **Manage Routing** — quando ligado, o painel configura o endereço da interface, `net.ipv4.ip_forward` e as regras de NAT/forward da sub-rede. Desligue apenas se um script externo já cuidar disso.
+- **WAN Interface** — uplink usado no NAT. Vazio detecta pela rota IPv4 padrão, o que é correto numa VPS com um único uplink.
+- **Handshake Timeout** / **Idle Timeout** — limite do handshake+autenticação e tempo sem tráfego antes de reciclar a sessão.
+- **Max Packet Size** / **Max Cover Bytes** — tamanho máximo do payload de um frame (`0` usa 64 KiB) e quanto lixo um cliente TCP pode enviar antes do `CLIENT_HELLO`, que é o que permite ao BTUN se esconder atrás de um preâmbulo parecido com HTTP.
+- **Max Sessions** — teto global de sessões. `0` usa o padrão (10000) e `-1` remove o limite.
+- **Auto Restart Interval** / **Restart Grace Delay** — restart forte que recria apenas os listeners e o dispositivo TUN do BTUN.
+
+O BTUN precisa de `/dev/net/tun` e de privilégio para criar a interface e alterar as regras de NAT. O serviço `sshpanel` já roda como root, então em uma VPS comum funciona direto; em containers sem `/dev/net/tun` o card **Status BTUN** mostra o erro de inicialização. Libere as portas escolhidas no firewall:
+
+```bash
+sudo ufw allow 8880/tcp
+sudo ufw allow 7300/tcp
+sudo ufw allow 7300/udp
+```
+
+Ambos os serviços vêm **desativados** por padrão, então uma atualização não abre portas novas sozinha. Ative na aba de configurações; a mudança é aplicada ao vivo, sem reiniciar o painel.
+
+### Compilar e testar em Linux com Docker
+
+O painel é um serviço Linux, mas costuma ser desenvolvido em Windows ou macOS, onde três coisas não podem ser verificadas: o código com build tag de Linux (o dispositivo TUN do BTUN), o detector de corrida (precisa de cgo) e qualquer caminho que use `/dev/net/tun`. A imagem `Dockerfile.build` cobre os três.
+
+```bash
+docker build -f Dockerfile.build -t dragoncore-build .
+
+# build + vet + testes
+docker run --rm -v "$PWD:/src" -v dragoncore-cache:/cache dragoncore-build
+
+# detector de corrida
+docker run --rm -v "$PWD:/src" -v dragoncore-cache:/cache dragoncore-build race
+
+# binários de release em dist/ (amd64 e arm64)
+docker run --rm -v "$PWD:/src" -v dragoncore-cache:/cache dragoncore-build dist
+```
+
+Os testes do TUN do BTUN — criar a interface e instalar/remover as regras de NAT — precisam de privilégios que o container não tem por padrão:
+
+```bash
+docker run --rm --cap-add NET_ADMIN --device /dev/net/tun   -v "$PWD:/src" -v dragoncore-cache:/cache dragoncore-build tun
+```
+
+Sem esses privilégios eles são pulados, e o resto da suíte roda normalmente. O volume `dragoncore-cache` guarda os caches de módulos e de build entre execuções.
 
 ### Comandos úteis
 
@@ -716,6 +814,9 @@ Admin token
 2222    Internal raw SSH on 127.0.0.1 (not public)
 53/udp  Public DNS for DNSTT, redirected to 5300/udp
 5300/udp Internal DNSTT listener
+8880    BHTTP (BHP1/BHP2) — disabled by default; can share 80/8080/443
+7300    BTUN TCP — disabled by default; can share 80/8080/443
+7300/udp BTUN UDP — disabled by default
 9090    Web panel + public /check API
 10086   Xray VLESS
 10087   Xray VMess
@@ -841,6 +942,101 @@ Example `config.json`:
   }
 }
 ```
+
+### BHTTP (BHP1 / BHP2)
+
+BHTTP is the obfuscated TCP transport used by the DTunnel-family clients. The client opens a plain TCP socket, optionally sends an HTTP request as cover, then speaks the BHTTP framing (29-byte header) with the *probe*, *upload*, *download*, *batch* and *ACK* modes. BHP2 adds persistent lanes with `resume` and cumulative upload ACKs.
+
+Every BHTTP session is handed to the panel's **own built-in SSH server**, exactly the way DNSTT does it. Nothing connects to the system `sshd`, PAM or `/etc/shadow`: the panel's accounts, expiry, TOTP, `max_connections`, bandwidth limits and data quotas all apply with no extra setup.
+
+#### Sharing ports 80, 8080 and 443
+
+BHTTP can serve **on the ports the panel already uses**, with no dedicated port and without disturbing anything else. This works because the three protocols open in incompatible ways: a BHTTP frame starts with its mode number (`0`–`5`), SSH starts with `S` (`0x53`), and an HTTP request or status line starts with a method or version letter. The first byte alone separates all three.
+
+Because an HTTP-injection client may send junk before its payload, a low first byte is not proof on its own. So the 29-byte frame header is range-checked too, and for the two modes that carry a signature — the *probe* that opens every session and the v2 *lane hello* — the signature (`BHP1`/`BHP2`, `BLN2`) is decrypted and verified. That check is keyed by the session ID in the same header, so junk cannot pass it by chance. Nothing is consumed on a negative verdict: the connection continues to the normal HTTP/SSH path with its bytes intact.
+
+Turn it on under **Settings → BHTTP → Share the panel's ports**. It covers `listen`, `extra_listen` and every TLS forwarder. With it on, the **Listen** field may be left empty and BHTTP exists only on the shared ports.
+
+Exactly one thing changes for other clients: today the proxy port answers `HTTP/1.1 101` the moment a socket opens, before reading anything; with sharing on it waits for the client's first bytes (at most 3s) before deciding. That is required because a BHTTP client cannot receive that unsolicited 101. Every known client — HTTP-injection or BHTTP — sends immediately on connect, and a client that sends nothing within 3s falls through to the old path. If a client of yours waits for the 101 before speaking, leave the option off.
+
+Configure it under **Settings → BHTTP**:
+
+- **Share the panel's ports** — accepts BHTTP on 80/8080 and 443 alongside SSH and HTTP injection, as described above.
+- **Listen** — a dedicated port, one address per line, optional when sharing is on. Ports 80 and 8080 belong to the HTTP+SSH proxy: to use them, turn sharing on rather than listing them here. Without sharing, the default is `0.0.0.0:8880`.
+- **Session Timeout** — how long a session may sit with no traffic before it is dropped and its SSH connection closed. It also bounds how long a BHP2 `resume` stays possible.
+- **Max v2 Lanes Per Session** — ceiling on concurrent lanes per session (`0` uses 128).
+- **Max Sessions** / **Max Client Sockets** — global ceilings. `0` uses the default (10000) and `-1` disables the cap. Sockets past the cap are closed before any protocol work.
+- **Auto Restart Interval** / **Restart Grace Delay** — hard restart that closes only the BHTTP listeners and their sessions. It does not restart the panel or the VPS. Minimum interval is 1m.
+- **Disable Console Log** / **Verbose Connection Logs** — logs remain available at `/api/bhttp/logs` even with the console output turned off.
+
+The **Status BHTTP** card in the same tab shows active sessions and sockets, bytes moved, BHP1/BHP2 probes, lanes attached and rejected, SSH target failures and protocol errors.
+
+### BTUN (DTUNNEL/1.1)
+
+BTUN is the native IP-packet VPN: the client performs the `DTUNNEL/1.1 CLIENT_HELLO` handshake over TCP or UDP, authenticates, receives an IPv4 address from a private subnet, and then exchanges IP packets with a TUN interface this process creates.
+
+Unlike BHTTP and DNSTT, BTUN does **not** carry an SSH stream — it carries IP packets. Authentication therefore does not go through `handleConn`; it goes straight to the panel's account database: the same username and password (or TOTP), the same expiry, the same reseller owner, the same data quota and the same `max_connections`. **There is no PAM or `/etc/shadow` path in BTUN at all**, and `pam_auth_enabled` (an SSH setting) does not apply to it.
+
+Each BTUN session counts against the account's `max_connections` together with its SSH connections, honours `limit_mbps_up`/`limit_mbps_down`, and draws on the same data quota. Deleting, editing or expiring a user drops its BTUN sessions the same way it drops SSH connections.
+
+#### Sharing ports 80, 8080 and 443
+
+BTUN can serve on the panel's existing ports too. The detection here is even more direct than BHTTP's: a BTUN session opens with the fixed marker `DTUNNEL/1.1 CLIENT_HELLO`, which no SSH banner and no HTTP line can match. A connection is routed to BTUN only when those 25 bytes match at the very start; anything else continues untouched to the normal path.
+
+Two limits, both inherent to sharing:
+
+- **TCP only.** The panel owns no shared UDP port, so UDP clients still need **UDP Listen**.
+- **Cover bytes.** On a dedicated port BTUN tolerates arbitrary junk before the hello. On a shared port the marker has to be at the start, because an unbounded prefix cannot be buffered while SSH waits behind it. Cover shaped as an HTTP request does work — the panel's injection cleanup consumes the request and the marker reappears at the start — but the client then receives the panel's `101`/`200` reply first and has to skip it. For any other cover shape, use the dedicated port.
+
+Turn it on under **Settings → BTUN → Share the panel's ports**. With it on, **TCP Listen** may be left empty.
+
+Configure it under **Settings → BTUN**:
+
+- **Share the panel's ports** — accepts BTUN on 80/8080 and 443 alongside SSH, HTTP injection and BHTTP, as described above. TCP only.
+- **TCP Listen** / **UDP Listen** — leave one empty to disable that transport. Without sharing at least one is required; both default to `0.0.0.0:7300`.
+- **TUN Interface** — the interface this process creates and owns (default `btun0`). It must not collide with an interface another service owns.
+- **Client Subnet** / **Gateway** / **MTU** — the IPv4 range handed to clients (default `10.77.0.0/16`), the address on the interface itself (derived from the subnet when empty) and the MTU (default 1400).
+- **Manage Routing** — when on, the panel configures the interface address, `net.ipv4.ip_forward` and the subnet's NAT/forward rules itself. Turn it off only when an external script already owns those rules.
+- **WAN Interface** — the uplink used for NAT. Empty auto-detects it from the default IPv4 route, which is correct on a single-uplink VPS.
+- **Handshake Timeout** / **Idle Timeout** — bound the hello+authentication exchange, and how long a session may sit with no traffic before it is reaped.
+- **Max Packet Size** / **Max Cover Bytes** — the largest frame payload (`0` uses 64 KiB) and how much junk a TCP client may send before its `CLIENT_HELLO`, which is what lets BTUN hide behind an HTTP-looking preamble.
+- **Max Sessions** — global session ceiling. `0` uses the default (10000) and `-1` disables the cap.
+- **Auto Restart Interval** / **Restart Grace Delay** — hard restart that recreates only the BTUN listeners and TUN device.
+
+BTUN needs `/dev/net/tun` and the privilege to create the interface and change NAT rules. The `sshpanel` service already runs as root, so a normal VPS works out of the box; in a container without `/dev/net/tun` the **Status BTUN** card shows the startup error. Open the chosen ports in the firewall:
+
+```bash
+sudo ufw allow 8880/tcp
+sudo ufw allow 7300/tcp
+sudo ufw allow 7300/udp
+```
+
+Both services are **disabled** by default, so an update never opens new ports on its own. Enable them in the settings tab; the change is applied live, with no panel restart.
+
+### Building and testing on Linux with Docker
+
+The panel is a Linux service but is often developed on Windows or macOS, where three things cannot be checked: the Linux-tagged code (BTUN's TUN device), the race detector (which needs cgo), and anything touching `/dev/net/tun`. The `Dockerfile.build` image covers all three.
+
+```bash
+docker build -f Dockerfile.build -t dragoncore-build .
+
+# build + vet + tests
+docker run --rm -v "$PWD:/src" -v dragoncore-cache:/cache dragoncore-build
+
+# race detector
+docker run --rm -v "$PWD:/src" -v dragoncore-cache:/cache dragoncore-build race
+
+# release binaries in dist/ (amd64 and arm64)
+docker run --rm -v "$PWD:/src" -v dragoncore-cache:/cache dragoncore-build dist
+```
+
+The BTUN TUN tests — creating the interface and installing/removing the NAT rules — need privileges the container does not have by default:
+
+```bash
+docker run --rm --cap-add NET_ADMIN --device /dev/net/tun   -v "$PWD:/src" -v dragoncore-cache:/cache dragoncore-build tun
+```
+
+Without those privileges they skip and the rest of the suite runs normally. The `dragoncore-cache` volume keeps the module and build caches between runs.
 
 ### Useful commands
 
@@ -1255,6 +1451,24 @@ Creates or updates (upsert) an SSH user.
 
 #### `GET /api/dnstt/pubkey` — superadmin
 - No body. Returns the public key derived from the configured private key. `200`: `{ "pubkey": string }`. Error: `500`. Supports `server_id` proxying.
+
+---
+
+### BHTTP and BTUN
+
+#### `GET /api/bhttp` — superadmin
+- Optional query: `server_id`.
+- `200`: BHTTP snapshot: `enabled` (bool), `running` (bool), `listen` (string, omitempty — the dedicated addresses, plus `shared proxy/TLS ports` when port sharing is on), `startedAt` (string); `activeConnections` and `activeSessions` (int64); uint counters `accepted`, `connectionsRejected`, `sessionsRejected`, `sessionsExpired`, `probes`, `probesV2`, `httpUpgrades`, `lanesAttached`, `lanesRejected`, `uploadBytes`, `downloadBytes`, `targetFailures`, `protocolErrors`.
+
+#### `GET /api/bhttp/logs` — superadmin
+- `200`: array of log line strings (empty array if uninitialized). Does not proxy to managed servers.
+
+#### `GET /api/btun` — superadmin
+- Optional query: `server_id`.
+- `200`: BTUN snapshot: `enabled` (bool), `running` (bool), `listen` (string, omitempty — the dedicated listeners, plus `shared proxy/TLS ports` when port sharing is on), `tunName` (string, omitempty), `subnet` (string, omitempty), `startedAt` (string); uint counters `activeSessions`, `accepted`, `authSucceeded`, `authRejected`, `clientPackets`, `internetPackets`, `clientBytes`, `internetBytes`, `droppedPackets`, `sessionsRejected`.
+
+#### `GET /api/btun/logs` — superadmin
+- `200`: array of log line strings (empty array if uninitialized). Does not proxy to managed servers.
 
 ---
 

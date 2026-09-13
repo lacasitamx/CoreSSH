@@ -156,6 +156,12 @@ async function loadServerConfig() {
     document.getElementById("cfgUdpgwRestartGrace").value = u.auto_restart_grace || "";
     document.getElementById("cfgUdpgwDebug").checked   = !!u.debug;
 
+    // BHTTP + BTUN
+    writeBhttpConfig(c);
+    writeBtunConfig(c);
+    loadBhttpHealth();
+    loadBtunHealth();
+
     // TLS forwarders
     tlsForwardersState = c.tls_forwarders || [];
     renderTLSForwarders();
@@ -233,6 +239,8 @@ async function saveServerConfig() {
       auto_restart_grace:    document.getElementById("cfgUdpgwRestartGrace").value.trim(),
       debug:           document.getElementById("cfgUdpgwDebug").checked,
     } : null,
+    bhttp: readBhttpConfig(),
+    btun: readBtunConfig(),
     tls_forwarders: tlsArr,
     xray: {
       enabled:     document.getElementById("cfgXrayEnabled").checked,
@@ -260,6 +268,8 @@ async function saveServerConfig() {
     } else {
       st.textContent = "Saved and applied live.";
     }
+    loadBhttpHealth();
+    loadBtunHealth();
   } catch (e) {
     if (e.message === "auth") doAuthError();
     else st.textContent = "Error: " + e.message;
@@ -692,3 +702,312 @@ async function loadDnsttPubkey() {
     else st.textContent = "Error: " + e.message;
   }
 }
+
+// ─── BHTTP / BTUN ─────────────────────────────────────────────────────────────
+// Both transports terminate inside this process: BHTTP hands each session to
+// the built-in SSH server, and BTUN authenticates against the panel accounts.
+// Neither uses the system sshd or PAM, so there is nothing host-side to set up
+// here beyond the listeners and (for BTUN) the TUN/NAT settings.
+
+function toggleBhttpFields(on) {
+  const el = document.getElementById("bhttpFields");
+  if (!el) return;
+  el.style.opacity = on ? "1" : ".4";
+  el.style.pointerEvents = on ? "" : "none";
+}
+function toggleBtunFields(on) {
+  const el = document.getElementById("btunFields");
+  if (!el) return;
+  el.style.opacity = on ? "1" : ".4";
+  el.style.pointerEvents = on ? "" : "none";
+}
+
+function readListenLines(id) {
+  const el = document.getElementById(id);
+  if (!el) return [];
+  const seen = new Set();
+  return el.value.split(/\r?\n|,/).map(s => s.trim()).filter(Boolean).filter(s => {
+    if (seen.has(s)) return false;
+    seen.add(s);
+    return true;
+  });
+}
+
+
+// ─── Null-safe field access ───────────────────────────────────────────────────
+// A browser can hold a cached index.html while loading newer JS. Reading a
+// field that does not exist there must not throw, because an exception here
+// aborts loadServerConfig() and blanks the entire settings tab. Missing fields
+// are simply skipped, so an older panel keeps working against a newer build.
+function fieldSet(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.value = value;
+}
+function fieldCheck(id, checked) {
+  const el = document.getElementById(id);
+  if (el) el.checked = !!checked;
+}
+function fieldText(id, fallback = "") {
+  const el = document.getElementById(id);
+  return el ? el.value.trim() : fallback;
+}
+function fieldRaw(id, fallback = "") {
+  const el = document.getElementById(id);
+  return el ? el.value : fallback;
+}
+function fieldInt(id, fallback = 0) {
+  const el = document.getElementById(id);
+  if (!el) return fallback;
+  const n = parseInt(el.value || "0", 10);
+  return Number.isNaN(n) ? fallback : n;
+}
+function fieldBool(id, fallback = false) {
+  const el = document.getElementById(id);
+  return el ? !!el.checked : fallback;
+}
+
+function writeBhttpConfig(c) {
+  const hasBhttp = !!c.bhttp;
+  fieldCheck("cfgBhttpEnabled", hasBhttp);
+  toggleBhttpFields(hasBhttp);
+  const b = c.bhttp || {};
+  // Sharing the panel's own ports is the point of enabling BHTTP for most
+  // setups, so a config that has never had a bhttp block starts with it on.
+  fieldCheck("cfgBhttpSharedPorts", hasBhttp ? !!b.shared_ports : true);
+  fieldSet("cfgBhttpListen", (b.listen || []).join("\n"));
+  fieldSet("cfgBhttpSessionTimeout", b.session_timeout || "");
+  fieldSet("cfgBhttpMaxLanes", b.max_v2_lanes || 0);
+  fieldSet("cfgBhttpMaxSessions", b.max_sessions || 0);
+  fieldSet("cfgBhttpMaxConnections", b.max_connections || 0);
+  fieldSet("cfgBhttpAutoRestart", b.auto_restart_interval || "");
+  fieldSet("cfgBhttpRestartGrace", b.auto_restart_grace || "");
+  fieldCheck("cfgBhttpNoConsole", !!b.disable_console_log);
+  fieldCheck("cfgBhttpLogConnections", !!b.log_connections);
+}
+
+function readBhttpConfig() {
+  if (!fieldBool("cfgBhttpEnabled")) return null;
+  const listen = readListenLines("cfgBhttpListen");
+  const shared = fieldBool("cfgBhttpSharedPorts");
+  return {
+    // With shared ports on, a dedicated listener is optional; without it there
+    // has to be one or nothing would serve BHTTP at all.
+    listen: listen.length ? listen : (shared ? [] : ["0.0.0.0:8880"]),
+    shared_ports: shared,
+    session_timeout: fieldText("cfgBhttpSessionTimeout"),
+    max_v2_lanes: fieldInt("cfgBhttpMaxLanes"),
+    max_sessions: fieldInt("cfgBhttpMaxSessions"),
+    max_connections: fieldInt("cfgBhttpMaxConnections"),
+    auto_restart_interval: fieldText("cfgBhttpAutoRestart"),
+    auto_restart_grace: fieldText("cfgBhttpRestartGrace"),
+    disable_console_log: fieldBool("cfgBhttpNoConsole"),
+    log_connections: fieldBool("cfgBhttpLogConnections"),
+  };
+}
+
+function writeBtunConfig(c) {
+  const hasBtun = !!c.btun;
+  fieldCheck("cfgBtunEnabled", hasBtun);
+  toggleBtunFields(hasBtun);
+  const b = c.btun || {};
+  // Sharing the panel's ports is the least-friction way to reach BTUN, so a
+  // config that has never had a btun block starts with it on.
+  fieldCheck("cfgBtunSharedPorts", hasBtun ? !!b.shared_ports : true);
+  fieldSet("cfgBtunTCPListen", b.tcp_listen || "");
+  fieldSet("cfgBtunUDPListen", b.udp_listen || "");
+  fieldSet("cfgBtunTUNName", b.tun_name || "");
+  fieldSet("cfgBtunSubnet", b.subnet || "");
+  fieldSet("cfgBtunGateway", b.gateway || "");
+  fieldSet("cfgBtunMTU", b.mtu || 0);
+  fieldCheck("cfgBtunManageRouting", !!b.manage_routing);
+  fieldSet("cfgBtunWAN", b.wan_interface || "");
+  fieldSet("cfgBtunHandshakeTimeout", b.handshake_timeout || "");
+  fieldSet("cfgBtunIdleTimeout", b.idle_timeout || "");
+  fieldSet("cfgBtunMaxPacketSize", b.max_packet_size || 0);
+  fieldSet("cfgBtunMaxCoverBytes", b.max_cover_bytes || 0);
+  fieldSet("cfgBtunMaxSessions", b.max_sessions || 0);
+  fieldSet("cfgBtunAutoRestart", b.auto_restart_interval || "");
+  fieldSet("cfgBtunRestartGrace", b.auto_restart_grace || "");
+  fieldCheck("cfgBtunNoConsole", !!b.disable_console_log);
+  fieldCheck("cfgBtunLogConnections", !!b.log_connections);
+}
+
+function readBtunConfig() {
+  if (!fieldBool("cfgBtunEnabled")) return null;
+  const tcp = fieldText("cfgBtunTCPListen");
+  const udp = fieldText("cfgBtunUDPListen");
+  const shared = fieldBool("cfgBtunSharedPorts");
+  return {
+    // The server refuses to start with nothing to serve on, so default both
+    // listeners rather than saving a config that cannot come up. With shared
+    // ports on, having neither is a valid TCP-only deployment.
+    tcp_listen: tcp || (udp || shared ? "" : "0.0.0.0:7300"),
+    udp_listen: udp || (tcp || shared ? "" : "0.0.0.0:7300"),
+    shared_ports: shared,
+    tun_name: fieldText("cfgBtunTUNName"),
+    subnet: fieldText("cfgBtunSubnet"),
+    gateway: fieldText("cfgBtunGateway"),
+    mtu: fieldInt("cfgBtunMTU"),
+    manage_routing: fieldBool("cfgBtunManageRouting"),
+    wan_interface: fieldText("cfgBtunWAN"),
+    handshake_timeout: fieldText("cfgBtunHandshakeTimeout"),
+    idle_timeout: fieldText("cfgBtunIdleTimeout"),
+    max_packet_size: fieldInt("cfgBtunMaxPacketSize"),
+    max_cover_bytes: fieldInt("cfgBtunMaxCoverBytes"),
+    max_sessions: fieldInt("cfgBtunMaxSessions"),
+    auto_restart_interval: fieldText("cfgBtunAutoRestart"),
+    auto_restart_grace: fieldText("cfgBtunRestartGrace"),
+    disable_console_log: fieldBool("cfgBtunNoConsole"),
+    log_connections: fieldBool("cfgBtunLogConnections"),
+  };
+}
+
+// renderCounterRows fills a two-column counter table, matching the DNSTT health
+// card so all transports read the same way.
+function renderCounterRows(bodyId, rows) {
+  const body = document.getElementById(bodyId);
+  if (!body) return;
+  body.innerHTML = "";
+  for (let i = 0; i < rows.length; i += 2) {
+    const a = rows[i];
+    const b = rows[i + 1] || ["", ""];
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${escapeHTML(a[0])}</td><td>${escapeHTML(fmtInt(a[1]))}</td>` +
+      `<td>${escapeHTML(b[0])}</td><td>${b[0] ? escapeHTML(fmtInt(b[1])) : ""}</td>`;
+    body.appendChild(tr);
+  }
+}
+
+function setServiceChip(chipId, data) {
+  const chip = document.getElementById(chipId);
+  if (!chip) return;
+  if (!data || data.enabled === false) {
+    chip.textContent = "disabled";
+    chip.className = "chip";
+    return;
+  }
+  chip.textContent = data.running ? "running" : "stopped";
+  chip.className = data.running ? "chip green" : "chip red";
+}
+
+async function loadBhttpHealth() {
+  const summary = document.getElementById("bhttpStatusSummary");
+  if (!summary) return;
+  try {
+    const res = await api("/api/bhttp");
+    if (!res.ok) throw new Error(await res.text());
+    const d = await res.json();
+    setServiceChip("bhttpStatusChip", d);
+
+    document.getElementById("bhttpActiveSessions").textContent = fmtInt(d.activeSessions);
+    document.getElementById("bhttpActiveConns").textContent = fmtInt(d.activeConnections);
+    document.getElementById("bhttpUploadBytes").textContent = fmtBytes(d.uploadBytes || 0);
+    document.getElementById("bhttpDownloadBytes").textContent = fmtBytes(d.downloadBytes || 0);
+
+    renderCounterRows("bhttpHealthBody", [
+      ["Sockets accepted", d.accepted],
+      ["Sockets rejected", d.connectionsRejected],
+      ["Sessions rejected", d.sessionsRejected],
+      ["Sessions expired", d.sessionsExpired],
+      ["Probes (BHP1)", (d.probes || 0) - (d.probesV2 || 0)],
+      ["Probes (BHP2)", d.probesV2],
+      ["HTTP cover upgrades", d.httpUpgrades],
+      ["v2 lanes attached", d.lanesAttached],
+      ["v2 lanes rejected", d.lanesRejected],
+      ["SSH target failures", d.targetFailures],
+      ["Protocol errors", d.protocolErrors],
+    ]);
+
+    if (d.enabled === false) {
+      summary.textContent = "BHTTP está desativado na configuração.";
+    } else if (!d.running) {
+      summary.textContent = "BHTTP está ativado mas não está rodando. Verifique se a porta está livre nos logs abaixo.";
+    } else {
+      const bad = Number(d.connectionsRejected || 0) + Number(d.sessionsRejected || 0) +
+        Number(d.targetFailures || 0);
+      summary.textContent = bad > 0
+        ? `Rodando em ${d.listen || "?"} — atenção: ${fmtInt(bad)} rejeições/falhas acumuladas.`
+        : `Rodando em ${d.listen || "?"} — sem rejeições nem falhas de alvo.`;
+    }
+  } catch (e) {
+    if (e.message === "auth") doAuthError();
+    else summary.textContent = "Erro ao carregar status: " + e.message;
+  }
+}
+
+async function loadBhttpLogs() {
+  const box = document.getElementById("bhttpLogs");
+  if (!box) return;
+  box.textContent = "Carregando…";
+  try {
+    const res = await api("/api/bhttp/logs");
+    if (!res.ok) throw new Error(await res.text());
+    const lines = await res.json();
+    box.textContent = lines && lines.length ? lines.join("\n") : "Sem logs.";
+  } catch (e) {
+    if (e.message === "auth") doAuthError();
+    else box.textContent = "Erro: " + e.message;
+  }
+}
+
+async function loadBtunHealth() {
+  const summary = document.getElementById("btunStatusSummary");
+  if (!summary) return;
+  try {
+    const res = await api("/api/btun");
+    if (!res.ok) throw new Error(await res.text());
+    const d = await res.json();
+    setServiceChip("btunStatusChip", d);
+
+    document.getElementById("btunActiveSessions").textContent = fmtInt(d.activeSessions);
+    document.getElementById("btunAuthSucceeded").textContent = fmtInt(d.authSucceeded);
+    document.getElementById("btunClientBytes").textContent = fmtBytes(d.clientBytes || 0);
+    document.getElementById("btunInternetBytes").textContent = fmtBytes(d.internetBytes || 0);
+
+    renderCounterRows("btunHealthBody", [
+      ["Handshakes accepted", d.accepted],
+      ["Auth rejected", d.authRejected],
+      ["Sessions rejected", d.sessionsRejected],
+      ["Dropped packets", d.droppedPackets],
+      ["Client → net packets", d.clientPackets],
+      ["Net → client packets", d.internetPackets],
+    ]);
+
+    if (d.enabled === false) {
+      summary.textContent = "BTUN está desativado na configuração.";
+    } else if (!d.running) {
+      summary.textContent = "BTUN está ativado mas não está rodando. Normalmente falta /dev/net/tun, ou a interface/porta já está em uso — veja os logs.";
+    } else {
+      const where = [d.listen, d.tunName, d.subnet].filter(Boolean).join(" · ");
+      summary.textContent = Number(d.droppedPackets || 0) > 0
+        ? `Rodando em ${where} — ${fmtInt(d.droppedPackets)} pacotes descartados (confira MTU e rota).`
+        : `Rodando em ${where} — sem pacotes descartados.`;
+    }
+  } catch (e) {
+    if (e.message === "auth") doAuthError();
+    else summary.textContent = "Erro ao carregar status: " + e.message;
+  }
+}
+
+async function loadBtunLogs() {
+  const box = document.getElementById("btunLogs");
+  if (!box) return;
+  box.textContent = "Carregando…";
+  try {
+    const res = await api("/api/btun/logs");
+    if (!res.ok) throw new Error(await res.text());
+    const lines = await res.json();
+    box.textContent = lines && lines.length ? lines.join("\n") : "Sem logs.";
+  } catch (e) {
+    if (e.message === "auth") doAuthError();
+    else box.textContent = "Erro: " + e.message;
+  }
+}
+
+// Inline onchange/onclick handlers in index.html need these on window.
+window.toggleBhttpFields = toggleBhttpFields;
+window.toggleBtunFields = toggleBtunFields;
+window.loadBhttpHealth = loadBhttpHealth;
+window.loadBhttpLogs = loadBhttpLogs;
+window.loadBtunHealth = loadBtunHealth;
+window.loadBtunLogs = loadBtunLogs;

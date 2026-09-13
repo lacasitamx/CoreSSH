@@ -450,6 +450,33 @@ func applyFullConfigReload(newCfg *Config) ConfigReloadReport {
 		report.Services["udpgw"] = ServiceReloadStatus{Enabled: false, Running: false}
 	}
 
+	// BHTTP — stop current instance (no-op if not running) then start new one.
+	stopBHTTP()
+	if newCfg.BHTTP != nil {
+		if err := startBHTTP(newCfg.BHTTP); err != nil {
+			report.warnf("BHTTP failed to start: %v", err)
+			report.Services["bhttp"] = ServiceReloadStatus{Enabled: true, Running: false, Listen: joinAddrs(newCfg.BHTTP.Listen), Error: err.Error()}
+		} else {
+			report.Services["bhttp"] = ServiceReloadStatus{Enabled: true, Running: bhttpRunning(), Listen: bhttpListenList()}
+		}
+	} else {
+		report.Services["bhttp"] = ServiceReloadStatus{Enabled: false, Running: false}
+	}
+
+	// BTUN — same pattern. A failure here is usually a missing /dev/net/tun or
+	// an interface name already taken, both of which the panel surfaces.
+	stopBTUN()
+	if newCfg.BTUN != nil {
+		if err := startBTUN(newCfg.BTUN); err != nil {
+			report.warnf("BTUN failed to start: %v", err)
+			report.Services["btun"] = ServiceReloadStatus{Enabled: true, Running: false, Listen: btunConfiguredListen(newCfg.BTUN), Error: err.Error()}
+		} else {
+			report.Services["btun"] = ServiceReloadStatus{Enabled: true, Running: btunRunning(), Listen: btunListenList()}
+		}
+	} else {
+		report.Services["btun"] = ServiceReloadStatus{Enabled: false, Running: false}
+	}
+
 	// Xray — update stored config then restart/stop as needed.
 	if newCfg.Xray != nil {
 		newCfg.Xray.NormalizeDefaults()
