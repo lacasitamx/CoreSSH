@@ -1231,17 +1231,18 @@
     <section class="page-hero" data-tone="blue"><div class="page-hero-copy"><span class="page-kicker">System studio</span><h2>Configurações</h2><p>Rede, SSH, túneis e TLS organizados em blocos visuais e aplicados ao vivo.</p></div></section>
 
     <div class="workspace-nav-shell" data-tone="blue">
-      <nav class="workspace-section-nav" id="configSectionNav" aria-label="Áreas de configuração" style="--workspace-nav-columns:7">
+      <nav class="workspace-section-nav" id="configSectionNav" aria-label="Áreas de configuração" style="--workspace-nav-columns:8">
         <button class="active" type="button" data-workspace="config" data-workspace-section="general"><span>⌁</span> Rede e SSH</button>
         <button type="button" data-workspace="config" data-workspace-section="slowdns"><span>DNS</span> SlowDNS</button>
         <button type="button" data-workspace="config" data-workspace-section="udp"><span>⇅</span> UDP Gateway</button>
         <button type="button" data-workspace="config" data-workspace-section="bhttp"><span>BH</span> BHTTP</button>
         <button type="button" data-workspace="config" data-workspace-section="btun"><span>BT</span> BTUN</button>
+        <button type="button" data-workspace="config" data-workspace-section="hcr"><span>HC</span> HCR</button>
         <button type="button" data-workspace="config" data-workspace-section="tls"><span>◇</span> TLS</button>
         <button type="button" data-workspace="config" data-workspace-section="xray"><span>◆</span> Xray</button>
       </nav>
       <select id="configSection" class="workspace-section-select" data-workspace-select="config" aria-label="Área de configuração">
-        <option value="general">Rede e SSH</option><option value="slowdns">SlowDNS</option><option value="udp">UDP Gateway</option><option value="bhttp">BHTTP</option><option value="btun">BTUN</option><option value="tls">TLS</option><option value="xray">Xray</option>
+        <option value="general">Rede e SSH</option><option value="slowdns">SlowDNS</option><option value="udp">UDP Gateway</option><option value="bhttp">BHTTP</option><option value="btun">BTUN</option><option value="hcr">HCR</option><option value="tls">TLS</option><option value="xray">Xray</option>
       </select>
     </div>
 
@@ -1667,8 +1668,98 @@
         </div>
       </section>
 
+      <section class="workspace-section" data-workspace-panel="config" data-workspace-section-panel="hcr">
+        <div class="workspace-section-heading"><div><span>06 · HCR</span><h3>HCR (HTTP/Custom Relay)</h3><p>Túnel de requisição/resposta do UDP-Custom. Cada sessão vai ao servidor SSH interno do painel e pode dividir as mesmas portas do BHTTP.</p></div></div>
+        <div class="card" style="margin-top:12px">
+          <div class="card-hdr">
+            <div class="card-title">HCR Transport</div>
+            <span class="chip green">live</span>
+            <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;margin-left:auto;">
+              <input type="checkbox" id="cfgHcrEnabled" onchange="toggleHcrFields(this.checked)"/> Enabled
+            </label>
+          </div>
+          <div id="hcrFields" class="form-grid" style="opacity:.4;pointer-events:none;">
+            <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;grid-column:1/-1">
+              <input type="checkbox" id="cfgHcrSharedPorts"/> Compartilhar as portas do painel <span class="hint">80/8080 (proxy) e 443 (TLS), junto com BHTTP</span>
+            </label>
+            <div class="hint" style="grid-column:1/-1;margin-top:-4px;">
+              Os listeners existentes distinguem HCR de BHTTP pelo cabeçalho de 62 bytes e pelo byte de versão <code>0x01</code>, então SSH, injeção HTTP e BHTTP na mesma porta continuam funcionando. Com o compartilhamento ligado o campo Listen pode ficar vazio.
+            </div>
+            <div class="field" style="grid-column:1/-1">
+              <label>Listen <span class="hint">um endereço por linha; opcional com portas compartilhadas</span></label>
+              <textarea id="cfgHcrListen" rows="2" placeholder="0.0.0.0:8181"></textarea>
+            </div>
+            <div class="field">
+              <label>Max Sessions <span class="hint">0 = padrão (10000), -1 = ilimitado</span></label>
+              <input type="number" id="cfgHcrMaxSessions" placeholder="10000"/>
+            </div>
+            <div class="field">
+              <label>Max Connections <span class="hint">0 = padrão (10000), -1 = ilimitado</span></label>
+              <input type="number" id="cfgHcrMaxConnections" placeholder="10000"/>
+            </div>
+            <div class="field">
+              <label>Max Sessions Per IP <span class="hint">0 = ilimitado</span></label>
+              <input type="number" id="cfgHcrMaxSource" min="0" placeholder="0"/>
+            </div>
+            <div class="field">
+              <label>Max Download Frame <span class="hint">bytes; 0 = 16384</span></label>
+              <input type="number" id="cfgHcrMaxFrame" min="0" placeholder="16384"/>
+            </div>
+            <div class="field">
+              <label>Download Poll Timeout <span class="hint">1s..1m</span></label>
+              <input type="text" id="cfgHcrPollTimeout" placeholder="10s"/>
+            </div>
+            <div class="field">
+              <label>Idle Session Timeout <span class="hint">10s..1h</span></label>
+              <input type="text" id="cfgHcrIdleTimeout" placeholder="5m"/>
+            </div>
+            <div class="field">
+              <label>Auto Restart Interval <span class="hint">0s/off desativa</span></label>
+              <input type="text" id="cfgHcrAutoRestart" placeholder="24h"/>
+            </div>
+            <div class="field">
+              <label>Restart Grace Delay</label>
+              <input type="text" id="cfgHcrRestartGrace" placeholder="2s"/>
+            </div>
+            <div class="hint" style="grid-column:1/-1;margin-top:-4px;">Cada sessão HCR conta como uma conexão SSH da conta: valem o limite de conexões, a banda e a cota de dados do usuário.</div>
+            <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;grid-column:1/-1">
+              <input type="checkbox" id="cfgHcrNoConsole"/> Disable Console Log
+            </label>
+            <label style="font-size:.73rem;display:flex;align-items:center;gap:5px;cursor:pointer;grid-column:1/-1">
+              <input type="checkbox" id="cfgHcrLogConnections"/> Verbose Connection Logs
+            </label>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:12px">
+          <div class="card-hdr">
+            <div class="card-title">Status HCR</div>
+            <span class="chip" id="hcrStatusChip">—</span>
+            <button class="btn btn-ghost btn-sm" type="button" onclick="loadHcrHealth()">Atualizar</button>
+          </div>
+          <div class="metrics">
+            <div class="metric"><div class="m-label">Active Sessions</div><div class="m-val" id="hcrActiveSessions">--</div></div>
+            <div class="metric"><div class="m-label">Active Sockets</div><div class="m-val" id="hcrActiveConns">--</div></div>
+            <div class="metric"><div class="m-label">Upload</div><div class="m-val" id="hcrUploadBytes">--</div></div>
+            <div class="metric"><div class="m-label">Download</div><div class="m-val" id="hcrDownloadBytes">--</div></div>
+          </div>
+          <div class="tbl-wrap" style="margin-top:10px;">
+            <table>
+              <thead><tr><th>Counter</th><th>Value</th><th>Counter</th><th>Value</th></tr></thead>
+              <tbody id="hcrHealthBody"></tbody>
+            </table>
+          </div>
+          <div class="statusbar"><span id="hcrStatusSummary">Salve a configuração para iniciar o transporte.</span><span class="hint">Rejeições e erros de protocolo devem normalmente ficar em 0.</span></div>
+          <div class="card-hdr" style="margin-top:12px">
+            <div class="card-title">Logs HCR</div>
+            <button class="btn btn-ghost btn-sm" type="button" onclick="loadHcrLogs()">Carregar logs</button>
+          </div>
+          <pre id="hcrLogs" class="log-box">—</pre>
+        </div>
+      </section>
+
       <section class="workspace-section" data-workspace-panel="config" data-workspace-section-panel="tls">
-        <div class="workspace-section-heading"><div><span>06 · Segurança</span><h3>Encaminhadores TLS</h3><p>Gerencie os certificados do servidor e crie listeners TLS com certificado automático, colado ou armazenado em arquivo.</p></div></div>
+        <div class="workspace-section-heading"><div><span>07 · Segurança</span><h3>Encaminhadores TLS</h3><p>Gerencie os certificados do servidor e crie listeners TLS com certificado automático, colado ou armazenado em arquivo.</p></div></div>
 
         <!-- TLS Certificates -->
         <div class="card" style="margin-top:12px">

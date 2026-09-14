@@ -96,6 +96,7 @@ func serverConfigPost(w http.ResponseWriter, r *http.Request) {
 		PAMAuthEnabled *bool            `json:"pam_auth_enabled"`
 		BHTTP          *json.RawMessage `json:"bhttp"`
 		BTUN           *json.RawMessage `json:"btun"`
+		HCR            *json.RawMessage `json:"hcr"`
 	}
 	if err := json.Unmarshal(body, &fieldPresence); err != nil {
 		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
@@ -127,6 +128,9 @@ func serverConfigPost(w http.ResponseWriter, r *http.Request) {
 		}
 		if fieldPresence.BTUN == nil {
 			newCfg.BTUN = globalCfg.BTUN
+		}
+		if fieldPresence.HCR == nil {
+			newCfg.HCR = globalCfg.HCR
 		}
 	}
 	globalCfgMu.RUnlock()

@@ -477,6 +477,19 @@ func applyFullConfigReload(newCfg *Config) ConfigReloadReport {
 		report.Services["btun"] = ServiceReloadStatus{Enabled: false, Running: false}
 	}
 
+	// HCR — stop current instance (no-op if not running) then start new one.
+	stopHCR()
+	if newCfg.HCR != nil {
+		if err := startHCR(newCfg.HCR); err != nil {
+			report.warnf("HCR failed to start: %v", err)
+			report.Services["hcr"] = ServiceReloadStatus{Enabled: true, Running: false, Listen: hcrConfiguredListen(newCfg.HCR), Error: err.Error()}
+		} else {
+			report.Services["hcr"] = ServiceReloadStatus{Enabled: true, Running: hcrRunning(), Listen: hcrListenList()}
+		}
+	} else {
+		report.Services["hcr"] = ServiceReloadStatus{Enabled: false, Running: false}
+	}
+
 	// Xray — update stored config then restart/stop as needed.
 	if newCfg.Xray != nil {
 		newCfg.Xray.NormalizeDefaults()

@@ -159,8 +159,10 @@ async function loadServerConfig() {
     // BHTTP + BTUN
     writeBhttpConfig(c);
     writeBtunConfig(c);
+    writeHcrConfig(c);
     loadBhttpHealth();
     loadBtunHealth();
+    loadHcrHealth();
 
     // TLS forwarders
     tlsForwardersState = c.tls_forwarders || [];
@@ -241,6 +243,7 @@ async function saveServerConfig() {
     } : null,
     bhttp: readBhttpConfig(),
     btun: readBtunConfig(),
+    hcr: readHcrConfig(),
     tls_forwarders: tlsArr,
     xray: {
       enabled:     document.getElementById("cfgXrayEnabled").checked,
@@ -270,6 +273,7 @@ async function saveServerConfig() {
     }
     loadBhttpHealth();
     loadBtunHealth();
+    loadHcrHealth();
   } catch (e) {
     if (e.message === "auth") doAuthError();
     else st.textContent = "Error: " + e.message;
@@ -1011,3 +1015,107 @@ window.loadBhttpHealth = loadBhttpHealth;
 window.loadBhttpLogs = loadBhttpLogs;
 window.loadBtunHealth = loadBtunHealth;
 window.loadBtunLogs = loadBtunLogs;
+
+
+function toggleHcrFields(on) {
+  const el = document.getElementById("hcrFields");
+  if (!el) return;
+  el.style.opacity = on ? "1" : ".4";
+  el.style.pointerEvents = on ? "" : "none";
+}
+
+function writeHcrConfig(c) {
+  const has = !!c.hcr;
+  fieldCheck("cfgHcrEnabled", has);
+  toggleHcrFields(has);
+  const h = c.hcr || {};
+  // Sharing the panel's ports (alongside BHTTP) is the least-friction setup, so
+  // a config that never had an hcr block starts with it on.
+  fieldCheck("cfgHcrSharedPorts", has ? !!h.shared_ports : true);
+  fieldSet("cfgHcrListen", (h.listen || []).join("\n"));
+  fieldSet("cfgHcrMaxSessions", h.max_sessions || 0);
+  fieldSet("cfgHcrMaxConnections", h.max_connections || 0);
+  fieldSet("cfgHcrMaxSource", h.max_source_sessions || 0);
+  fieldSet("cfgHcrMaxFrame", h.max_download_frame || 0);
+  fieldSet("cfgHcrPollTimeout", h.download_poll_timeout || "");
+  fieldSet("cfgHcrIdleTimeout", h.idle_session_timeout || "");
+  fieldSet("cfgHcrAutoRestart", h.auto_restart_interval || "");
+  fieldSet("cfgHcrRestartGrace", h.auto_restart_grace || "");
+  fieldCheck("cfgHcrNoConsole", !!h.disable_console_log);
+  fieldCheck("cfgHcrLogConnections", !!h.log_connections);
+}
+
+function readHcrConfig() {
+  if (!fieldBool("cfgHcrEnabled")) return null;
+  const listen = readListenLines("cfgHcrListen");
+  const shared = fieldBool("cfgHcrSharedPorts");
+  return {
+    // With shared ports on, a dedicated listener is optional.
+    listen: listen.length ? listen : (shared ? [] : ["0.0.0.0:8181"]),
+    shared_ports: shared,
+    max_sessions: fieldInt("cfgHcrMaxSessions"),
+    max_connections: fieldInt("cfgHcrMaxConnections"),
+    max_source_sessions: fieldInt("cfgHcrMaxSource"),
+    max_download_frame: fieldInt("cfgHcrMaxFrame"),
+    download_poll_timeout: fieldText("cfgHcrPollTimeout"),
+    idle_session_timeout: fieldText("cfgHcrIdleTimeout"),
+    auto_restart_interval: fieldText("cfgHcrAutoRestart"),
+    auto_restart_grace: fieldText("cfgHcrRestartGrace"),
+    disable_console_log: fieldBool("cfgHcrNoConsole"),
+    log_connections: fieldBool("cfgHcrLogConnections"),
+  };
+}
+
+async function loadHcrHealth() {
+  const summary = document.getElementById("hcrStatusSummary");
+  if (!summary) return;
+  try {
+    const res = await api("/api/hcr");
+    if (!res.ok) throw new Error(await res.text());
+    const d = await res.json();
+    setServiceChip("hcrStatusChip", d);
+    document.getElementById("hcrActiveSessions").textContent = fmtInt(d.activeSessions);
+    document.getElementById("hcrActiveConns").textContent = fmtInt(d.activeConnections);
+    document.getElementById("hcrUploadBytes").textContent = fmtBytes(d.uploadBytes || 0);
+    document.getElementById("hcrDownloadBytes").textContent = fmtBytes(d.downloadBytes || 0);
+    renderCounterRows("hcrHealthBody", [
+      ["Sockets accepted", d.accepted],
+      ["Sockets rejected", d.connectionsRejected],
+      ["Sessions created", d.sessionsCreated],
+      ["Sessions rejected", d.sessionsRejected],
+      ["Protocol errors", d.protocolErrors],
+    ]);
+    if (d.enabled === false) {
+      summary.textContent = "HCR está desativado na configuração.";
+    } else if (!d.running) {
+      summary.textContent = "HCR está ativado mas não está rodando. Verifique se a porta está livre nos logs abaixo.";
+    } else {
+      const bad = Number(d.connectionsRejected || 0) + Number(d.sessionsRejected || 0) + Number(d.protocolErrors || 0);
+      summary.textContent = bad > 0
+        ? `Rodando em ${d.listen || "?"} — atenção: ${fmtInt(bad)} rejeições/erros acumulados.`
+        : `Rodando em ${d.listen || "?"} — sem rejeições nem erros.`;
+    }
+  } catch (e) {
+    if (e.message === "auth") doAuthError();
+    else summary.textContent = "Erro ao carregar status: " + e.message;
+  }
+}
+
+async function loadHcrLogs() {
+  const box = document.getElementById("hcrLogs");
+  if (!box) return;
+  box.textContent = "Carregando…";
+  try {
+    const res = await api("/api/hcr/logs");
+    if (!res.ok) throw new Error(await res.text());
+    const lines = await res.json();
+    box.textContent = lines && lines.length ? lines.join("\n") : "Sem logs.";
+  } catch (e) {
+    if (e.message === "auth") doAuthError();
+    else box.textContent = "Erro: " + e.message;
+  }
+}
+
+window.toggleHcrFields = toggleHcrFields;
+window.loadHcrHealth = loadHcrHealth;
+window.loadHcrLogs = loadHcrLogs;

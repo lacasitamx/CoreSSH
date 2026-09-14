@@ -23,6 +23,7 @@ import (
 
 	"shell2/internal/bhttp"
 	"shell2/internal/btun"
+	"shell2/internal/hcr"
 )
 
 // tunnelSniffTimeout bounds how long a shared listener waits for a client's
@@ -37,7 +38,7 @@ const tunnelSharedReaderSize = bhttp.SniffLimit + 64
 // tunnelShareEnabled reports whether any transport wants the shared ports, so
 // the listeners can skip all of this when none do.
 func tunnelShareEnabled() bool {
-	return bhttpShareEnabled() || btunShareEnabled()
+	return bhttpShareEnabled() || btunShareEnabled() || hcrShareEnabled()
 }
 
 // tunnelTakeSharedConn inspects the front of a connection that arrived on a
@@ -53,7 +54,8 @@ func tunnelTakeSharedConn(conn net.Conn, reader *bufio.Reader) (*bufio.Reader, b
 	}
 	bhttpOn := bhttpShareEnabled()
 	btunOn := btunShareEnabled()
-	if !bhttpOn && !btunOn {
+	hcrOn := hcrShareEnabled()
+	if !bhttpOn && !btunOn && !hcrOn {
 		return reader, false
 	}
 
@@ -68,6 +70,9 @@ func tunnelTakeSharedConn(conn net.Conn, reader *bufio.Reader) (*bufio.Reader, b
 	// marker opens with 'D'.
 	if btunOn && tunnelSniff(reader, btunSniffStep) {
 		return reader, btunServeShared(conn, reader)
+	}
+	if hcrOn && tunnelSniff(reader, hcrSniffStep) {
+		return reader, hcrServeShared(conn, reader)
 	}
 	if bhttpOn && tunnelSniff(reader, bhttpSniffStep) {
 		return reader, bhttpServeShared(conn, reader)
@@ -141,6 +146,36 @@ func bhttpSniffStep(peeked []byte) (int, int) {
 		return sniffMore, want
 	}
 	return sniffNo, 0
+}
+
+// hcrSniffStep matches an HCR request: its opcode, then its fixed version byte,
+// then the full 62-byte header. A BHTTP frame whose session byte is not 0x01 is
+// rejected at two bytes, so it never waits for 62 bytes.
+func hcrSniffStep(peeked []byte) (int, int) {
+	switch hcr.SniffFrame(peeked) {
+	case hcr.VerdictYes:
+		return sniffYes, 0
+	case hcr.VerdictMore:
+		if len(peeked) < 2 {
+			return sniffMore, 2
+		}
+		return sniffMore, hcr.RequestHeaderSize
+	}
+	return sniffNo, 0
+}
+
+// hcrServeShared hands an identified connection to the running HCR server.
+func hcrServeShared(conn net.Conn, reader *bufio.Reader) bool {
+	hcrMu.Lock()
+	server := hcrServer
+	ctx := hcrCtx
+	hcrMu.Unlock()
+	if server == nil || ctx == nil {
+		return false
+	}
+	// The engine's own debug log records the session; no extra line here.
+	server.ServeConn(ctx, &bufferedConn{Conn: conn, r: reader})
+	return true
 }
 
 // bhttpServeShared hands an identified connection to the running BHTTP server.

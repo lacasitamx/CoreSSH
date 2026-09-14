@@ -3,8 +3,10 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"encoding/binary"
 	"io"
 	"log"
@@ -19,6 +21,7 @@ import (
 
 	"shell2/internal/bhttp"
 	"shell2/internal/btun"
+	"shell2/internal/hcr"
 )
 
 // ---------- Test scaffolding ----------
@@ -1366,4 +1369,210 @@ func readUDPGWFrame(t *testing.T, conn net.Conn) (uint16, uint16, []byte) {
 		t.Fatalf("udpgw reply is %d bytes, want at least 9", len(body))
 	}
 	return binary.BigEndian.Uint16(body[0:2]), binary.BigEndian.Uint16(body[7:9]), body[9:]
+}
+
+// ---------- HCR sharing the proxy and TLS ports ----------
+
+// withSharedHCR starts an HCR instance owning no port of its own; it only
+// serves connections handed over from the panel's listeners.
+func withSharedHCR(t *testing.T) {
+	t.Helper()
+	server := hcr.NewServer(&hcr.Config{
+		DialTarget:  func() (net.Conn, error) { return dialInternalSSH("hcr") },
+		Logger:      nil,
+		MaxSessions: 100,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	hcrMu.Lock()
+	hcrServer = server
+	hcrCtx = ctx
+	hcrCancel = cancel
+	hcrSharedPorts = true
+	hcrMu.Unlock()
+	t.Cleanup(func() {
+		hcrMu.Lock()
+		hcrServer = nil
+		hcrCtx = nil
+		hcrCancel = nil
+		hcrSharedPorts = false
+		hcrMu.Unlock()
+		cancel()
+		server.Close()
+		server.Wait()
+	})
+	if !hcrShareEnabled() {
+		t.Fatal("shared-port handoff did not come up")
+	}
+}
+
+// hcrMaskPayload mirrors the engine's payload cipher so the test can encode
+// requests and decode responses. It is the same SHA-256 keystream XOR.
+func sha256Sum(b []byte) [32]byte { return sha256.Sum256(b) }
+
+func hcrMaskPayload(payload []byte, sid [16]byte, code uint8, seq uint64, direction uint8) {
+	if len(payload) == 0 {
+		return
+	}
+	var seed [30]byte
+	copy(seed[0:16], sid[:])
+	seed[16] = code
+	binary.BigEndian.PutUint64(seed[17:25], seq)
+	seed[25] = direction
+	for offset := 0; offset < len(payload); offset += 32 {
+		binary.BigEndian.PutUint32(seed[26:30], uint32(offset/32))
+		block := sha256Sum(seed[:])
+		for i := 0; i < 32 && offset+i < len(payload); i++ {
+			payload[offset+i] ^= block[i]
+		}
+	}
+}
+
+// hcrConnectFrame builds a 62-byte Connect request.
+func hcrConnectFrame(sid [16]byte) []byte {
+	b := make([]byte, hcr.RequestHeaderSize)
+	b[0] = 1 // ReqConnect
+	b[1] = 1 // ProtoVersion
+	copy(b[2:18], sid[:])
+	return b
+}
+
+// hcrPollFrame builds a Poll request for up to maxChunks records at seq.
+func hcrPollFrame(sid [16]byte, seq uint64, maxChunks uint16) []byte {
+	payload := make([]byte, 2)
+	binary.BigEndian.PutUint16(payload, maxChunks)
+	hcrMaskPayload(payload, sid, 3, seq, 0) // ReqPoll, DirRequest
+	b := make([]byte, hcr.RequestHeaderSize+len(payload))
+	b[0] = 3 // ReqPoll
+	b[1] = 1
+	copy(b[2:18], sid[:])
+	binary.BigEndian.PutUint64(b[50:58], seq)
+	binary.BigEndian.PutUint32(b[58:62], uint32(len(payload)))
+	copy(b[hcr.RequestHeaderSize:], payload)
+	return b
+}
+
+// hcrReadResponse reads a 14-byte response header plus its payload.
+func hcrReadResponse(t *testing.T, r *bufio.Reader) (status byte, seq uint64, payload []byte) {
+	t.Helper()
+	var hdr [14]byte
+	if _, err := io.ReadFull(r, hdr[:]); err != nil {
+		t.Fatalf("read HCR response header: %v", err)
+	}
+	status = hdr[0]
+	seq = binary.BigEndian.Uint64(hdr[2:10])
+	n := binary.BigEndian.Uint32(hdr[10:14])
+	if n > 0 {
+		payload = make([]byte, n)
+		if _, err := io.ReadFull(r, payload); err != nil {
+			t.Fatalf("read HCR response payload: %v", err)
+		}
+	}
+	return status, seq, payload
+}
+
+// An HCR client on a port the HTTP+SSH proxy owns must reach the built-in SSH
+// server: Connect succeeds, then a Poll returns the SSH banner.
+func TestSharedProxyPortServesHCRClient(t *testing.T) {
+	withPanelUsers(t, &UserState{Cfg: UserConfig{Username: "tunnel", Password: "secret"}})
+	withSharedHCR(t)
+	addr := serveProxyPort(t)
+
+	conn, err := net.Dial("tcp", addr.String())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
+	reader := bufio.NewReader(conn)
+
+	var sid [16]byte
+	copy(sid[:], "hcr-shared-sid01")
+
+	if _, err := conn.Write(hcrConnectFrame(sid)); err != nil {
+		t.Fatalf("write connect: %v", err)
+	}
+	status, _, _ := hcrReadResponse(t, reader)
+	if status != 0 { // StatusOk
+		t.Fatalf("connect status = %d, want StatusOk — the proxy answered instead of HCR", status)
+	}
+
+	// Poll for the SSH banner the target sends first.
+	if _, err := conn.Write(hcrPollFrame(sid, 0, 4)); err != nil {
+		t.Fatalf("write poll: %v", err)
+	}
+	status, seq, payload := hcrReadResponse(t, reader)
+	if status != 1 { // StatusPollData
+		t.Fatalf("poll status = %d, want StatusPollData(1)", status)
+	}
+	hcrMaskPayload(payload, sid, 3, seq, 1) // ReqPoll, DirResponse
+	if len(payload) < 4 {
+		t.Fatalf("poll payload too short: %d bytes", len(payload))
+	}
+	chunkLen := binary.BigEndian.Uint32(payload[:4])
+	banner := payload[4 : 4+chunkLen]
+	if !strings.HasPrefix(string(banner), "SSH-2.0-") {
+		t.Fatalf("first HCR download = %q, want the built-in SSH identification", banner)
+	}
+}
+
+// The decisive coexistence test: HCR, BHTTP, BTUN and injected SSH all served
+// on one listener at once, each answered correctly.
+func TestSharedProxyPortServesHCRAlongsideBHTTP(t *testing.T) {
+	withPanelUsers(t,
+		&UserState{Cfg: UserConfig{Username: "tunnel", Password: "secret"}},
+		&UserState{Cfg: UserConfig{Username: "vpn", Password: "letmein"}},
+	)
+	withSharedHCR(t)
+	withSharedBHTTP(t)
+	withSharedBTUN(t)
+	addr := serveProxyPort(t)
+
+	t.Run("HCR", func(t *testing.T) {
+		conn, err := net.Dial("tcp", addr.String())
+		if err != nil {
+			t.Fatalf("dial: %v", err)
+		}
+		defer conn.Close()
+		_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
+		reader := bufio.NewReader(conn)
+		var sid [16]byte
+		copy(sid[:], "coexist-hcr-sid1")
+		if _, err := conn.Write(hcrConnectFrame(sid)); err != nil {
+			t.Fatalf("write connect: %v", err)
+		}
+		if status, _, _ := hcrReadResponse(t, reader); status != 0 {
+			t.Fatalf("HCR was not served: connect status %d", status)
+		}
+	})
+
+	t.Run("BHTTP", func(t *testing.T) {
+		conn, err := net.Dial("tcp", addr.String())
+		if err != nil {
+			t.Fatalf("dial: %v", err)
+		}
+		defer conn.Close()
+		_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
+		var sid bhttp.SessionID
+		copy(sid[:], "coexist-bhttp-s1")
+		if _, err := conn.Write(bhttpProbeFrame(sid)); err != nil {
+			t.Fatalf("write probe: %v", err)
+		}
+		client := &bhttpTestClient{t: t, conn: conn, sid: sid}
+		if status, body := client.readStatus(); status != bhttp.StatusOK {
+			t.Fatalf("BHTTP was not served: status %d (%q)", status, body)
+		}
+	})
+
+	t.Run("BTUN", func(t *testing.T) {
+		conn, err := net.Dial("tcp", addr.String())
+		if err != nil {
+			t.Fatalf("dial: %v", err)
+		}
+		defer conn.Close()
+		_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
+		response := btunAuthenticate(t, conn, bufio.NewReader(conn), "vpn:letmein")
+		if response.Type != btun.PacketAuthResponse || len(response.Payload) == 0 || response.Payload[0] != 1 {
+			t.Fatalf("BTUN was not served: %#v", response)
+		}
+	})
 }

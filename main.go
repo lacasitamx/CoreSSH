@@ -163,6 +163,12 @@ type Config struct {
 	// so it authenticates against the panel's own account database — never PAM
 	// or /etc/shadow. See btun_integration.go.
 	BTUN *BTUNConfig `json:"btun"`
+
+	// HCR holds configuration for the integrated HCR (HTTP/Custom Relay)
+	// transport. If nil, it is disabled. Like BHTTP, each session is relayed to
+	// this process's own SSH server, and it can coexist with BHTTP on the same
+	// ports. See hcr_integration.go.
+	HCR *HCRConfig `json:"hcr"`
 }
 
 // DNSTTConfig defines the settings for the integrated dnstt server.  See
@@ -1729,6 +1735,8 @@ func startAdminAPI(store *Store, addr string, adminDir string) {
 	mux.Handle("/api/bhttp/logs", saSession(http.HandlerFunc(handleBHTTPLogs)))
 	mux.Handle("/api/btun", saSession(http.HandlerFunc(handleBTUNStats)))
 	mux.Handle("/api/btun/logs", saSession(http.HandlerFunc(handleBTUNLogs)))
+	mux.Handle("/api/hcr", saSession(http.HandlerFunc(handleHCRStats)))
+	mux.Handle("/api/hcr/logs", saSession(http.HandlerFunc(handleHCRLogs)))
 
 	// Superadmin-only: reseller management
 	mux.Handle("/api/resellers", saSession(http.HandlerFunc(handleListResellers(store))))
@@ -2316,6 +2324,33 @@ func handleBHTTPLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	lines := getBHTTPLogLines()
+	if lines == nil {
+		lines = []string{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(lines)
+}
+
+// handleHCRStats returns the current HCR transport counters.
+func handleHCRStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if proxyManagedServerFromRequest(w, r, statsStore, "/api/hcr", nil, "") {
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(GetHCRStatsSnapshot())
+}
+
+// handleHCRLogs returns the recent HCR log lines as a JSON array.
+func handleHCRLogs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	lines := getHCRLogLines()
 	if lines == nil {
 		lines = []string{}
 	}
@@ -3632,6 +3667,9 @@ func main() {
 	}
 	if err := startBTUN(cfg.BTUN); err != nil {
 		log.Printf("btun auto-start failed: %v", err)
+	}
+	if err := startHCR(cfg.HCR); err != nil {
+		log.Printf("hcr auto-start failed: %v", err)
 	}
 
 	// Start public SSH listeners (listen + extra_listen).

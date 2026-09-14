@@ -403,7 +403,68 @@ func normalizeRuntimePorts(cfg *Config) []string {
 		normalizeAutoRestartFields(&cfg.BTUN.AutoRestartInterval, &cfg.BTUN.AutoRestartGrace, "BTUN", warn)
 	}
 
+	if cfg.HCR != nil {
+		addrs := normalizeHCRListenList(cfg.HCR.Listen)
+		if len(addrs) == 0 && !cfg.HCR.SharedPorts {
+			addrs = []string{defaultHCRListen}
+			warn("HCR has no listen address and shared ports are off; using default %s", defaultHCRListen)
+		}
+		kept := make([]string, 0, len(addrs))
+		for _, addr := range addrs {
+			if err := tcpAddrAvailableForHCR(addr); err != nil {
+				warn("HCR listener %s is unavailable (%v)", addr, err)
+				continue
+			}
+			kept = append(kept, addr)
+		}
+		if len(addrs) > 0 && len(kept) == 0 {
+			warn("no HCR listener could be opened; keeping the configured addresses so the panel reports the failure")
+			kept = addrs
+		}
+		cfg.HCR.Listen = kept
+
+		normalizeDurationField(&cfg.HCR.DownloadPollTimeout, "HCR download_poll_timeout", time.Second, time.Minute, warn)
+		normalizeDurationField(&cfg.HCR.IdleSessionTimeout, "HCR idle_session_timeout", 10*time.Second, time.Hour, warn)
+		if cfg.HCR.MaxSessions < -1 {
+			warn("HCR max_sessions %d is invalid; using unlimited (-1)", cfg.HCR.MaxSessions)
+			cfg.HCR.MaxSessions = -1
+		}
+		if cfg.HCR.MaxConnections < -1 {
+			warn("HCR max_connections %d is invalid; using unlimited (-1)", cfg.HCR.MaxConnections)
+			cfg.HCR.MaxConnections = -1
+		}
+		if cfg.HCR.MaxSourceSessions < 0 {
+			warn("HCR max_source_sessions %d is invalid; using 0 (unlimited)", cfg.HCR.MaxSourceSessions)
+			cfg.HCR.MaxSourceSessions = 0
+		}
+		if cfg.HCR.MaxDownloadFrame < 0 {
+			warn("HCR max_download_frame %d is invalid; using the default", cfg.HCR.MaxDownloadFrame)
+			cfg.HCR.MaxDownloadFrame = 0
+		}
+		normalizeAutoRestartFields(&cfg.HCR.AutoRestartInterval, &cfg.HCR.AutoRestartGrace, "HCR", warn)
+	}
+
 	return warnings
+}
+
+// tcpAddrAvailableForHCR reports whether an HCR listen address can be bound. An
+// address this process already serves for HCR is treated as available.
+func tcpAddrAvailableForHCR(addr string) error {
+	if addr == "" {
+		return nil
+	}
+	if hcrRunning() {
+		for _, current := range strings.Split(hcrListenList(), ", ") {
+			if strings.TrimSpace(current) == addr {
+				return nil
+			}
+		}
+	}
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	return ln.Close()
 }
 
 // tcpAddrAvailableForBHTTP reports whether a BHTTP listen address can be bound.

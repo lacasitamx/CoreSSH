@@ -154,6 +154,7 @@ O instalador monta `/opt/sshpanel/logs` como tmpfs de 15 MiB quando possível, p
 5300/udp DNSTT interno
 8880    BHTTP (BHP1/BHP2) — desativado por padrão; pode compartilhar 80/8080/443
 7300    BTUN TCP — desativado por padrão; pode compartilhar 80/8080/443
+8181    HCR (HTTP/Custom Relay) — desativado por padrão; pode compartilhar 80/8080/443
 7300/udp BTUN UDP — desativado por padrão
 9090    Painel web + API pública /check
 10086   Xray VLESS
@@ -375,6 +376,23 @@ docker run --rm --cap-add NET_ADMIN --device /dev/net/tun   -v "$PWD:/src" -v dr
 ```
 
 Sem esses privilégios eles são pulados, e o resto da suíte roda normalmente. O volume `dragoncore-cache` guarda os caches de módulos e de build entre execuções.
+
+### HCR (HTTP/Custom Relay)
+
+O HCR é um túnel de requisição/resposta do ecossistema UDP-Custom: o cliente envia quadros com cabeçalho fixo de 62 bytes (connect, data, poll, ack, close, ping) e o servidor relaciona o fluxo a um alvo. Como o BHTTP, cada sessão HCR é entregue ao **servidor SSH interno do painel**, então as contas, validade, TOTP, `max_connections`, limites de banda e cotas de dados valem sem configuração extra — sem `sshd`, PAM ou `/etc/shadow`.
+
+O ponto central: o HCR foi feito para **coexistir com o BHTTP na mesma porta**. Os dois se sobrepõem no primeiro byte (opcodes 1..4 significam upload/download nos dois), mas o HCR tem cabeçalho de 62 bytes e byte de versão fixo `0x01` em `[1]`, enquanto o BHTTP tem cabeçalho de 29 bytes cujo byte `[1]` é aleatório. O classificador confere o cabeçalho completo do HCR **antes** do BHTTP; um quadro BHTTP limpo é rejeitado em dois bytes, sem espera. Assim SSH, injeção HTTP, BHTTP e HCR ficam todos ligados na mesma porta ao mesmo tempo.
+
+Configure em **Configurações → HCR**:
+
+- **Compartilhar as portas do painel** — aceita HCR em 80/8080 e 443 junto com BHTTP e o resto. Com isso ligado, o campo Listen pode ficar vazio.
+- **Listen** — porta dedicada opcional; sem compartilhamento o padrão é `0.0.0.0:8181`.
+- **Max Sessions / Max Connections / Max Sessions Per IP** — tetos; `0` usa o padrão e `-1` (nas duas primeiras) remove o limite.
+- **Max Download Frame** — maior registro lido do alvo por quadro (padrão 16384).
+- **Download Poll Timeout / Idle Session Timeout** — tempo de um long-poll sem dados e tempo ocioso antes de reciclar a sessão.
+- **Auto Restart Interval / Restart Grace Delay** — restart forte só dos listeners HCR.
+
+O card **Status HCR** mostra sessões e sockets ativos, bytes trafegados, sessões criadas/rejeitadas e erros de protocolo.
 
 ### Comandos úteis
 
@@ -816,6 +834,7 @@ Admin token
 5300/udp Internal DNSTT listener
 8880    BHTTP (BHP1/BHP2) — disabled by default; can share 80/8080/443
 7300    BTUN TCP — disabled by default; can share 80/8080/443
+8181    HCR (HTTP/Custom Relay) — disabled by default; can share 80/8080/443
 7300/udp BTUN UDP — disabled by default
 9090    Web panel + public /check API
 10086   Xray VLESS
@@ -1037,6 +1056,23 @@ docker run --rm --cap-add NET_ADMIN --device /dev/net/tun   -v "$PWD:/src" -v dr
 ```
 
 Without those privileges they skip and the rest of the suite runs normally. The `dragoncore-cache` volume keeps the module and build caches between runs.
+
+### HCR (HTTP/Custom Relay)
+
+HCR is a request/response tunnel from the UDP-Custom ecosystem: the client sends 62-byte-header frames (connect, data, poll, ack, close, ping) and the server relays the stream to a target. Like BHTTP, every HCR session is handed to the panel's **own built-in SSH server**, so the panel's accounts, expiry, TOTP, `max_connections`, bandwidth limits and data quotas all apply with no extra setup — no system `sshd`, PAM or `/etc/shadow`.
+
+The key point: HCR is built to **coexist with BHTTP on the same port**. The two overlap on the first byte (opcodes 1..4 mean upload/download in both), but HCR has a 62-byte header with a fixed version byte `0x01` at `[1]`, while a BHTTP frame has a 29-byte header whose byte `[1]` is random. The classifier checks HCR's full header **before** BHTTP; a clean BHTTP frame is rejected at two bytes with no wait. So SSH, HTTP injection, BHTTP and HCR are all live on the same port at once.
+
+Configure it under **Settings → HCR**:
+
+- **Share the panel's ports** — accepts HCR on 80/8080 and 443 alongside BHTTP and the rest. With it on, the Listen field may be empty.
+- **Listen** — an optional dedicated port; without sharing the default is `0.0.0.0:8181`.
+- **Max Sessions / Max Connections / Max Sessions Per IP** — ceilings; `0` uses the default and `-1` (on the first two) disables the cap.
+- **Max Download Frame** — the largest record read from the target per frame (default 16384).
+- **Download Poll Timeout / Idle Session Timeout** — how long a long-poll waits with no data, and how long a session may sit idle before it is reaped.
+- **Auto Restart Interval / Restart Grace Delay** — a hard restart of the HCR listeners only.
+
+The **Status HCR** card shows active sessions and sockets, bytes moved, sessions created/rejected and protocol errors.
 
 ### Useful commands
 
@@ -1468,6 +1504,13 @@ Creates or updates (upsert) an SSH user.
 - `200`: BTUN snapshot: `enabled` (bool), `running` (bool), `listen` (string, omitempty — the dedicated listeners, plus `shared proxy/TLS ports` when port sharing is on), `tunName` (string, omitempty), `subnet` (string, omitempty), `startedAt` (string); uint counters `activeSessions`, `accepted`, `authSucceeded`, `authRejected`, `clientPackets`, `internetPackets`, `clientBytes`, `internetBytes`, `droppedPackets`, `sessionsRejected`.
 
 #### `GET /api/btun/logs` — superadmin
+- `200`: array of log line strings (empty array if uninitialized). Does not proxy to managed servers.
+
+#### `GET /api/hcr` — superadmin
+- Optional query: `server_id`.
+- `200`: HCR snapshot: `enabled` (bool), `running` (bool), `listen` (string, omitempty — the dedicated addresses, plus `shared proxy/TLS ports` when port sharing is on), `startedAt` (string); `activeConnections` and `activeSessions` (int64); uint counters `accepted`, `connectionsRejected`, `sessionsCreated`, `sessionsRejected`, `uploadBytes`, `downloadBytes`, `protocolErrors`.
+
+#### `GET /api/hcr/logs` — superadmin
 - `200`: array of log line strings (empty array if uninitialized). Does not proxy to managed servers.
 
 ---
